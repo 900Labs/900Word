@@ -40,6 +40,7 @@ jobs:
             curl \
             wget \
             file \
+            ripgrep \
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \

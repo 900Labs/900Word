@@ -14,6 +14,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+      - name: Install scan dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ripgrep
       - name: Public release source scan
         run: ./scripts/verify-public-release.sh
       - name: Verify required docs
