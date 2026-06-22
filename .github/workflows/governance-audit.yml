@@ -1,0 +1,26 @@
+name: Governance Audit
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Governance Audit
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Public release source scan
+        run: ./scripts/verify-public-release.sh
+      - name: Verify required docs
+        run: |
+          test -f README.md
+          test -f CONTRIBUTING.md
+          test -f SECURITY.md
+          test -f docs/QUALITY_GATE.md
+          test -f docs/PUBLIC_RELEASE.md
+          test -f docs/THREAT_MODEL.md

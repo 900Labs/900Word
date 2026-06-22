@@ -1,0 +1,26 @@
+[package]
+name = "nine-hundred-word"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Offline-first word processing for low-resource environments"
+
+[lib]
+name = "nine_hundred_word_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+thiserror.workspace = true
+word-core = { path = "../../../crates/word-core" }
+word-export = { path = "../../../crates/word-export" }
+word-odf = { path = "../../../crates/word-odf" }
+word-spell = { path = "../../../crates/word-spell" }

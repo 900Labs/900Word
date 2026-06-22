@@ -1,0 +1,46 @@
+name: Package Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS App Bundle
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: cargo install tauri-cli --locked --version '^2.0.0'
+      - run: npm run tauri:build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: 900Word-macos-app
+          path: apps/desktop/src-tauri/target/release/bundle/macos/*
+          if-no-files-found: warn
+
+  windows:
+    name: Windows App Bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: cargo install tauri-cli --locked --version '^2.0.0'
+      - run: npm run tauri:build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: 900Word-windows-app
+          path: apps/desktop/src-tauri/target/release/bundle/*
+          if-no-files-found: warn

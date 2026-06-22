@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+apps/desktop/dist/
+
+# Rust build output
+target/
+apps/desktop/src-tauri/target/
+
+# Tauri generated local state
+apps/desktop/src-tauri/gen/
+
+# Local caches and reports
+.tmp/
+.cache/
+coverage/
+artifacts/
+sbom/
+
+# OS/editor metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Generated package artifacts
+*.dmg
+*.msi
+*.exe
+*.AppImage
+*.deb
+*.rpm
+*.tar.gz
+*.zip

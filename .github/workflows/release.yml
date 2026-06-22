@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  source-release:
+    name: Source Release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - run: npm ci
+      - run: ./scripts/verify-public-release.sh
+      - run: npm run check
+      - run: cargo test --workspace
+
+      - name: Build source archive
+        run: |
+          VERSION="${GITHUB_REF_NAME:-manual}"
+          git archive --format=tar.gz --prefix="900Word-${VERSION}/" HEAD > "900Word-${VERSION}-src.tar.gz"
+          shasum -a 256 "900Word-${VERSION}-src.tar.gz" > SHA256SUMS.txt
+
+      - name: Upload source artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: 900Word-source-release
+          path: |
+            900Word-*-src.tar.gz
+            SHA256SUMS.txt

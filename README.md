@@ -1,0 +1,112 @@
+<div align="center">
+  <h1>900Word</h1>
+  <p><strong>Offline-first word processing for low-resource environments.</strong></p>
+  <p>Free. Local. Open.</p>
+
+  <a href="https://github.com/900Labs/900Word">Repository</a> -
+  <a href="#features">Features</a> -
+  <a href="#build-from-source">Build From Source</a> -
+  <a href="#documentation">Documentation</a> -
+  <a href="#contributing">Contributing</a>
+</div>
+
+---
+
+900Word is a local-first desktop word processor designed for communities where expensive subscriptions, constant connectivity, and high-end hardware are not realistic assumptions.
+
+The first release track focuses on safe local document editing with OpenDocument Text (`.odt`) as the native format. Network sync, real-time collaboration, runtime plugins, legacy binary `.doc`, and full encryption are intentionally deferred until their security and privacy designs are documented and tested.
+
+## Features
+
+Current foundation:
+
+- Tauri v2 desktop shell with a Rust backend and Svelte 5 frontend.
+- ProseMirror editing surface projected from a Rust-owned document model.
+- Rust workspace crates for document model, ODT handling, spell-check boundaries, export, and sanitized fixtures.
+- No telemetry by default.
+- GPL-3.0-or-later licensing.
+- Public-release privacy checks for local paths, hostnames, secrets, and generated artifacts.
+
+Planned MVP:
+
+- Create, open, edit, and save `.odt` documents.
+- Paragraphs, headings, inline formatting, lists, tables, images, page breaks, and named styles.
+- Undo/redo, word count, find/replace, autosave, and crash recovery.
+- TXT, sanitized HTML, and basic PDF export.
+- Hunspell-based spell-check boundary with documented dictionary licensing.
+- Accessibility, keyboard navigation, high-contrast mode, and i18n foundations.
+
+## Architecture
+
+900Word uses one durable source of truth:
+
+1. `word-core` owns the normalized document model.
+2. ProseMirror is an editing projection in the desktop UI.
+3. ODT is the persisted package format for saved documents.
+4. Rust import/export code sanitizes external content before it reaches the frontend.
+
+Repository layout:
+
+```text
+900Word/
+├── apps/desktop/            # Tauri v2 + Svelte 5 desktop app
+├── crates/word-core/        # Document model, commands, undo/redo, stats
+├── crates/word-odf/         # ODT package validation and read/write boundary
+├── crates/word-spell/       # Spell-check dictionary boundary
+├── crates/word-export/      # TXT, HTML, and basic PDF export adapters
+├── crates/word-fixtures/    # Sanitized generated fixtures only
+├── docs/                    # Public documentation, ADRs, sprint records
+└── scripts/                 # Validation and release-preflight scripts
+```
+
+## Build From Source
+
+Prerequisites:
+
+- Rust 1.88+
+- Node.js 20.19+, 22.12+, or 24+
+- Tauri v2 system dependencies for your operating system
+
+```bash
+git clone https://github.com/900Labs/900Word.git
+cd 900Word
+npm install
+npm run check
+cargo test --workspace
+npm run tauri:dev
+```
+
+Use the official Tauri prerequisite guide for OS-specific native packages: <https://v2.tauri.app/start/prerequisites/>.
+
+## Validation
+
+Run the local quality gate before opening a pull request:
+
+```bash
+./scripts/verify-local.sh
+```
+
+Run the public-release privacy gate before changing repository visibility or publishing a release:
+
+```bash
+./scripts/verify-public-release.sh
+```
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Quality gate](docs/QUALITY_GATE.md)
+- [Public release checklist](docs/PUBLIC_RELEASE.md)
+- [Threat model](docs/THREAT_MODEL.md)
+- [Privacy model](docs/PRIVACY_MODEL.md)
+- [File format security](docs/FILE_FORMAT_SECURITY.md)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Contributions must include matching documentation updates when behavior, workflows, public APIs, or contributor expectations change.
+
+## License
+
+900Word is licensed under GPL-3.0-or-later. See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
