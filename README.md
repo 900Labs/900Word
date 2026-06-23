@@ -22,8 +22,10 @@ Current foundation:
 
 - Tauri v2 desktop shell with a Rust backend and Svelte 5 frontend.
 - ProseMirror editing surface projected from a Rust-owned document model.
+- Editor, Settings, and About shell views for the desktop workspace.
 - Rust workspace crates for document model, ODT handling, spell-check boundaries, export, and sanitized fixtures.
 - No telemetry by default.
+- Offline startup smoke tests for the desktop boot path.
 - GPL-3.0-or-later licensing.
 - Public-release privacy checks for local paths, hostnames, secrets, and generated artifacts.
 

@@ -24,5 +24,4 @@ Run:
 ## Follow-Ups
 
 - Expand ODT round-trip coverage.
-- Add runtime no-network smoke.
 - Add package artifact privacy scanner.

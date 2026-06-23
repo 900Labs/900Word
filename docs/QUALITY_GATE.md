@@ -18,6 +18,8 @@ The gate runs:
 - `cargo clippy --workspace -- -D warnings`
 - `./scripts/verify-public-release.sh`
 
+`cargo test --workspace` includes bootstrap security smoke tests for disabled telemetry, no frontend startup network primitives, and no default shell capability.
+
 Optional tools:
 
 - `cargo audit`

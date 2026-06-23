@@ -16,11 +16,32 @@
     byte_end: number;
   }
 
+  interface DictionaryInfo {
+    language_tag: string;
+    display_name: string;
+    license: string;
+  }
+
+  interface Settings {
+    telemetry_enabled: boolean;
+    language_tag: string;
+    high_contrast: boolean;
+  }
+
+  type ViewId = 'editor' | 'settings' | 'about';
+
   let title = $state('900Word');
   let status = $state('Starting...');
+  let activeView = $state<ViewId>('editor');
   let plainText = $state('');
   let stats = $state<DocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
   let spellIssues = $state<SpellIssue[]>([]);
+  let dictionaries = $state<DictionaryInfo[]>([]);
+  let settings = $state<Settings>({
+    telemetry_enabled: false,
+    language_tag: 'en',
+    high_contrast: false
+  });
   let editorHost: HTMLDivElement;
   let view: ReturnType<typeof createEditor> | undefined;
 
@@ -34,6 +55,18 @@
     view = createEditor(editorHost, plainText, (text) => {
       plainText = text;
     });
+  }
+
+  async function loadShellState() {
+    settings = await invoke<Settings>('get_settings');
+    dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
+  }
+
+  async function saveSettings() {
+    settings = await invoke<Settings>('update_settings', {
+      settings
+    });
+    status = 'Settings updated';
   }
 
   async function exportText() {
@@ -60,7 +93,7 @@
   }
 
   onMount(() => {
-    loadDocument().catch((error: unknown) => {
+    Promise.all([loadDocument(), loadShellState()]).catch((error: unknown) => {
       status = error instanceof Error ? error.message : String(error);
     });
 
@@ -70,7 +103,7 @@
   });
 </script>
 
-<main class="app-shell">
+<main class:high-contrast={settings.high_contrast} class="app-shell">
   <header class="topbar">
     <div>
       <h1>{title}</h1>
@@ -83,6 +116,36 @@
       <button type="button" onclick={checkSpelling}>Spell</button>
     </nav>
   </header>
+
+  <div class="view-tabs" role="tablist" aria-label="Workspace views">
+    <button
+      aria-controls="editor-view"
+      aria-selected={activeView === 'editor'}
+      role="tab"
+      type="button"
+      onclick={() => (activeView = 'editor')}
+    >
+      Editor
+    </button>
+    <button
+      aria-controls="settings-view"
+      aria-selected={activeView === 'settings'}
+      role="tab"
+      type="button"
+      onclick={() => (activeView = 'settings')}
+    >
+      Settings
+    </button>
+    <button
+      aria-controls="about-view"
+      aria-selected={activeView === 'about'}
+      role="tab"
+      type="button"
+      onclick={() => (activeView = 'about')}
+    >
+      About
+    </button>
+  </div>
 
   <section class="workspace" aria-label="Document workspace">
     <aside class="sidebar" aria-label="Document statistics">
@@ -105,8 +168,67 @@
       {/if}
     </aside>
 
-    <section class="editor-panel" aria-label="Editor">
+    <div
+      aria-label="Editor"
+      class:hidden-view={activeView !== 'editor'}
+      class="editor-panel"
+      id="editor-view"
+      role="tabpanel"
+    >
       <div bind:this={editorHost} class="editor-host"></div>
-    </section>
+    </div>
+
+    <div
+      aria-label="Settings"
+      class:hidden-view={activeView !== 'settings'}
+      class="panel-view"
+      id="settings-view"
+      role="tabpanel"
+    >
+      <div class="form-surface">
+        <h2>Settings</h2>
+
+        <label>
+          Language
+          <select bind:value={settings.language_tag}>
+            {#each dictionaries as dictionary}
+              <option value={dictionary.language_tag}>
+                {dictionary.display_name}
+              </option>
+            {/each}
+          </select>
+        </label>
+
+        <label class="check-row">
+          <input bind:checked={settings.high_contrast} type="checkbox" />
+          High contrast
+        </label>
+
+        <label class="check-row muted">
+          <input checked={settings.telemetry_enabled} disabled type="checkbox" />
+          Telemetry
+        </label>
+
+        <button type="button" onclick={saveSettings}>Save Settings</button>
+      </div>
+    </div>
+
+    <div
+      aria-label="About 900Word"
+      class:hidden-view={activeView !== 'about'}
+      class="panel-view"
+      id="about-view"
+      role="tabpanel"
+    >
+      <div class="form-surface">
+        <h2>900Word</h2>
+        <dl>
+          <div><dt>Version</dt><dd>0.1.0</dd></div>
+          <div><dt>License</dt><dd>GPL-3.0-or-later</dd></div>
+          <div><dt>Document format</dt><dd>OpenDocument Text</dd></div>
+          <div><dt>Telemetry</dt><dd>Off</dd></div>
+        </dl>
+      </div>
+    </div>
   </section>
 </main>

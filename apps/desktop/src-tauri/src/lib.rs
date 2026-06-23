@@ -294,4 +294,45 @@ mod tests {
 
         assert!(!settings.telemetry_enabled);
     }
+
+    #[test]
+    fn frontend_startup_sources_do_not_use_network_primitives() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let startup_files = [
+            "../src/App.svelte",
+            "../src/main.ts",
+            "../src/lib/editor.ts",
+            "../src/lib/documentProjection.ts",
+        ];
+        let blocked_tokens = [
+            "fetch(",
+            "XMLHttpRequest",
+            "WebSocket",
+            "EventSource",
+            "sendBeacon",
+        ];
+
+        for file in startup_files {
+            let source = std::fs::read_to_string(manifest_dir.join(file))
+                .unwrap_or_else(|error| panic!("failed to read {file}: {error}"));
+            for token in blocked_tokens {
+                assert!(
+                    !source.contains(token),
+                    "{file} must not use startup network primitive {token}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_capability_keeps_shell_access_out_of_core() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let capability = std::fs::read_to_string(manifest_dir.join("capabilities/default.json"))
+            .expect("default capability must be readable");
+
+        assert!(capability.contains("\"core:default\""));
+        assert!(!capability.contains("shell"));
+        assert!(!capability.contains("http:"));
+        assert!(!capability.contains("https:"));
+    }
 }
