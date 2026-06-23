@@ -58,10 +58,13 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible,
-select:focus-visible,
-.ProseMirror-focused {
+select:focus-visible {
   outline: 3px solid #1d7c6f;
   outline-offset: 2px;
+}
+
+.ProseMirror-focused {
+  outline: none;
 }
 
 .app-shell {
@@ -254,16 +257,6 @@ select:focus-visible,
   line-height: 0;
 }
 
-.find-tools {
-  flex: 1 1 28rem;
-}
-
-.find-tools input[type="search"],
-.find-tools input[type="text"] {
-  min-width: 8rem;
-  flex: 1 1 10rem;
-}
-
 .match-count {
   min-width: 4rem;
   padding: 0 0.3rem;
@@ -271,6 +264,67 @@ select:focus-visible,
   color: #59636e;
   font-size: 0.9rem;
   font-variant-numeric: tabular-nums;
+}
+
+.search-tools {
+  position: relative;
+}
+
+.search-toggle {
+  width: 36px;
+  min-width: 36px;
+  height: 34px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+}
+
+.search-toggle[aria-expanded="true"] {
+  border-color: #0f6b5f;
+  background: #e8f1ef;
+}
+
+.search-icon {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.search-icon::after {
+  position: absolute;
+  right: -7px;
+  bottom: -5px;
+  width: 8px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  content: "";
+  transform: rotate(45deg);
+  transform-origin: left center;
+}
+
+.find-popover {
+  position: absolute;
+  top: calc(100% + 0.45rem);
+  right: 0;
+  z-index: 20;
+  width: min(42rem, calc(100vw - 2rem));
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) auto auto auto auto minmax(9rem, 1fr) auto auto;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.55rem;
+  border: 1px solid #c8ced2;
+  border-radius: 7px;
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgba(22, 27, 34, 0.18);
+}
+
+.find-popover input[type="search"],
+.find-popover input[type="text"] {
+  min-width: 0;
 }
 
 .workspace {
@@ -541,9 +595,17 @@ select:focus-visible,
   }
 
   .tool-group,
-  .find-tools,
+  .search-tools,
   .template-tools {
     flex: 1 1 100%;
+  }
+
+  .find-popover {
+    position: static;
+    width: 100%;
+    grid-template-columns: 1fr;
+    margin-top: 0.35rem;
+    box-shadow: none;
   }
 
   .workspace {

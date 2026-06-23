@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     createEditor,
     findEditorTextMatches,
@@ -10,6 +10,7 @@
     setEditorBlockType,
     toggleEditorMark,
     type EditorFindMatch,
+    type EditorSelectionSnapshot,
     type SupportedMarkName
   } from './lib/editor';
   import {
@@ -115,6 +116,7 @@
   let findCaseSensitive = $state(false);
   let findRanges = $state<EditorFindMatch[]>([]);
   let activeFindIndex = $state(-1);
+  let findPanelOpen = $state(false);
   let dictionaries = $state<DictionaryInfo[]>([]);
   let settings = $state<Settings>({
     telemetry_enabled: false,
@@ -127,9 +129,10 @@
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
   let editorSyncQueue = Promise.resolve();
   let editorSyncError: string | null = null;
+  let lastEditorSelection = $state<EditorSelectionSnapshot | undefined>();
   let editorHost: HTMLDivElement;
   let printFrame: HTMLIFrameElement;
-  let findInput: HTMLInputElement;
+  let findInput = $state<HTMLInputElement | undefined>();
   let view: ReturnType<typeof createEditor> | undefined;
 
   async function newDocument() {
@@ -161,7 +164,12 @@
     const editable = canEditProjectedDocument(document);
     status = editable ? nextStatus : tr('editorReadOnly');
     view?.destroy();
-    view = createEditor(editorHost, document, handleEditorChange, { editable });
+    view = createEditor(editorHost, document, handleEditorChange, {
+      editable,
+      onSelectionChange: (selection) => {
+        lastEditorSelection = selection;
+      }
+    });
     refreshFindState();
   }
 
@@ -353,13 +361,20 @@
       status = tr('editorReadOnly');
       return;
     }
-    status = toggleEditorMark(view, mark)
+    status = toggleEditorMark(view, mark, lastEditorSelection)
       ? tr('markToggled', { label })
       : tr('markUnavailable', { label });
   }
 
-  function preserveEditorSelection(event: MouseEvent) {
+  function runToolbarMouseCommand(event: MouseEvent, command: () => void) {
     event.preventDefault();
+    command();
+  }
+
+  function runToolbarKeyboardCommand(event: MouseEvent, command: () => void) {
+    if (event.detail === 0) {
+      command();
+    }
   }
 
   function applyParagraph() {
@@ -367,7 +382,7 @@
       status = tr('editorReadOnly');
       return;
     }
-    status = setEditorBlockType(view, 'paragraph', { style: 'body' })
+    status = setEditorBlockType(view, 'paragraph', { style: 'body' }, lastEditorSelection)
       ? tr('paragraphApplied')
       : tr('paragraphUnchanged');
   }
@@ -377,7 +392,7 @@
       status = tr('editorReadOnly');
       return;
     }
-    status = setEditorBlockType(view, 'heading', { level })
+    status = setEditorBlockType(view, 'heading', { level }, lastEditorSelection)
       ? tr('headingApplied', { level })
       : tr('headingUnchanged', { level });
   }
@@ -431,6 +446,22 @@
 
   function findPrevious() {
     selectFindMatch(activeFindIndex - 1);
+  }
+
+  async function openFindPanel() {
+    findPanelOpen = true;
+    await tick();
+    findInput?.focus();
+    findInput?.select();
+  }
+
+  function toggleFindPanel() {
+    if (findPanelOpen) {
+      findPanelOpen = false;
+      view?.focus();
+    } else {
+      openFindPanel();
+    }
   }
 
   function replaceCurrentMatch() {
@@ -514,8 +545,7 @@
     } else if (key === 'f') {
       event.preventDefault();
       activeView = 'editor';
-      findInput?.focus();
-      findInput?.select();
+      openFindPanel();
     } else if (key === 's') {
       event.preventDefault();
       saveCurrentDocument().catch(setStatusFromError);
@@ -669,10 +699,10 @@
         aria-label={tr('bold')}
         class="format-button strong"
         disabled={!editorEditable}
-        onmousedown={preserveEditorSelection}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('bold', tr('bold')))}
         title={tr('bold')}
         type="button"
-        onclick={() => applyInlineMark('bold', tr('bold'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('bold', tr('bold')))}
       >
         B
       </button>
@@ -680,10 +710,10 @@
         aria-label={tr('italic')}
         class="format-button italic"
         disabled={!editorEditable}
-        onmousedown={preserveEditorSelection}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('italic', tr('italic')))}
         title={tr('italic')}
         type="button"
-        onclick={() => applyInlineMark('italic', tr('italic'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('italic', tr('italic')))}
       >
         I
       </button>
@@ -691,10 +721,10 @@
         aria-label={tr('underline')}
         class="format-button underline"
         disabled={!editorEditable}
-        onmousedown={preserveEditorSelection}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('underline', tr('underline')))}
         title={tr('underline')}
         type="button"
-        onclick={() => applyInlineMark('underline', tr('underline'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('underline', tr('underline')))}
       >
         U
       </button>
@@ -702,10 +732,10 @@
         aria-label={tr('strikethrough')}
         class="format-button strike"
         disabled={!editorEditable}
-        onmousedown={preserveEditorSelection}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
         title={tr('strikethrough')}
         type="button"
-        onclick={() => applyInlineMark('strikethrough', tr('strikethrough'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
       >
         S
       </button>
@@ -713,10 +743,10 @@
         aria-label={tr('superscript')}
         class="format-button script"
         disabled={!editorEditable}
-        onmousedown={preserveEditorSelection}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
         title={tr('superscript')}
         type="button"
-        onclick={() => applyInlineMark('superscript', tr('superscript'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
       >
         x<sup>2</sup>
       </button>
@@ -724,23 +754,38 @@
         aria-label={tr('subscript')}
         class="format-button script"
         disabled={!editorEditable}
-        onmousedown={preserveEditorSelection}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
         title={tr('subscript')}
         type="button"
-        onclick={() => applyInlineMark('subscript', tr('subscript'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
       >
         x<sub>2</sub>
       </button>
     </div>
 
     <div class="tool-group" role="group" aria-label={tr('blockFormatting')}>
-      <button disabled={!editorEditable} onmousedown={preserveEditorSelection} type="button" onclick={applyParagraph}>
+      <button
+        disabled={!editorEditable}
+        onmousedown={(event) => runToolbarMouseCommand(event, applyParagraph)}
+        type="button"
+        onclick={(event) => runToolbarKeyboardCommand(event, applyParagraph)}
+      >
         {tr('paragraph')}
       </button>
-      <button disabled={!editorEditable} onmousedown={preserveEditorSelection} type="button" onclick={() => applyHeading(1)}>
+      <button
+        disabled={!editorEditable}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyHeading(1))}
+        type="button"
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(1))}
+      >
         {tr('heading1')}
       </button>
-      <button disabled={!editorEditable} onmousedown={preserveEditorSelection} type="button" onclick={() => applyHeading(2)}>
+      <button
+        disabled={!editorEditable}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyHeading(2))}
+        type="button"
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(2))}
+      >
         {tr('heading2')}
       </button>
     </div>
@@ -754,25 +799,40 @@
       <button type="button" onclick={newDocumentFromTemplate}>{tr('useTemplate')}</button>
     </div>
 
-    <div class="tool-group find-tools" role="search" aria-label={tr('findAndReplace')}>
-      <input
-        aria-label={tr('find')}
-        bind:this={findInput}
-        bind:value={findQuery}
-        oninput={refreshFindState}
-        placeholder={tr('find')}
-        type="search"
-      />
-      <label class="check-row compact">
-        <input bind:checked={findCaseSensitive} onchange={refreshFindState} type="checkbox" />
-        {tr('case')}
-      </label>
-      <button disabled={findRanges.length === 0} type="button" onclick={findPrevious}>{tr('previous')}</button>
-      <button disabled={findRanges.length === 0} type="button" onclick={findNext}>{tr('next')}</button>
-      <span class="match-count">{findRanges.length === 0 ? '0' : tr('matchCount', { current: activeFindIndex + 1, total: findRanges.length })}</span>
-      <input aria-label={tr('replace')} bind:value={replaceText} placeholder={tr('replace')} type="text" />
-      <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceCurrentMatch}>{tr('replace')}</button>
-      <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceAllMatches}>{tr('all')}</button>
+    <div class="tool-group search-tools" role="search" aria-label={tr('findAndReplace')}>
+      <button
+        aria-controls="find-panel"
+        aria-expanded={findPanelOpen}
+        aria-label={tr('findAndReplace')}
+        class="search-toggle"
+        title={tr('findAndReplace')}
+        type="button"
+        onclick={toggleFindPanel}
+      >
+        <span aria-hidden="true" class="search-icon"></span>
+      </button>
+      {#if findPanelOpen}
+        <div class="find-popover" id="find-panel">
+          <input
+            aria-label={tr('find')}
+            bind:this={findInput}
+            bind:value={findQuery}
+            oninput={refreshFindState}
+            placeholder={tr('find')}
+            type="search"
+          />
+          <label class="check-row compact">
+            <input bind:checked={findCaseSensitive} onchange={refreshFindState} type="checkbox" />
+            {tr('case')}
+          </label>
+          <button disabled={findRanges.length === 0} type="button" onclick={findPrevious}>{tr('previous')}</button>
+          <button disabled={findRanges.length === 0} type="button" onclick={findNext}>{tr('next')}</button>
+          <span class="match-count">{findRanges.length === 0 ? '0' : tr('matchCount', { current: activeFindIndex + 1, total: findRanges.length })}</span>
+          <input aria-label={tr('replace')} bind:value={replaceText} placeholder={tr('replace')} type="text" />
+          <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceCurrentMatch}>{tr('replace')}</button>
+          <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceAllMatches}>{tr('all')}</button>
+        </div>
+      {/if}
     </div>
   </section>
 

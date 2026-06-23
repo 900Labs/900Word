@@ -1,5 +1,5 @@
 import type { Node as ProseMirrorNode } from 'prosemirror-model';
-import { EditorState } from 'prosemirror-state';
+import { EditorState, type Transaction } from 'prosemirror-state';
 import { TextSelection } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
 import 'prosemirror-view/style/prosemirror.css';
@@ -28,11 +28,22 @@ export interface EditorFindMatch extends FindRange {
   to: number;
 }
 
+export interface EditorSelectionSnapshot {
+  from: number;
+  to: number;
+  empty: boolean;
+}
+
+interface CreateEditorOptions {
+  editable: boolean;
+  onSelectionChange?: (selection: EditorSelectionSnapshot) => void;
+}
+
 export function createEditor(
   host: HTMLElement,
   document: DocumentState,
   onChange: (change: EditorProjectedChange) => void,
-  options: { editable: boolean } = { editable: true }
+  options: CreateEditorOptions = { editable: true }
 ): EditorView {
   const state = EditorState.create({
     doc: supportedSchema.nodeFromJSON(documentToEditorDoc(document))
@@ -44,6 +55,9 @@ export function createEditor(
     dispatchTransaction(transaction) {
       const nextState = view.state.apply(transaction);
       view.updateState(nextState);
+      if (transaction.selectionSet) {
+        options.onSelectionChange?.(snapshotEditorSelection(view));
+      }
       if (!transaction.docChanged) {
         return;
       }
@@ -54,25 +68,52 @@ export function createEditor(
     }
   });
 
+  options.onSelectionChange?.(snapshotEditorSelection(view));
   return view;
 }
 
-export function toggleEditorMark(view: EditorView | undefined, markName: SupportedMarkName): boolean {
+export function snapshotEditorSelection(view: EditorView): EditorSelectionSnapshot {
+  return {
+    from: view.state.selection.from,
+    to: view.state.selection.to,
+    empty: view.state.selection.empty
+  };
+}
+
+export function toggleEditorMark(
+  view: EditorView | undefined,
+  markName: SupportedMarkName,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
   if (!view) {
     return false;
   }
 
-  const markType = supportedSchema.marks[markName];
-  if (!markType) {
+  const transaction = toggleEditorMarkTransaction(view.state, markName, fallbackSelection);
+  if (!transaction) {
     return false;
   }
 
-  const { state } = view;
-  const { empty, from, to } = state.selection;
-  let transaction = state.tr;
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function toggleEditorMarkTransaction(
+  state: EditorState,
+  markName: SupportedMarkName,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const markType = supportedSchema.marks[markName];
+  if (!markType) {
+    return undefined;
+  }
+
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { empty, from, to } = transaction.selection;
 
   if (empty) {
-    const active = markType.isInSet(state.storedMarks ?? state.selection.$from.marks());
+    const active = markType.isInSet(transaction.storedMarks ?? transaction.selection.$from.marks());
     transaction = active
       ? transaction.removeStoredMark(markType)
       : transaction.addStoredMark(markType.create());
@@ -82,31 +123,45 @@ export function toggleEditorMark(view: EditorView | undefined, markName: Support
     transaction = transaction.addMark(from, to, markType.create());
   }
 
-  view.dispatch(transaction.scrollIntoView());
-  view.focus();
-  return true;
+  return transaction;
 }
 
 export function setEditorBlockType(
   view: EditorView | undefined,
   blockName: SupportedBlockName,
-  attrs: Record<string, string | number> = {}
+  attrs: Record<string, string | number> = {},
+  fallbackSelection?: EditorSelectionSnapshot
 ): boolean {
   if (!view) {
     return false;
   }
 
-  const nodeType = supportedSchema.nodes[blockName];
-  if (!nodeType) {
+  const transaction = setEditorBlockTypeTransaction(view.state, blockName, attrs, fallbackSelection);
+  if (!transaction) {
     return false;
   }
 
-  const { state } = view;
-  const { from, to } = selectedTextblockRange(state);
-  let changed = false;
-  let transaction = state.tr;
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
 
-  state.doc.nodesBetween(from, to, (node, pos) => {
+export function setEditorBlockTypeTransaction(
+  state: EditorState,
+  blockName: SupportedBlockName,
+  attrs: Record<string, string | number> = {},
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const nodeType = supportedSchema.nodes[blockName];
+  if (!nodeType) {
+    return undefined;
+  }
+
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { from, to } = selectedTextblockRange(transaction);
+  let changed = false;
+
+  transaction.doc.nodesBetween(from, to, (node, pos) => {
     if (!node.isTextblock) {
       return true;
     }
@@ -118,12 +173,10 @@ export function setEditorBlockType(
   });
 
   if (!changed) {
-    return false;
+    return undefined;
   }
 
-  view.dispatch(transaction.scrollIntoView());
-  view.focus();
-  return true;
+  return transaction;
 }
 
 export function findEditorTextMatches(
@@ -230,16 +283,34 @@ export function replaceAllEditorText(
   return true;
 }
 
-function selectedTextblockRange(state: EditorState): { from: number; to: number } {
-  if (state.selection.$from.depth === 0 || state.selection.$to.depth === 0) {
-    return { from: 0, to: state.doc.content.size };
+function transactionWithFallbackSelection(
+  state: EditorState,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction {
+  let transaction = state.tr;
+  if (
+    state.selection.empty &&
+    fallbackSelection &&
+    !fallbackSelection.empty &&
+    isValidDocumentRange(state.doc, fallbackSelection.from, fallbackSelection.to)
+  ) {
+    transaction = transaction.setSelection(
+      TextSelection.create(state.doc, fallbackSelection.from, fallbackSelection.to)
+    );
+  }
+  return transaction;
+}
+
+function selectedTextblockRange(transaction: Transaction): { from: number; to: number } {
+  if (transaction.selection.$from.depth === 0 || transaction.selection.$to.depth === 0) {
+    return { from: 0, to: transaction.doc.content.size };
   }
 
-  const fromDepth = Math.max(1, state.selection.$from.depth);
-  const toDepth = Math.max(1, state.selection.$to.depth);
+  const fromDepth = Math.max(1, transaction.selection.$from.depth);
+  const toDepth = Math.max(1, transaction.selection.$to.depth);
   return {
-    from: state.selection.$from.before(fromDepth),
-    to: state.selection.$to.after(toDepth)
+    from: transaction.selection.$from.before(fromDepth),
+    to: transaction.selection.$to.after(toDepth)
   };
 }
 
