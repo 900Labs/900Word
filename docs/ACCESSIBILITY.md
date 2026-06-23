@@ -11,4 +11,6 @@ Initial requirements:
 - No hover-only commands.
 - Text that fits at common desktop and laptop widths.
 
+Sprint 005 adds keyboard traversal for workspace tabs with arrow, Home, and End keys. The editing toolbar and find/replace controls are button/input based, have labels or stable button text, and do not rely on hover-only actions.
+
 Accessibility smoke checks are part of the release hardening roadmap.

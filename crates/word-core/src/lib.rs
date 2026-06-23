@@ -119,6 +119,19 @@ impl Document {
                 self.touch();
                 Ok(())
             }
+            DocumentCommand::UpdatePageSetup {
+                section_index,
+                page,
+            } => {
+                page.validate()?;
+                let section = self
+                    .sections
+                    .get_mut(section_index)
+                    .ok_or(DocumentError::SectionOutOfBounds { section_index })?;
+                section.page = page;
+                self.touch();
+                Ok(())
+            }
         }
     }
 
@@ -191,6 +204,40 @@ impl Default for PageSetup {
             margin_bottom_mm: 25,
             margin_left_mm: 25,
         }
+    }
+}
+
+impl PageSetup {
+    pub fn validate(&self) -> Result<(), DocumentError> {
+        if !(50..=500).contains(&self.width_mm) || !(50..=500).contains(&self.height_mm) {
+            return Err(DocumentError::InvalidPageSetup {
+                reason: "page dimensions must be between 50mm and 500mm",
+            });
+        }
+        if [
+            self.margin_top_mm,
+            self.margin_right_mm,
+            self.margin_bottom_mm,
+            self.margin_left_mm,
+        ]
+        .iter()
+        .any(|margin| *margin > 100)
+        {
+            return Err(DocumentError::InvalidPageSetup {
+                reason: "page margins must be 100mm or less",
+            });
+        }
+        if self.margin_left_mm + self.margin_right_mm >= self.width_mm {
+            return Err(DocumentError::InvalidPageSetup {
+                reason: "horizontal margins must fit within page width",
+            });
+        }
+        if self.margin_top_mm + self.margin_bottom_mm >= self.height_mm {
+            return Err(DocumentError::InvalidPageSetup {
+                reason: "vertical margins must fit within page height",
+            });
+        }
+        Ok(())
     }
 }
 
@@ -391,6 +438,10 @@ pub enum DocumentCommand {
         section_index: usize,
         block_index: usize,
     },
+    UpdatePageSetup {
+        section_index: usize,
+        page: PageSetup,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -452,6 +503,8 @@ pub enum DocumentError {
     NothingToUndo,
     #[error("nothing to redo")]
     NothingToRedo,
+    #[error("invalid page setup: {reason}")]
+    InvalidPageSetup { reason: &'static str },
 }
 
 fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DocumentError> {
@@ -515,6 +568,67 @@ mod tests {
 
         undo.redo(&mut document).expect("redo should reapply title");
         assert_eq!(document.meta.title, "Draft");
+    }
+
+    #[test]
+    fn command_updates_page_setup() {
+        let mut document = Document::new_untitled();
+        let page = PageSetup {
+            width_mm: 148,
+            height_mm: 210,
+            margin_top_mm: 20,
+            margin_right_mm: 18,
+            margin_bottom_mm: 20,
+            margin_left_mm: 18,
+        };
+
+        document
+            .apply_command(DocumentCommand::UpdatePageSetup {
+                section_index: 0,
+                page: page.clone(),
+            })
+            .expect("page setup should update");
+
+        assert_eq!(document.sections[0].page, page);
+    }
+
+    #[test]
+    fn page_setup_rejects_invalid_dimensions_and_margins() {
+        let mut document = Document::new_untitled();
+
+        let dimension_error = document
+            .apply_command(DocumentCommand::UpdatePageSetup {
+                section_index: 0,
+                page: PageSetup {
+                    width_mm: 10,
+                    ..PageSetup::default()
+                },
+            })
+            .expect_err("tiny page width should fail");
+        assert_eq!(
+            dimension_error,
+            DocumentError::InvalidPageSetup {
+                reason: "page dimensions must be between 50mm and 500mm"
+            }
+        );
+
+        let margin_error = document
+            .apply_command(DocumentCommand::UpdatePageSetup {
+                section_index: 0,
+                page: PageSetup {
+                    width_mm: 100,
+                    margin_left_mm: 60,
+                    margin_right_mm: 40,
+                    ..PageSetup::default()
+                },
+            })
+            .expect_err("margins that consume width should fail");
+        assert_eq!(
+            margin_error,
+            DocumentError::InvalidPageSetup {
+                reason: "horizontal margins must fit within page width"
+            }
+        );
     }
 
     #[test]

@@ -6,8 +6,8 @@ use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
     AssetRef, Block, Document, DocumentWarning, Heading, ImageBlock, Inline, InlineMark, ListBlock,
-    ListDefinition, ListItem, Paragraph, Section, Style, StyleId, StyleKind, Table, TableCell,
-    TableRow,
+    ListDefinition, ListItem, PageSetup, Paragraph, Section, Style, StyleId, StyleKind, Table,
+    TableCell, TableRow,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -17,6 +17,7 @@ const TEXT_STYLE_PREFIX: &str = "900w";
 const ORDERED_LIST_STYLE: &str = "900w-ordered";
 const UNORDERED_LIST_STYLE: &str = "900w-unordered";
 const IMAGE_PARAGRAPH_STYLE: &str = "900w-image";
+const PAGE_LAYOUT_STYLE: &str = "900w-page-layout";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageLimits {
@@ -408,6 +409,13 @@ fn render_content_xml(document: &Document) -> Result<String, OdtError> {
 
 fn render_automatic_styles(document: &Document) -> String {
     let mut output = String::from("<office:automatic-styles>");
+    let default_page = PageSetup::default();
+    let page = document
+        .sections
+        .first()
+        .map(|section| &section.page)
+        .unwrap_or(&default_page);
+    output.push_str(&render_page_layout_style(page));
     output.push_str(
         "<text:list-style style:name=\"900w-unordered\">\
          <text:list-level-style-bullet text:level=\"1\" text:bullet-char=\"&#8226;\"/>\
@@ -434,6 +442,26 @@ fn render_automatic_styles(document: &Document) -> String {
 
     output.push_str("</office:automatic-styles>");
     output
+}
+
+fn render_page_layout_style(page: &PageSetup) -> String {
+    format!(
+        "<style:page-layout style:name=\"{PAGE_LAYOUT_STYLE}\">\
+         <style:page-layout-properties \
+         fo:page-width=\"{}mm\" \
+         fo:page-height=\"{}mm\" \
+         fo:margin-top=\"{}mm\" \
+         fo:margin-right=\"{}mm\" \
+         fo:margin-bottom=\"{}mm\" \
+         fo:margin-left=\"{}mm\"/>\
+         </style:page-layout>",
+        page.width_mm,
+        page.height_mm,
+        page.margin_top_mm,
+        page.margin_right_mm,
+        page.margin_bottom_mm,
+        page.margin_left_mm
+    )
 }
 
 fn render_text_style(name: &str) -> String {
@@ -794,6 +822,7 @@ struct ParseState<'a> {
     assets: BTreeMap<String, AssetRef>,
     asset_payloads: &'a BTreeMap<String, AssetPayload>,
     lists: BTreeMap<String, ListDefinition>,
+    page: PageSetup,
     warnings: Vec<DocumentWarning>,
     unsupported_elements: BTreeSet<String>,
     unsupported_depth: usize,
@@ -811,6 +840,7 @@ impl<'a> ParseState<'a> {
             assets: BTreeMap::new(),
             asset_payloads,
             lists: BTreeMap::new(),
+            page: PageSetup::default(),
             warnings: Vec::new(),
             unsupported_elements: BTreeSet::new(),
             unsupported_depth: 0,
@@ -842,6 +872,8 @@ impl<'a> ParseState<'a> {
                 .contexts
                 .push(ParseContext::TableCell { blocks: Vec::new() }),
             b"style" => self.start_style(start)?,
+            b"page-layout" => {}
+            b"page-layout-properties" => self.read_page_layout_properties(start)?,
             b"text-properties"
             | b"list-style"
             | b"list-level-style-bullet"
@@ -891,6 +923,8 @@ impl<'a> ParseState<'a> {
                 self.finish_frame();
             }
             b"style" => self.start_style(start)?,
+            b"page-layout" => {}
+            b"page-layout-properties" => self.read_page_layout_properties(start)?,
             b"document-content"
             | b"automatic-styles"
             | b"body"
@@ -967,6 +1001,49 @@ impl<'a> ParseState<'a> {
                 kind: StyleKind::Paragraph,
             },
         );
+        Ok(())
+    }
+
+    fn read_page_layout_properties(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let mut page = self.page.clone();
+        if let Some(value) = attr_value(start, b"page-width")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                page.width_mm = mm;
+            }
+        }
+        if let Some(value) = attr_value(start, b"page-height")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                page.height_mm = mm;
+            }
+        }
+        if let Some(value) = attr_value(start, b"margin-top")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                page.margin_top_mm = mm;
+            }
+        }
+        if let Some(value) = attr_value(start, b"margin-right")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                page.margin_right_mm = mm;
+            }
+        }
+        if let Some(value) = attr_value(start, b"margin-bottom")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                page.margin_bottom_mm = mm;
+            }
+        }
+        if let Some(value) = attr_value(start, b"margin-left")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                page.margin_left_mm = mm;
+            }
+        }
+
+        match page.validate() {
+            Ok(()) => self.page = page,
+            Err(_) => self.warn(
+                "odt_invalid_page_layout",
+                "Invalid ODT page layout was ignored during import",
+            ),
+        }
         Ok(())
     }
 
@@ -1271,6 +1348,7 @@ impl<'a> ParseState<'a> {
         let mut document = Document::new_untitled();
         document.sections = vec![Section {
             blocks: self.blocks,
+            page: self.page,
             ..Section::default()
         }];
         document.styles = self.styles;
@@ -1421,6 +1499,13 @@ fn attr_value(start: &BytesStart<'_>, local: &[u8]) -> Result<Option<String>, Od
         }
     }
     Ok(None)
+}
+
+fn parse_mm_attr(value: &str) -> Option<u16> {
+    let trimmed = value.trim();
+    let number = trimmed.strip_suffix("mm")?.trim();
+    let parsed = number.parse::<u16>().ok()?;
+    Some(parsed)
 }
 
 fn local_name(name: &[u8]) -> &[u8] {
@@ -1776,6 +1861,24 @@ mod tests {
             read_odt_bytes(&write_odt_bytes(&document).expect("write should succeed")).unwrap();
 
         assert!(matches!(parsed.sections[0].blocks[1], Block::PageBreak));
+    }
+
+    #[test]
+    fn page_setup_round_trips_as_content_layout_metadata() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page = PageSetup {
+            width_mm: 148,
+            height_mm: 210,
+            margin_top_mm: 18,
+            margin_right_mm: 16,
+            margin_bottom_mm: 18,
+            margin_left_mm: 16,
+        };
+
+        let bytes = write_odt_bytes(&document).expect("write should succeed");
+        let parsed = read_odt_bytes(&bytes).expect("read should succeed");
+
+        assert_eq!(parsed.sections[0].page, document.sections[0].page);
     }
 
     #[test]

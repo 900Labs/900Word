@@ -38,13 +38,13 @@ Status: complete.
 
 ## Sprint 005: Editing Completeness
 
-Status: next.
+Status: complete.
 
 - Add toolbar, keyboard shortcuts, find/replace, page setup metadata, templates, and accessibility traversal.
 
 ## Sprint 006: Language Tools
 
-Status: planned.
+Status: next.
 
 - Add Hunspell boundary, bundled minimal dictionaries, user dictionaries, dictionary license inventory, and i18n.
 

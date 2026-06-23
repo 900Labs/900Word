@@ -24,12 +24,22 @@ export interface HeadingBlock {
 
 export type Block = ParagraphBlock | HeadingBlock | { type: string; value?: unknown };
 
+export interface PageSetup {
+  width_mm: number;
+  height_mm: number;
+  margin_top_mm: number;
+  margin_right_mm: number;
+  margin_bottom_mm: number;
+  margin_left_mm: number;
+}
+
 export interface DocumentState {
   meta: {
     title: string;
   };
   sections: Array<{
     blocks: Block[];
+    page?: PageSetup;
   }>;
   warnings?: Array<{
     code: string;
@@ -162,6 +172,9 @@ export function buildEditorSyncCommands(
 
   const replaceCount = Math.min(currentBlocks.length, nextBlocks.length);
   for (let index = 0; index < replaceCount; index += 1) {
+    if (blocksEqual(currentBlocks[index], nextBlocks[index])) {
+      continue;
+    }
     commands.push({
       type: 'replace_block',
       section_index: 0,
@@ -180,6 +193,10 @@ export function buildEditorSyncCommands(
   }
 
   return commands;
+}
+
+function blocksEqual(left: Block, right: ParagraphBlock | HeadingBlock): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function blockToText(block: Block): string {

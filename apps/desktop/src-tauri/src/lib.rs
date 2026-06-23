@@ -5,7 +5,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
-use word_core::{Document, DocumentCommand, DocumentError, DocumentStats, UndoStack};
+use word_core::{
+    Block, Document, DocumentCommand, DocumentError, DocumentStats, Heading, Inline, Paragraph,
+    StyleId, UndoStack,
+};
 use word_spell::{DictionaryInfo, SpellIssue};
 
 const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
@@ -85,6 +88,13 @@ pub struct DocumentFileState {
     pub recovery_documents: Vec<RecoveryDocumentSummary>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemplateSummary {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -101,6 +111,8 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             new_document,
+            new_document_from_template,
+            list_templates,
             open_document,
             open_recent_document,
             save_document,
@@ -135,6 +147,25 @@ fn new_document(state: State<'_, AppState>) -> Result<Document, String> {
     session.current_path = None;
     session.dirty = false;
     Ok(session.document.clone())
+}
+
+#[tauri::command]
+fn new_document_from_template(
+    template_id: String,
+    state: State<'_, AppState>,
+) -> Result<Document, String> {
+    let document = build_template_document(&template_id)?;
+    let mut session = lock_session(&state)?;
+    session.document = document;
+    session.undo = UndoStack::default();
+    session.current_path = None;
+    session.dirty = false;
+    Ok(session.document.clone())
+}
+
+#[tauri::command]
+fn list_templates() -> Vec<TemplateSummary> {
+    template_summaries()
 }
 
 #[tauri::command]
@@ -329,6 +360,71 @@ fn update_settings(settings: Settings) -> Settings {
         telemetry_enabled: false,
         ..settings
     }
+}
+
+fn template_summaries() -> Vec<TemplateSummary> {
+    vec![
+        TemplateSummary {
+            id: "blank".to_string(),
+            name: "Blank".to_string(),
+            description: "Untitled document with one body paragraph".to_string(),
+        },
+        TemplateSummary {
+            id: "report".to_string(),
+            name: "Report".to_string(),
+            description: "Heading and section starter for a short report".to_string(),
+        },
+        TemplateSummary {
+            id: "letter".to_string(),
+            name: "Letter".to_string(),
+            description: "Generic letter structure with placeholder text".to_string(),
+        },
+    ]
+}
+
+fn build_template_document(template_id: &str) -> Result<Document, String> {
+    match template_id {
+        "blank" => Ok(Document::new_untitled()),
+        "report" => {
+            let mut document = Document::new_untitled();
+            document.meta.title = "Untitled Report".to_string();
+            document.sections[0].blocks = vec![
+                heading_block(1, "Untitled Report"),
+                paragraph_block("Summary"),
+                heading_block(2, "Findings"),
+                paragraph_block("Add findings here."),
+                heading_block(2, "Next Steps"),
+                paragraph_block("Add next steps here."),
+            ];
+            Ok(document)
+        }
+        "letter" => {
+            let mut document = Document::new_untitled();
+            document.meta.title = "Untitled Letter".to_string();
+            document.sections[0].blocks = vec![
+                paragraph_block("Recipient"),
+                paragraph_block("Subject"),
+                paragraph_block("Body text starts here."),
+                paragraph_block("Closing"),
+            ];
+            Ok(document)
+        }
+        _ => Err("template is unavailable".to_string()),
+    }
+}
+
+fn paragraph_block(text: &str) -> Block {
+    Block::Paragraph(Paragraph {
+        style: StyleId::from("body"),
+        inlines: vec![Inline::text(text)],
+    })
+}
+
+fn heading_block(level: u8, text: &str) -> Block {
+    Block::Heading(Heading {
+        level,
+        inlines: vec![Inline::text(text)],
+    })
 }
 
 fn write_document_to_path(document: &Document, path: &Path) -> Result<(), String> {
@@ -717,6 +813,34 @@ mod tests {
         assert!(state.dirty);
         assert!(!state.has_current_path);
         assert_eq!(state.recent_documents[0].label, "Recent document 1");
+    }
+
+    #[test]
+    fn templates_are_generated_and_generic() {
+        let summaries = template_summaries();
+
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|template| template.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["blank", "report", "letter"]
+        );
+
+        let report = build_template_document("report").expect("report template should exist");
+        assert_eq!(report.meta.title, "Untitled Report");
+        assert!(report.stats().word_count > 4);
+        assert!(!word_export::export_txt(&report)
+            .expect("template text should export")
+            .contains("private"));
+    }
+
+    #[test]
+    fn unknown_template_is_rejected_without_path_handling() {
+        let err =
+            build_template_document("../report").expect_err("path-shaped template id should fail");
+
+        assert_eq!(err, "template is unavailable");
     }
 
     #[test]

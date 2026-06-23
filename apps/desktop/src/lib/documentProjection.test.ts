@@ -161,6 +161,23 @@ describe('documentToText', () => {
     ]);
   });
 
+  it('does not build commands for unchanged projected blocks', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'Same', marks: [], link: null }] } }]
+        }
+      ]
+    };
+
+    expect(
+      buildEditorSyncCommands(document, [
+        { type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'Same', marks: [], link: null }] } }
+      ])
+    ).toEqual([]);
+  });
+
   it('blocks sync commands when unprojected blocks are present', () => {
     const document: DocumentState = {
       meta: { title: 'Generated test' },

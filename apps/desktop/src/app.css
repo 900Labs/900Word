@@ -18,6 +18,11 @@ button {
   padding: 0.45rem 0.7rem;
 }
 
+button:disabled {
+  color: #7d8796;
+  background: #eef2f6;
+}
+
 button:focus-visible,
 .ProseMirror-focused {
   outline: 3px solid #2f7dd3;
@@ -68,6 +73,56 @@ button:focus-visible,
   color: #1d2433;
   font: inherit;
   padding: 0.45rem 0.6rem;
+}
+
+.command-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid #d6dce5;
+  background: #f8fafc;
+}
+
+.tool-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  min-height: 2.4rem;
+}
+
+.tool-group select,
+.tool-group input,
+.page-setup input {
+  border: 1px solid #9aa7b8;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1d2433;
+  font: inherit;
+  padding: 0.42rem 0.55rem;
+}
+
+.tool-group select {
+  min-width: 7rem;
+}
+
+.find-tools {
+  flex: 1 1 26rem;
+}
+
+.find-tools input[type="search"],
+.find-tools input[type="text"] {
+  min-width: 8rem;
+  flex: 1 1 9rem;
+}
+
+.match-count {
+  min-width: 3.5rem;
+  text-align: center;
+  color: #526070;
+  font-variant-numeric: tabular-nums;
 }
 
 .view-tabs {
@@ -139,6 +194,29 @@ button:focus-visible,
 
 .action-list span {
   flex: 1 1 8rem;
+}
+
+.page-setup {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.page-setup label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.page-setup input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.page-setup button {
+  grid-column: 1 / -1;
 }
 
 .editor-panel {
@@ -229,6 +307,10 @@ button:focus-visible,
   height: 1rem;
 }
 
+.compact {
+  font-size: 0.9rem;
+}
+
 .muted {
   color: #637083;
 }
@@ -239,6 +321,7 @@ button:focus-visible,
 }
 
 .high-contrast .topbar,
+.high-contrast .command-bar,
 .high-contrast .view-tabs,
 .high-contrast .editor-host,
 .high-contrast .form-surface {
@@ -254,6 +337,11 @@ button:focus-visible,
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .find-tools,
+  .template-tools {
+    flex: 1 1 100%;
   }
 
   .workspace {
