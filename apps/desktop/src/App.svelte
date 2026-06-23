@@ -589,6 +589,9 @@
       event.preventDefault();
       activeView = 'editor';
       openFindPanel();
+    } else if (key === 'n') {
+      event.preventDefault();
+      newDocument().catch(setStatusFromError);
     } else if (key === 's') {
       event.preventDefault();
       saveCurrentDocument().catch(setStatusFromError);
@@ -683,54 +686,78 @@
         {tr('file')}
       </button>
       {#if fileMenuOpen}
-        <div class="file-menu-popover" role="menu" aria-label={tr('file')}>
-          <button role="menuitem" type="button" onclick={() => runFileMenuAction(newDocument)}>{tr('new')}</button>
+        <div class="file-menu-popover" aria-label={tr('file')}>
+          <div class="menu-popover-header" aria-hidden="true">
+            <span>{tr('file')}</span>
+          </div>
+
+          <button class="menu-command primary-command" type="button" onclick={() => runFileMenuAction(newDocument)}>
+            <span class="menu-glyph glyph-new" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('new')}</span>
+            </span>
+            <span class="menu-shortcut">Cmd+N</span>
+          </button>
 
           <div class="menu-field" role="none">
             <label for="file-menu-odt-path">{tr('odtPath')}</label>
-            <input
-              id="file-menu-odt-path"
-              aria-label={tr('odtPath')}
-              bind:value={filePathInput}
-              placeholder={tr('odtPathPlaceholder')}
-              type="text"
-            />
-            <button role="menuitem" type="button" onclick={() => runFileMenuAction(openDocumentFromPath)}>
-              {tr('open')}
-            </button>
+            <div class="menu-input-row">
+              <input
+                id="file-menu-odt-path"
+                aria-label={tr('odtPath')}
+                bind:value={filePathInput}
+                placeholder={tr('odtPathPlaceholder')}
+                type="text"
+              />
+              <button class="menu-inline-button" type="button" onclick={() => runFileMenuAction(openDocumentFromPath)}>
+                {tr('open')}
+              </button>
+            </div>
           </div>
 
           <div class="menu-separator" role="separator"></div>
 
           <button
+            class="menu-command"
             disabled={!fileState.has_current_path}
-            role="menuitem"
             type="button"
             onclick={() => runFileMenuAction(saveCurrentDocument)}
           >
-            {tr('save')}
+            <span class="menu-glyph glyph-save" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('save')}</span>
+            </span>
+            <span class="menu-shortcut">Cmd+S</span>
           </button>
-          <button role="menuitem" type="button" onclick={() => runFileMenuAction(saveDocumentAsPath)}>
-            {tr('saveAs')}
+          <button class="menu-command" type="button" onclick={() => runFileMenuAction(saveDocumentAsPath)}>
+            <span class="menu-glyph glyph-save-as" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('saveAs')}</span>
+            </span>
           </button>
-          <button role="menuitem" type="button" onclick={() => runFileMenuAction(autosaveDocument)}>
-            {tr('autosave')}
+          <button class="menu-command" type="button" onclick={() => runFileMenuAction(autosaveDocument)}>
+            <span class="menu-glyph glyph-autosave" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('autosave')}</span>
+            </span>
           </button>
 
           <div class="menu-separator" role="separator"></div>
 
           <button
             aria-expanded={exportMenuOpen}
-            aria-haspopup="menu"
-            class="submenu-trigger"
-            role="menuitem"
+            aria-haspopup="true"
+            class="menu-command submenu-trigger"
             type="button"
             onclick={() => (exportMenuOpen = !exportMenuOpen)}
           >
-            {tr('export')}
+            <span class="menu-glyph glyph-export" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('export')}</span>
+            </span>
           </button>
           {#if exportMenuOpen}
-            <div class="file-submenu-panel" role="menu" aria-label={tr('export')}>
+            <div class="file-submenu-panel" aria-label={tr('export')}>
               <label for="file-menu-export-path">{tr('exportPath')}</label>
               <input
                 id="file-menu-export-path"
@@ -739,20 +766,26 @@
                 placeholder={tr('exportPathPlaceholder')}
                 type="text"
               />
-              <button role="menuitem" type="button" onclick={() => runFileMenuAction(exportText)}>
-                {tr('txt')}
-              </button>
-              <button role="menuitem" type="button" onclick={() => runFileMenuAction(exportHtml)}>
-                {tr('html')}
-              </button>
-              <button role="menuitem" type="button" onclick={() => runFileMenuAction(exportPdf)}>
-                {tr('pdf')}
-              </button>
+              <div class="export-format-grid">
+                <button class="format-option" type="button" onclick={() => runFileMenuAction(exportText)}>
+                  <span>{tr('txt')}</span>
+                </button>
+                <button class="format-option" type="button" onclick={() => runFileMenuAction(exportHtml)}>
+                  <span>{tr('html')}</span>
+                </button>
+                <button class="format-option" type="button" onclick={() => runFileMenuAction(exportPdf)}>
+                  <span>{tr('pdf')}</span>
+                </button>
+              </div>
             </div>
           {/if}
 
-          <button role="menuitem" type="button" onclick={() => runFileMenuAction(printDocument)}>
-            {tr('print')}
+          <button class="menu-command" type="button" onclick={() => runFileMenuAction(printDocument)}>
+            <span class="menu-glyph glyph-print" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('print')}</span>
+            </span>
+            <span class="menu-shortcut">Cmd+P</span>
           </button>
         </div>
       {/if}
