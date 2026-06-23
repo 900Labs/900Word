@@ -21,6 +21,7 @@
     type EditorProjectedChange,
     type PageSetup
   } from './lib/documentProjection';
+  import { localeDirection, translate, uiLocales, type UiStringKey } from './lib/i18n';
 
   interface DocumentStats {
     word_count: number;
@@ -34,15 +35,26 @@
     byte_end: number;
   }
 
+  interface SpellCheckResult {
+    language_tag: string;
+    dictionary_display_name: string;
+    issues: SpellIssue[];
+    warnings: string[];
+  }
+
   interface DictionaryInfo {
     language_tag: string;
     display_name: string;
+    bundled: boolean;
+    user: boolean;
     license: string;
+    source: string;
   }
 
   interface Settings {
     telemetry_enabled: boolean;
     language_tag: string;
+    ui_locale: string;
     high_contrast: boolean;
   }
 
@@ -76,7 +88,7 @@
   const viewOrder: ViewId[] = ['editor', 'settings', 'about'];
 
   let title = $state('900Word');
-  let status = $state('Starting...');
+  let status = $state(translate('en-US', 'starting'));
   let activeView = $state<ViewId>('editor');
   let plainText = $state('');
   let stats = $state<DocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
@@ -100,9 +112,11 @@
   let dictionaries = $state<DictionaryInfo[]>([]);
   let settings = $state<Settings>({
     telemetry_enabled: false,
-    language_tag: 'en',
+    language_tag: 'en-US',
+    ui_locale: 'en-US',
     high_contrast: false
   });
+  let uiDirection = $derived(localeDirection(settings.ui_locale));
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
   let editorSyncQueue = Promise.resolve();
@@ -114,7 +128,7 @@
   async function newDocument() {
     await waitForEditorSync();
     const document = await invoke<DocumentState>('new_document');
-    await loadDocumentIntoEditor(document, 'Ready');
+    await loadDocumentIntoEditor(document, tr('ready'));
     filePathInput = '';
     await refreshFileState();
   }
@@ -124,7 +138,7 @@
     const document = await invoke<DocumentState>('new_document_from_template', {
       templateId: selectedTemplateId
     });
-    await loadDocumentIntoEditor(document, 'Template loaded');
+    await loadDocumentIntoEditor(document, tr('templateLoaded'));
     filePathInput = '';
     await refreshFileState();
   }
@@ -138,7 +152,7 @@
     stats = await invoke<DocumentStats>('get_document_stats');
     projectionWarnings = collectDocumentWarnings(document);
     const editable = canEditProjectedDocument(document);
-    status = editable ? nextStatus : 'Read-only projection warning';
+    status = editable ? nextStatus : tr('editorReadOnly');
     view?.destroy();
     view = createEditor(editorHost, document, handleEditorChange, { editable });
     refreshFindState();
@@ -197,7 +211,7 @@
     const document = await invoke<DocumentState>('open_document', {
       path: filePathInput
     });
-    await loadDocumentIntoEditor(document, 'Document opened');
+    await loadDocumentIntoEditor(document, tr('documentOpened'));
     await refreshFileState();
   }
 
@@ -206,14 +220,14 @@
     const document = await invoke<DocumentState>('open_recent_document', {
       token
     });
-    await loadDocumentIntoEditor(document, 'Recent document opened');
+    await loadDocumentIntoEditor(document, tr('documentOpened'));
     await refreshFileState();
   }
 
   async function saveCurrentDocument() {
     await waitForEditorSync();
     fileState = await invoke<DocumentFileState>('save_document');
-    status = 'Document saved';
+    status = tr('documentSaved');
   }
 
   async function saveDocumentAsPath() {
@@ -221,14 +235,14 @@
     fileState = await invoke<DocumentFileState>('save_document_as', {
       path: filePathInput
     });
-    status = 'Document saved';
+    status = tr('documentSavedAs');
   }
 
   async function autosaveDocument() {
     await waitForEditorSync();
     await invoke<RecoveryDocumentSummary>('autosave_document');
     await refreshFileState();
-    status = 'Recovery draft updated';
+    status = tr('autosaveUpdated');
   }
 
   async function recoverDocument(token: string) {
@@ -236,7 +250,7 @@
     const document = await invoke<DocumentState>('recover_document', {
       token
     });
-    await loadDocumentIntoEditor(document, 'Recovery draft opened');
+    await loadDocumentIntoEditor(document, tr('recoveryOpened'));
     await refreshFileState();
   }
 
@@ -245,7 +259,7 @@
       token
     });
     await refreshFileState();
-    status = 'Recovery draft discarded';
+    status = tr('recoveryDiscarded');
   }
 
   async function loadShellState() {
@@ -258,61 +272,75 @@
     settings = await invoke<Settings>('update_settings', {
       settings
     });
-    status = 'Settings updated';
+    status = tr('settingsUpdated');
   }
 
   async function exportText() {
     const text = await invoke<string>('export_txt');
-    status = `TXT export prepared (${text.length} characters)`;
+    status = tr('exportTxtPrepared', { characters: text.length });
   }
 
   async function exportHtml() {
     const html = await invoke<string>('export_html');
-    status = `HTML export prepared (${html.length} characters)`;
+    status = tr('exportHtmlPrepared', { characters: html.length });
   }
 
   async function exportPdf() {
     const pdf = await invoke<number[]>('export_pdf');
-    status = `PDF export prepared (${pdf.length} bytes)`;
+    status = tr('exportPdfPrepared', { bytes: pdf.length });
   }
 
   async function checkSpelling() {
-    spellIssues = await invoke<SpellIssue[]>('check_spelling', {
+    const result = await invoke<SpellCheckResult>('check_spelling', {
       text: plainText,
-      languageTag: 'en'
+      languageTag: settings.language_tag
     });
-    status = spellIssues.length === 0 ? 'No spelling issues found' : `${spellIssues.length} spelling issue(s)`;
+    spellIssues = result.issues;
+    if (result.warnings.length > 0) {
+      status = `${tr('offlineDictionaryFallback')}: ${result.dictionary_display_name}`;
+    } else {
+      status =
+        spellIssues.length === 0
+          ? tr('statusNoSpellingIssues')
+          : tr('spellIssueCount', { count: spellIssues.length });
+    }
   }
 
   function applyInlineMark(mark: SupportedMarkName, label: string) {
     if (!editorEditable) {
-      status = 'Editor is read-only';
+      status = tr('editorReadOnly');
       return;
     }
-    status = toggleEditorMark(view, mark) ? `${label} toggled` : `${label} unavailable`;
+    status = toggleEditorMark(view, mark)
+      ? tr('markToggled', { label })
+      : tr('markUnavailable', { label });
   }
 
   function applyParagraph() {
     if (!editorEditable) {
-      status = 'Editor is read-only';
+      status = tr('editorReadOnly');
       return;
     }
-    status = setEditorBlockType(view, 'paragraph', { style: 'body' }) ? 'Paragraph applied' : 'Paragraph unchanged';
+    status = setEditorBlockType(view, 'paragraph', { style: 'body' })
+      ? tr('paragraphApplied')
+      : tr('paragraphUnchanged');
   }
 
   function applyHeading(level: number) {
     if (!editorEditable) {
-      status = 'Editor is read-only';
+      status = tr('editorReadOnly');
       return;
     }
-    status = setEditorBlockType(view, 'heading', { level }) ? `Heading ${level} applied` : `Heading ${level} unchanged`;
+    status = setEditorBlockType(view, 'heading', { level })
+      ? tr('headingApplied', { level })
+      : tr('headingUnchanged', { level });
   }
 
   async function undoDocument() {
     try {
       await waitForEditorSync();
       const document = await invoke<DocumentState>('undo');
-      await loadDocumentIntoEditor(document, 'Undo applied');
+      await loadDocumentIntoEditor(document, tr('undoApplied'));
       await refreshFileState();
     } catch (error) {
       setStatusFromError(error);
@@ -323,7 +351,7 @@
     try {
       await waitForEditorSync();
       const document = await invoke<DocumentState>('redo');
-      await loadDocumentIntoEditor(document, 'Redo applied');
+      await loadDocumentIntoEditor(document, tr('redoApplied'));
       await refreshFileState();
     } catch (error) {
       setStatusFromError(error);
@@ -342,13 +370,13 @@
   function selectFindMatch(index: number) {
     refreshFindState();
     if (findRanges.length === 0) {
-      status = 'No matches';
+      status = tr('noMatches');
       return;
     }
     activeFindIndex = (index + findRanges.length) % findRanges.length;
     const range = findRanges[activeFindIndex];
     selectEditorTextRange(view, range.from, range.to);
-    status = `Match ${activeFindIndex + 1} of ${findRanges.length}`;
+    status = tr('matchCount', { current: activeFindIndex + 1, total: findRanges.length });
   }
 
   function findNext() {
@@ -361,33 +389,33 @@
 
   function replaceCurrentMatch() {
     if (!editorEditable) {
-      status = 'Editor is read-only';
+      status = tr('editorReadOnly');
       return;
     }
     refreshFindState();
     if (findRanges.length === 0 || activeFindIndex < 0) {
-      status = 'No matches';
+      status = tr('noMatches');
       return;
     }
     const range = findRanges[activeFindIndex];
     if (replaceEditorTextRange(view, range.from, range.to, replaceText)) {
       refreshFindState();
-      status = 'Match replaced';
+      status = tr('matchReplaced');
     }
   }
 
   function replaceAllMatches() {
     if (!editorEditable) {
-      status = 'Editor is read-only';
+      status = tr('editorReadOnly');
       return;
     }
     refreshFindState();
     const ranges = [...findRanges];
     if (replaceAllEditorText(view, ranges, replaceText)) {
       refreshFindState();
-      status = `${ranges.length} match(es) replaced`;
+      status = tr('matchesReplaced', { count: ranges.length });
     } else {
-      status = 'No matches';
+      status = tr('noMatches');
     }
   }
 
@@ -401,7 +429,7 @@
           page: pageSetup
         }
       });
-      await loadDocumentIntoEditor(document, 'Page setup updated');
+      await loadDocumentIntoEditor(document, tr('pageSetupUpdated'));
       await refreshFileState();
     } catch (error) {
       setStatusFromError(error);
@@ -430,13 +458,13 @@
 
     if (key === 'b') {
       event.preventDefault();
-      applyInlineMark('bold', 'Bold');
+      applyInlineMark('bold', tr('bold'));
     } else if (key === 'i') {
       event.preventDefault();
-      applyInlineMark('italic', 'Italic');
+      applyInlineMark('italic', tr('italic'));
     } else if (key === 'u') {
       event.preventDefault();
-      applyInlineMark('underline', 'Underline');
+      applyInlineMark('underline', tr('underline'));
     } else if (key === 'f') {
       event.preventDefault();
       activeView = 'editor';
@@ -490,6 +518,10 @@
     status = error instanceof Error ? error.message : String(error);
   }
 
+  function tr(key: UiStringKey, values: Record<string, string | number> = {}) {
+    return translate(settings.ui_locale, key, values);
+  }
+
   onMount(() => {
     window.addEventListener('keydown', handleGlobalKeydown);
     Promise.all([newDocument(), loadShellState()]).catch((error: unknown) => {
@@ -507,33 +539,33 @@
   }
 </script>
 
-<main class:high-contrast={settings.high_contrast} class="app-shell">
+<main class:high-contrast={settings.high_contrast} class="app-shell" dir={uiDirection} lang={settings.ui_locale}>
   <header class="topbar">
     <div>
       <h1>{title}</h1>
       <p>{status}</p>
     </div>
-    <nav aria-label="Document actions">
-      <button type="button" onclick={newDocument}>New</button>
+    <nav aria-label={tr('documentActions')}>
+      <button type="button" onclick={newDocument}>{tr('new')}</button>
       <input
-        aria-label="ODT path"
+        aria-label={tr('odtPath')}
         bind:value={filePathInput}
         class="path-input"
-        placeholder="Document .odt path"
+        placeholder={tr('odtPathPlaceholder')}
         type="text"
       />
-      <button type="button" onclick={openDocumentFromPath}>Open</button>
-      <button disabled={!fileState.has_current_path} type="button" onclick={saveCurrentDocument}>Save</button>
-      <button type="button" onclick={saveDocumentAsPath}>Save As</button>
-      <button type="button" onclick={autosaveDocument}>Autosave</button>
-      <button type="button" onclick={exportText}>TXT</button>
-      <button type="button" onclick={exportHtml}>HTML</button>
-      <button type="button" onclick={exportPdf}>PDF</button>
-      <button type="button" onclick={checkSpelling}>Spell</button>
+      <button type="button" onclick={openDocumentFromPath}>{tr('open')}</button>
+      <button disabled={!fileState.has_current_path} type="button" onclick={saveCurrentDocument}>{tr('save')}</button>
+      <button type="button" onclick={saveDocumentAsPath}>{tr('saveAs')}</button>
+      <button type="button" onclick={autosaveDocument}>{tr('autosave')}</button>
+      <button type="button" onclick={exportText}>{tr('exportTxt')}</button>
+      <button type="button" onclick={exportHtml}>{tr('exportHtml')}</button>
+      <button type="button" onclick={exportPdf}>{tr('exportPdf')}</button>
+      <button type="button" onclick={checkSpelling}>{tr('checkSpelling')}</button>
     </nav>
   </header>
 
-  <div class="view-tabs" role="tablist" aria-label="Workspace views">
+  <div class="view-tabs" role="tablist" aria-label={tr('workspaceViews')}>
     <button
       aria-controls="editor-view"
       aria-selected={activeView === 'editor'}
@@ -543,7 +575,7 @@
       type="button"
       onclick={() => (activeView = 'editor')}
     >
-      Editor
+      {tr('editor')}
     </button>
     <button
       aria-controls="settings-view"
@@ -554,7 +586,7 @@
       type="button"
       onclick={() => (activeView = 'settings')}
     >
-      Settings
+      {tr('settings')}
     </button>
     <button
       aria-controls="about-view"
@@ -565,74 +597,74 @@
       type="button"
       onclick={() => (activeView = 'about')}
     >
-      About
+      {tr('about')}
     </button>
   </div>
 
-  <section class="command-bar" aria-label="Editing toolbar">
-    <div class="tool-group" role="group" aria-label="History">
-      <button type="button" onclick={undoDocument}>Undo</button>
-      <button type="button" onclick={redoDocument}>Redo</button>
+  <section class="command-bar" aria-label={tr('editingToolbar')}>
+    <div class="tool-group" role="group" aria-label={tr('history')}>
+      <button type="button" onclick={undoDocument}>{tr('undo')}</button>
+      <button type="button" onclick={redoDocument}>{tr('redo')}</button>
     </div>
 
-    <div class="tool-group" role="group" aria-label="Text formatting">
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('bold', 'Bold')}>B</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('italic', 'Italic')}>I</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('underline', 'Underline')}>U</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('strikethrough', 'Strike')}>S</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('superscript', 'Superscript')}>Sup</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('subscript', 'Subscript')}>Sub</button>
+    <div class="tool-group" role="group" aria-label={tr('textFormatting')}>
+      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('bold', tr('bold'))}>B</button>
+      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('italic', tr('italic'))}>I</button>
+      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('underline', tr('underline'))}>U</button>
+      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('strikethrough', tr('strikethrough'))}>S</button>
+      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('superscript', tr('superscript'))}>Sup</button>
+      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('subscript', tr('subscript'))}>Sub</button>
     </div>
 
-    <div class="tool-group" role="group" aria-label="Block formatting">
-      <button disabled={!editorEditable} type="button" onclick={applyParagraph}>P</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyHeading(1)}>H1</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyHeading(2)}>H2</button>
+    <div class="tool-group" role="group" aria-label={tr('blockFormatting')}>
+      <button disabled={!editorEditable} type="button" onclick={applyParagraph}>{tr('paragraph')}</button>
+      <button disabled={!editorEditable} type="button" onclick={() => applyHeading(1)}>{tr('heading1')}</button>
+      <button disabled={!editorEditable} type="button" onclick={() => applyHeading(2)}>{tr('heading2')}</button>
     </div>
 
-    <div class="tool-group template-tools" role="group" aria-label="Templates">
-      <select aria-label="Template" bind:value={selectedTemplateId}>
+    <div class="tool-group template-tools" role="group" aria-label={tr('templates')}>
+      <select aria-label={tr('templates')} bind:value={selectedTemplateId}>
         {#each templates as template}
           <option value={template.id}>{template.name}</option>
         {/each}
       </select>
-      <button type="button" onclick={newDocumentFromTemplate}>Use Template</button>
+      <button type="button" onclick={newDocumentFromTemplate}>{tr('useTemplate')}</button>
     </div>
 
-    <div class="tool-group find-tools" role="search" aria-label="Find and replace">
+    <div class="tool-group find-tools" role="search" aria-label={tr('findAndReplace')}>
       <input
-        aria-label="Find"
+        aria-label={tr('find')}
         bind:this={findInput}
         bind:value={findQuery}
         oninput={refreshFindState}
-        placeholder="Find"
+        placeholder={tr('find')}
         type="search"
       />
       <label class="check-row compact">
         <input bind:checked={findCaseSensitive} onchange={refreshFindState} type="checkbox" />
-        Case
+        {tr('case')}
       </label>
-      <button disabled={findRanges.length === 0} type="button" onclick={findPrevious}>Prev</button>
-      <button disabled={findRanges.length === 0} type="button" onclick={findNext}>Next</button>
-      <span class="match-count">{findRanges.length === 0 ? '0' : `${activeFindIndex + 1}/${findRanges.length}`}</span>
-      <input aria-label="Replace" bind:value={replaceText} placeholder="Replace" type="text" />
-      <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceCurrentMatch}>Replace</button>
-      <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceAllMatches}>All</button>
+      <button disabled={findRanges.length === 0} type="button" onclick={findPrevious}>{tr('previous')}</button>
+      <button disabled={findRanges.length === 0} type="button" onclick={findNext}>{tr('next')}</button>
+      <span class="match-count">{findRanges.length === 0 ? '0' : tr('matchCount', { current: activeFindIndex + 1, total: findRanges.length })}</span>
+      <input aria-label={tr('replace')} bind:value={replaceText} placeholder={tr('replace')} type="text" />
+      <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceCurrentMatch}>{tr('replace')}</button>
+      <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceAllMatches}>{tr('all')}</button>
     </div>
   </section>
 
-  <section class="workspace" aria-label="Document workspace">
-    <aside class="sidebar" aria-label="Document statistics">
-      <h2>File</h2>
+  <section class="workspace" aria-label={tr('documentWorkspace')}>
+    <aside class="sidebar" aria-label={tr('documentStatistics')}>
+      <h2>{tr('file')}</h2>
       <dl>
-        <div><dt>Saved</dt><dd>{fileState.has_current_path ? 'Yes' : 'No'}</dd></div>
-        <div><dt>Dirty</dt><dd>{fileState.dirty ? 'Yes' : 'No'}</dd></div>
+        <div><dt>{tr('saved')}</dt><dd>{fileState.has_current_path ? tr('yes') : tr('no')}</dd></div>
+        <div><dt>{tr('dirty')}</dt><dd>{fileState.dirty ? tr('yes') : tr('no')}</dd></div>
       </dl>
 
-      <h2>Page</h2>
+      <h2>{tr('page')}</h2>
       <div class="page-setup">
         <label>
-          Width
+          {tr('width')}
           <input
             min="50"
             max="500"
@@ -642,7 +674,7 @@
           />
         </label>
         <label>
-          Height
+          {tr('height')}
           <input
             min="50"
             max="500"
@@ -652,7 +684,7 @@
           />
         </label>
         <label>
-          Top
+          {tr('top')}
           <input
             min="0"
             max="100"
@@ -662,7 +694,7 @@
           />
         </label>
         <label>
-          Right
+          {tr('right')}
           <input
             min="0"
             max="100"
@@ -672,7 +704,7 @@
           />
         </label>
         <label>
-          Bottom
+          {tr('bottom')}
           <input
             min="0"
             max="100"
@@ -682,7 +714,7 @@
           />
         </label>
         <label>
-          Left
+          {tr('left')}
           <input
             min="0"
             max="100"
@@ -691,11 +723,11 @@
             oninput={(event) => updatePageSetupField('margin_left_mm', event.currentTarget.valueAsNumber)}
           />
         </label>
-        <button type="button" onclick={applyPageSetup}>Apply Page</button>
+        <button type="button" onclick={applyPageSetup}>{tr('applyPage')}</button>
       </div>
 
       {#if fileState.recent_documents.length > 0}
-        <h2>Recent</h2>
+        <h2>{tr('recent')}</h2>
         <ul class="action-list">
           {#each fileState.recent_documents as recent}
             <li>
@@ -708,28 +740,28 @@
       {/if}
 
       {#if fileState.recovery_documents.length > 0}
-        <h2>Recovery</h2>
+        <h2>{tr('recovery')}</h2>
         <ul class="action-list">
           {#each fileState.recovery_documents as recovery}
             <li>
               <span>{recovery.label}</span>
-              <button type="button" onclick={() => recoverDocument(recovery.token)}>Open</button>
-              <button type="button" onclick={() => discardRecovery(recovery.token)}>Discard</button>
+              <button type="button" onclick={() => recoverDocument(recovery.token)}>{tr('recover')}</button>
+              <button type="button" onclick={() => discardRecovery(recovery.token)}>{tr('discard')}</button>
             </li>
           {/each}
         </ul>
       {/if}
 
-      <h2>Stats</h2>
+      <h2>{tr('stats')}</h2>
       <dl>
-        <div><dt>Words</dt><dd>{stats.word_count}</dd></div>
-        <div><dt>Characters</dt><dd>{stats.character_count}</dd></div>
-        <div><dt>Blocks</dt><dd>{stats.block_count}</dd></div>
+        <div><dt>{tr('words')}</dt><dd>{stats.word_count}</dd></div>
+        <div><dt>{tr('characters')}</dt><dd>{stats.character_count}</dd></div>
+        <div><dt>{tr('blocks')}</dt><dd>{stats.block_count}</dd></div>
       </dl>
 
-      <h2>Spelling</h2>
+      <h2>{tr('spelling')}</h2>
       {#if spellIssues.length === 0}
-        <p>No issues.</p>
+        <p>{tr('noIssues')}</p>
       {:else}
         <ul>
           {#each spellIssues as issue}
@@ -739,7 +771,7 @@
       {/if}
 
       {#if projectionWarnings.length > 0}
-        <h2>Projection</h2>
+        <h2>{tr('projection')}</h2>
         <ul>
           {#each projectionWarnings as warning}
             <li>{warning}</li>
@@ -749,7 +781,7 @@
     </aside>
 
     <div
-      aria-label="Editor"
+      aria-label={tr('editor')}
       class:hidden-view={activeView !== 'editor'}
       class="editor-panel"
       id="editor-view"
@@ -759,42 +791,51 @@
     </div>
 
     <div
-      aria-label="Settings"
+      aria-label={tr('settings')}
       class:hidden-view={activeView !== 'settings'}
       class="panel-view"
       id="settings-view"
       role="tabpanel"
     >
       <div class="form-surface">
-        <h2>Settings</h2>
+        <h2>{tr('settings')}</h2>
 
         <label>
-          Language
+          {tr('dictionary')}
           <select bind:value={settings.language_tag}>
             {#each dictionaries as dictionary}
               <option value={dictionary.language_tag}>
-                {dictionary.display_name}
+                {dictionary.display_name}{dictionary.user ? ` (${tr('userDictionarySuffix')})` : ''}
               </option>
+            {/each}
+          </select>
+        </label>
+
+        <label>
+          {tr('uiLocale')}
+          <select bind:value={settings.ui_locale}>
+            {#each uiLocales as locale}
+              <option value={locale.tag}>{locale.display_name}</option>
             {/each}
           </select>
         </label>
 
         <label class="check-row">
           <input bind:checked={settings.high_contrast} type="checkbox" />
-          High contrast
+          {tr('highContrast')}
         </label>
 
         <label class="check-row muted">
           <input checked={settings.telemetry_enabled} disabled type="checkbox" />
-          Telemetry
+          {tr('telemetry')}
         </label>
 
-        <button type="button" onclick={saveSettings}>Save Settings</button>
+        <button type="button" onclick={saveSettings}>{tr('saveSettings')}</button>
       </div>
     </div>
 
     <div
-      aria-label="About 900Word"
+      aria-label={tr('about900Word')}
       class:hidden-view={activeView !== 'about'}
       class="panel-view"
       id="about-view"
@@ -803,10 +844,10 @@
       <div class="form-surface">
         <h2>900Word</h2>
         <dl>
-          <div><dt>Version</dt><dd>0.1.0</dd></div>
-          <div><dt>License</dt><dd>GPL-3.0-or-later</dd></div>
-          <div><dt>Document format</dt><dd>OpenDocument Text</dd></div>
-          <div><dt>Telemetry</dt><dd>Off</dd></div>
+          <div><dt>{tr('version')}</dt><dd>0.1.0</dd></div>
+          <div><dt>{tr('license')}</dt><dd>GPL-3.0-or-later</dd></div>
+          <div><dt>{tr('documentFormat')}</dt><dd>OpenDocument Text</dd></div>
+          <div><dt>{tr('telemetry')}</dt><dd>{tr('off')}</dd></div>
         </dl>
       </div>
     </div>

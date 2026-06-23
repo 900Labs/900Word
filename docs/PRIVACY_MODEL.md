@@ -10,6 +10,8 @@ Autosave writes recovery drafts under `{TEMP_DIR}/900word-recovery` using saniti
 
 The Sprint 004 desktop shell uses explicit path entry instead of a native file picker. Rust commands validate extensions, traversal components, and document size limits, but native picker-granted file scopes remain deferred until dialog permissions are added and reviewed.
 
+Spell-check user dictionaries live under `{APP_DATA_DIR}/dictionaries`. The backend creates this folder with owner-only permissions on Unix platforms. Frontend dictionary state includes language tag, display name, source type, and license label only; it does not include local dictionary paths or filenames.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -21,3 +23,5 @@ Exporters must avoid adding local usernames, hostnames, absolute paths, or priva
 ## Network
 
 Core editing workflows must run offline. Any future network feature must be opt-in and documented in an ADR.
+
+Spell-check dictionaries are local only in the Sprint 006 implementation. Remote dictionary downloads and asset stores remain deferred.

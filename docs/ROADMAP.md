@@ -44,13 +44,13 @@ Status: complete.
 
 ## Sprint 006: Language Tools
 
-Status: next.
+Status: complete.
 
-- Add Hunspell boundary, bundled minimal dictionaries, user dictionaries, dictionary license inventory, and i18n.
+- Add Hunspell-shaped word-list boundary, bundled minimal dictionaries, user dictionaries, dictionary license inventory, and i18n.
 
 ## Sprint 007: Export And Print
 
-Status: planned.
+Status: next.
 
 - Add TXT, sanitized HTML, and basic PDF export.
 - Keep deterministic pagination deferred.

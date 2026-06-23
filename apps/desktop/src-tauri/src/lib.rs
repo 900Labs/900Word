@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{Manager, State};
 use word_core::{
     Block, Document, DocumentCommand, DocumentError, DocumentStats, Heading, Inline, Paragraph,
     StyleId, UndoStack,
@@ -14,6 +14,8 @@ use word_spell::{DictionaryInfo, SpellIssue};
 const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_RECENT_DOCUMENTS: usize = 5;
 const RECOVERY_DIR_NAME: &str = "900word-recovery";
+const USER_DICTIONARY_DIR_NAME: &str = "dictionaries";
+const FALLBACK_LANGUAGE_TAG: &str = "en-US";
 
 #[derive(Debug)]
 struct AppState {
@@ -62,6 +64,7 @@ struct RecentEntry {
 pub struct Settings {
     pub telemetry_enabled: bool,
     pub language_tag: String,
+    pub ui_locale: String,
     pub high_contrast: bool,
 }
 
@@ -95,11 +98,20 @@ pub struct TemplateSummary {
     pub description: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpellCheckResult {
+    pub language_tag: String,
+    pub dictionary_display_name: String,
+    pub issues: Vec<SpellIssue>,
+    pub warnings: Vec<String>,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             telemetry_enabled: false,
-            language_tag: "en".to_string(),
+            language_tag: FALLBACK_LANGUAGE_TAG.to_string(),
+            ui_locale: "en-US".to_string(),
             high_contrast: false,
         }
     }
@@ -339,14 +351,21 @@ fn export_pdf(state: State<'_, AppState>) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-fn check_spelling(text: String, language_tag: String) -> Result<Vec<SpellIssue>, String> {
-    let checker = word_spell::checker_for(&language_tag).map_err(|err| err.to_string())?;
-    Ok(checker.check(&text))
+fn check_spelling(
+    text: String,
+    language_tag: String,
+    app: tauri::AppHandle,
+) -> Result<SpellCheckResult, String> {
+    let user_root = user_dictionary_dir(&app)?;
+    ensure_user_dictionary_dir(&user_root)?;
+    check_spelling_with_root(&text, &language_tag, &user_root)
 }
 
 #[tauri::command]
-fn list_dictionaries() -> Vec<DictionaryInfo> {
-    word_spell::list_dictionaries()
+fn list_dictionaries(app: tauri::AppHandle) -> Result<Vec<DictionaryInfo>, String> {
+    let user_root = user_dictionary_dir(&app)?;
+    ensure_user_dictionary_dir(&user_root)?;
+    Ok(word_spell::list_dictionaries_with_user_root(&user_root))
 }
 
 #[tauri::command]
@@ -358,7 +377,67 @@ fn get_settings() -> Settings {
 fn update_settings(settings: Settings) -> Settings {
     Settings {
         telemetry_enabled: false,
-        ..settings
+        language_tag: normalize_language_setting(&settings.language_tag),
+        ui_locale: normalize_ui_locale(&settings.ui_locale),
+        high_contrast: settings.high_contrast,
+    }
+}
+
+fn check_spelling_with_root(
+    text: &str,
+    language_tag: &str,
+    user_root: &Path,
+) -> Result<SpellCheckResult, String> {
+    let mut warnings = Vec::new();
+    let checker = match word_spell::checker_for_with_user_root(language_tag, user_root) {
+        Ok(checker) => checker,
+        Err(word_spell::SpellError::MissingDictionary { .. }) => {
+            warnings.push("Selected dictionary is unavailable; checked with the bundled English bootstrap dictionary.".to_string());
+            word_spell::checker_for(FALLBACK_LANGUAGE_TAG).map_err(|err| err.to_string())?
+        }
+        Err(err) => return Err(err.to_string()),
+    };
+    Ok(SpellCheckResult {
+        language_tag: checker.language_tag().to_string(),
+        dictionary_display_name: checker.display_name().to_string(),
+        issues: checker.check(text),
+        warnings,
+    })
+}
+
+fn user_dictionary_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join(USER_DICTIONARY_DIR_NAME))
+        .map_err(|_| "app data directory is unavailable".to_string())
+}
+
+fn ensure_user_dictionary_dir(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(safe_io_error)?;
+    let metadata = fs::symlink_metadata(path).map_err(safe_io_error)?;
+    if !metadata.file_type().is_dir() {
+        return Err("dictionary directory is unavailable".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(safe_io_error)?;
+    }
+    Ok(())
+}
+
+fn normalize_language_setting(language_tag: &str) -> String {
+    if language_tag.trim().is_empty() {
+        FALLBACK_LANGUAGE_TAG.to_string()
+    } else {
+        language_tag.replace('_', "-")
+    }
+}
+
+fn normalize_ui_locale(ui_locale: &str) -> String {
+    match ui_locale {
+        "en-US" | "es-ES" | "ar" => ui_locale.to_string(),
+        _ => "en-US".to_string(),
     }
 }
 
@@ -950,10 +1029,75 @@ mod tests {
         let settings = update_settings(Settings {
             telemetry_enabled: true,
             language_tag: "en".to_string(),
+            ui_locale: "unknown".to_string(),
             high_contrast: true,
         });
 
         assert!(!settings.telemetry_enabled);
+        assert_eq!(settings.language_tag, "en");
+        assert_eq!(settings.ui_locale, "en-US");
+    }
+
+    #[test]
+    fn missing_dictionary_falls_back_without_path_details() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+
+        let result = check_spelling_with_root("hello qwerty", "zz-ZZ", dir.path())
+            .expect("fallback check should succeed");
+
+        assert_eq!(result.language_tag, "en-US");
+        assert_eq!(result.issues.len(), 1);
+        assert_eq!(result.issues[0].word, "qwerty");
+        assert_eq!(result.warnings.len(), 1);
+        assert!(!result.warnings[0].contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn user_dictionary_check_uses_sanitized_root_boundary() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        std::fs::write(dir.path().join("de-DE.aff"), "SET UTF-8\n").expect("aff should write");
+        std::fs::write(dir.path().join("de-DE.dic"), "2\nhallo\ndokument\n")
+            .expect("dic should write");
+
+        let result = check_spelling_with_root("hallo dokument", "de-DE", dir.path())
+            .expect("user dictionary check should succeed");
+
+        assert_eq!(result.language_tag, "de-DE");
+        assert!(result.issues.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn user_dictionary_dir_is_owner_only_when_created() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let dictionary_dir = dir.path().join("dictionaries");
+
+        ensure_user_dictionary_dir(&dictionary_dir).expect("dictionary dir should be created");
+
+        let mode = std::fs::metadata(&dictionary_dir)
+            .expect("dictionary dir metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn user_dictionary_dir_rejects_symlink_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let external = tempfile::tempdir().expect("external temp dir should exist");
+        let dictionary_dir = dir.path().join("dictionaries");
+        symlink(external.path(), &dictionary_dir).expect("symlink should write");
+
+        let err = ensure_user_dictionary_dir(&dictionary_dir)
+            .expect_err("dictionary dir symlink should fail");
+
+        assert_eq!(err, "dictionary directory is unavailable");
     }
 
     #[test]

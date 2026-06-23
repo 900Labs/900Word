@@ -32,3 +32,7 @@ All external files are untrusted.
 ## HTML Import Policy
 
 HTML import must strip scripts, event handlers, unsafe CSS URLs, `javascript:`, unexpected `file:`, unsafe SVG, iframe, object, embed, and remote loads by default.
+
+## Dictionary Input Policy
+
+Hunspell-shaped `.aff` and `.dic` files are treated as untrusted local input. Sprint 006 supports UTF-8 word-list dictionaries only, enforces a per-file size limit for user dictionaries, ignores incomplete user dictionary pairs, validates language-tag filenames, and exposes no local dictionary paths to frontend state. Affix-rule expansion is deferred.
