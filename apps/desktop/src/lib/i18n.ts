@@ -26,6 +26,7 @@ export type UiStringKey =
   | 'editor'
   | 'editorReadOnly'
   | 'editingToolbar'
+  | 'export'
   | 'exportHtml'
   | 'exportHtmlPrepared'
   | 'exportHtmlSaved'
@@ -46,6 +47,7 @@ export type UiStringKey =
   | 'headingUnchanged'
   | 'height'
   | 'highContrast'
+  | 'html'
   | 'history'
   | 'italic'
   | 'language'
@@ -56,6 +58,7 @@ export type UiStringKey =
   | 'matchesReplaced'
   | 'markToggled'
   | 'markUnavailable'
+  | 'mainMenu'
   | 'new'
   | 'next'
   | 'noIssues'
@@ -72,6 +75,7 @@ export type UiStringKey =
   | 'paragraphApplied'
   | 'paragraphUnchanged'
   | 'pageSetupUpdated'
+  | 'pdf'
   | 'previous'
   | 'print'
   | 'printFrame'
@@ -108,6 +112,7 @@ export type UiStringKey =
   | 'templates'
   | 'textFormatting'
   | 'top'
+  | 'txt'
   | 'uiLocale'
   | 'underline'
   | 'undo'
@@ -156,6 +161,7 @@ const english: UiStrings = {
   editor: 'Editor',
   editorReadOnly: 'Editor is read-only',
   editingToolbar: 'Editing toolbar',
+  export: 'Export',
   exportHtml: 'Export HTML',
   exportHtmlPrepared: 'HTML export prepared ({characters} characters)',
   exportHtmlSaved: 'HTML export written ({bytes} bytes)',
@@ -176,6 +182,7 @@ const english: UiStrings = {
   headingUnchanged: 'Heading {level} unchanged',
   height: 'Height',
   highContrast: 'High contrast',
+  html: 'HTML',
   history: 'History',
   italic: 'Italic',
   language: 'Language',
@@ -186,6 +193,7 @@ const english: UiStrings = {
   matchesReplaced: '{count} match(es) replaced',
   markToggled: '{label} toggled',
   markUnavailable: '{label} unavailable',
+  mainMenu: 'Main menu',
   new: 'New',
   next: 'Next',
   no: 'No',
@@ -202,6 +210,7 @@ const english: UiStrings = {
   paragraphApplied: 'Paragraph applied',
   paragraphUnchanged: 'Paragraph unchanged',
   pageSetupUpdated: 'Page setup updated',
+  pdf: 'PDF',
   previous: 'Prev',
   print: 'Print',
   printFrame: 'Print document',
@@ -219,7 +228,7 @@ const english: UiStrings = {
   replaceAll: 'All',
   right: 'Right',
   save: 'Save',
-  saveAs: 'Save As',
+  saveAs: 'Save As...',
   saveSettings: 'Save Settings',
   saved: 'Saved',
   settings: 'Settings',
@@ -238,6 +247,7 @@ const english: UiStrings = {
   templates: 'Templates',
   textFormatting: 'Text formatting',
   top: 'Top',
+  txt: 'TXT',
   uiLocale: 'UI language',
   underline: 'Underline',
   undo: 'Undo',
@@ -276,6 +286,7 @@ const spanish: Partial<UiStrings> = {
   editor: 'Editor',
   editorReadOnly: 'El editor es de solo lectura',
   editingToolbar: 'Barra de edicion',
+  export: 'Exportar',
   exportHtmlPrepared: 'Exportacion HTML preparada ({characters} caracteres)',
   exportHtmlSaved: 'Exportacion HTML escrita ({bytes} bytes)',
   exportPath: 'Ruta de exportacion',
@@ -289,10 +300,12 @@ const spanish: Partial<UiStrings> = {
   findAndReplace: 'Buscar y reemplazar',
   height: 'Alto',
   highContrast: 'Alto contraste',
+  html: 'HTML',
   italic: 'Cursiva',
   language: 'Idioma',
   left: 'Izquierda',
   license: 'Licencia',
+  mainMenu: 'Menu principal',
   new: 'Nuevo',
   next: 'Siguiente',
   noIssues: 'Sin problemas.',
@@ -304,6 +317,7 @@ const spanish: Partial<UiStrings> = {
   open: 'Abrir',
   page: 'Pagina',
   pageSetupUpdated: 'Pagina actualizada',
+  pdf: 'PDF',
   print: 'Imprimir',
   printPrepared: 'Vista de impresion preparada',
   ready: 'Listo',
@@ -315,7 +329,7 @@ const spanish: Partial<UiStrings> = {
   replace: 'Reemplazar',
   right: 'Derecha',
   save: 'Guardar',
-  saveAs: 'Guardar como',
+  saveAs: 'Guardar como...',
   saveSettings: 'Guardar ajustes',
   saved: 'Guardado',
   settings: 'Ajustes',
@@ -329,6 +343,7 @@ const spanish: Partial<UiStrings> = {
   templateLoaded: 'Plantilla cargada',
   templates: 'Plantillas',
   top: 'Superior',
+  txt: 'TXT',
   uiLocale: 'Idioma de interfaz',
   underline: 'Subrayado',
   undo: 'Deshacer',

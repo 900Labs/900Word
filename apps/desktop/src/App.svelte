@@ -117,6 +117,8 @@
   let findRanges = $state<EditorFindMatch[]>([]);
   let activeFindIndex = $state(-1);
   let findPanelOpen = $state(false);
+  let fileMenuOpen = $state(false);
+  let exportMenuOpen = $state(false);
   let dictionaries = $state<DictionaryInfo[]>([]);
   let settings = $state<Settings>({
     telemetry_enabled: false,
@@ -138,6 +140,7 @@
   let editorHost: HTMLDivElement;
   let printFrame: HTMLIFrameElement;
   let findInput = $state<HTMLInputElement | undefined>();
+  let fileMenuRoot = $state<HTMLDivElement | undefined>();
   let view: ReturnType<typeof createEditor> | undefined;
 
   async function newDocument() {
@@ -469,6 +472,35 @@
     }
   }
 
+  function closeFileMenu() {
+    fileMenuOpen = false;
+    exportMenuOpen = false;
+  }
+
+  function toggleFileMenu() {
+    fileMenuOpen = !fileMenuOpen;
+    if (!fileMenuOpen) {
+      exportMenuOpen = false;
+    }
+  }
+
+  function runFileMenuAction(action: () => void | Promise<void>) {
+    closeFileMenu();
+    Promise.resolve(action()).catch(setStatusFromError);
+  }
+
+  function selectView(viewId: ViewId) {
+    activeView = viewId;
+    closeFileMenu();
+  }
+
+  function handleWindowClick(event: MouseEvent) {
+    if (!fileMenuOpen || !(event.target instanceof Node) || fileMenuRoot?.contains(event.target)) {
+      return;
+    }
+    closeFileMenu();
+  }
+
   function replaceCurrentMatch() {
     if (!editorEditable) {
       status = tr('editorReadOnly');
@@ -526,6 +558,12 @@
   }
 
   function handleGlobalKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && fileMenuOpen) {
+      event.preventDefault();
+      closeFileMenu();
+      return;
+    }
+
     const mod = event.metaKey || event.ctrlKey;
     if (!mod) {
       return;
@@ -583,7 +621,7 @@
     }
 
     event.preventDefault();
-    activeView = viewOrder[next];
+    selectView(viewOrder[next]);
     queueMicrotask(() => document.getElementById(`${activeView}-tab`)?.focus());
   }
 
@@ -608,12 +646,14 @@
 
   onMount(() => {
     window.addEventListener('keydown', handleGlobalKeydown);
+    window.addEventListener('click', handleWindowClick);
     Promise.all([newDocument(), loadShellState()]).catch((error: unknown) => {
       status = error instanceof Error ? error.message : String(error);
     });
 
     return () => {
       window.removeEventListener('keydown', handleGlobalKeydown);
+      window.removeEventListener('click', handleWindowClick);
       view?.destroy();
     };
   });
@@ -629,69 +669,131 @@
       <h1>{title}</h1>
       <p>{status}</p>
     </div>
-    <nav aria-label={tr('documentActions')}>
-      <button type="button" onclick={newDocument}>{tr('new')}</button>
-      <input
-        aria-label={tr('odtPath')}
-        bind:value={filePathInput}
-        class="path-input"
-        placeholder={tr('odtPathPlaceholder')}
-        type="text"
-      />
-      <button type="button" onclick={openDocumentFromPath}>{tr('open')}</button>
-      <button disabled={!fileState.has_current_path} type="button" onclick={saveCurrentDocument}>{tr('save')}</button>
-      <button type="button" onclick={saveDocumentAsPath}>{tr('saveAs')}</button>
-      <button type="button" onclick={autosaveDocument}>{tr('autosave')}</button>
-      <input
-        aria-label={tr('exportPath')}
-        bind:value={exportPathInput}
-        class="path-input"
-        placeholder={tr('exportPathPlaceholder')}
-        type="text"
-      />
-      <button type="button" onclick={exportText}>{tr('exportTxt')}</button>
-      <button type="button" onclick={exportHtml}>{tr('exportHtml')}</button>
-      <button type="button" onclick={exportPdf}>{tr('exportPdf')}</button>
-      <button type="button" onclick={printDocument}>{tr('print')}</button>
-      <button type="button" onclick={checkSpelling}>{tr('checkSpelling')}</button>
-    </nav>
   </header>
 
-  <div class="view-tabs" role="tablist" aria-label={tr('workspaceViews')}>
-    <button
-      aria-controls="editor-view"
-      aria-selected={activeView === 'editor'}
-      id="editor-tab"
-      onkeydown={(event) => handleViewTabKeydown(event, 'editor')}
-      role="tab"
-      type="button"
-      onclick={() => (activeView = 'editor')}
-    >
-      {tr('editor')}
-    </button>
-    <button
-      aria-controls="settings-view"
-      aria-selected={activeView === 'settings'}
-      id="settings-tab"
-      onkeydown={(event) => handleViewTabKeydown(event, 'settings')}
-      role="tab"
-      type="button"
-      onclick={() => (activeView = 'settings')}
-    >
-      {tr('settings')}
-    </button>
-    <button
-      aria-controls="about-view"
-      aria-selected={activeView === 'about'}
-      id="about-tab"
-      onkeydown={(event) => handleViewTabKeydown(event, 'about')}
-      role="tab"
-      type="button"
-      onclick={() => (activeView = 'about')}
-    >
-      {tr('about')}
-    </button>
-  </div>
+  <nav class="menu-strip" aria-label={tr('mainMenu')}>
+    <div bind:this={fileMenuRoot} class="file-menu">
+      <button
+        aria-expanded={fileMenuOpen}
+        aria-haspopup="menu"
+        class="menu-button"
+        type="button"
+        onclick={toggleFileMenu}
+      >
+        {tr('file')}
+      </button>
+      {#if fileMenuOpen}
+        <div class="file-menu-popover" role="menu" aria-label={tr('file')}>
+          <button role="menuitem" type="button" onclick={() => runFileMenuAction(newDocument)}>{tr('new')}</button>
+
+          <div class="menu-field" role="none">
+            <label for="file-menu-odt-path">{tr('odtPath')}</label>
+            <input
+              id="file-menu-odt-path"
+              aria-label={tr('odtPath')}
+              bind:value={filePathInput}
+              placeholder={tr('odtPathPlaceholder')}
+              type="text"
+            />
+            <button role="menuitem" type="button" onclick={() => runFileMenuAction(openDocumentFromPath)}>
+              {tr('open')}
+            </button>
+          </div>
+
+          <div class="menu-separator" role="separator"></div>
+
+          <button
+            disabled={!fileState.has_current_path}
+            role="menuitem"
+            type="button"
+            onclick={() => runFileMenuAction(saveCurrentDocument)}
+          >
+            {tr('save')}
+          </button>
+          <button role="menuitem" type="button" onclick={() => runFileMenuAction(saveDocumentAsPath)}>
+            {tr('saveAs')}
+          </button>
+          <button role="menuitem" type="button" onclick={() => runFileMenuAction(autosaveDocument)}>
+            {tr('autosave')}
+          </button>
+
+          <div class="menu-separator" role="separator"></div>
+
+          <button
+            aria-expanded={exportMenuOpen}
+            aria-haspopup="menu"
+            class="submenu-trigger"
+            role="menuitem"
+            type="button"
+            onclick={() => (exportMenuOpen = !exportMenuOpen)}
+          >
+            {tr('export')}
+          </button>
+          {#if exportMenuOpen}
+            <div class="file-submenu-panel" role="menu" aria-label={tr('export')}>
+              <label for="file-menu-export-path">{tr('exportPath')}</label>
+              <input
+                id="file-menu-export-path"
+                aria-label={tr('exportPath')}
+                bind:value={exportPathInput}
+                placeholder={tr('exportPathPlaceholder')}
+                type="text"
+              />
+              <button role="menuitem" type="button" onclick={() => runFileMenuAction(exportText)}>
+                {tr('txt')}
+              </button>
+              <button role="menuitem" type="button" onclick={() => runFileMenuAction(exportHtml)}>
+                {tr('html')}
+              </button>
+              <button role="menuitem" type="button" onclick={() => runFileMenuAction(exportPdf)}>
+                {tr('pdf')}
+              </button>
+            </div>
+          {/if}
+
+          <button role="menuitem" type="button" onclick={() => runFileMenuAction(printDocument)}>
+            {tr('print')}
+          </button>
+        </div>
+      {/if}
+    </div>
+
+    <div class="view-tabs" role="tablist" aria-label={tr('workspaceViews')}>
+      <button
+        aria-controls="editor-view"
+        aria-selected={activeView === 'editor'}
+        id="editor-tab"
+        onkeydown={(event) => handleViewTabKeydown(event, 'editor')}
+        role="tab"
+        type="button"
+        onclick={() => selectView('editor')}
+      >
+        {tr('editor')}
+      </button>
+      <button
+        aria-controls="settings-view"
+        aria-selected={activeView === 'settings'}
+        id="settings-tab"
+        onkeydown={(event) => handleViewTabKeydown(event, 'settings')}
+        role="tab"
+        type="button"
+        onclick={() => selectView('settings')}
+      >
+        {tr('settings')}
+      </button>
+      <button
+        aria-controls="about-view"
+        aria-selected={activeView === 'about'}
+        id="about-tab"
+        onkeydown={(event) => handleViewTabKeydown(event, 'about')}
+        role="tab"
+        type="button"
+        onclick={() => selectView('about')}
+      >
+        {tr('about')}
+      </button>
+    </div>
+  </nav>
 
   <section class="command-bar" aria-label={tr('editingToolbar')}>
     <div class="tool-group" role="group" aria-label={tr('history')}>
@@ -1043,6 +1145,7 @@
     </div>
     <div class="bottom-group">
       <span class="bottom-label">{tr('spelling')}</span>
+      <button class="bottom-action" type="button" onclick={checkSpelling}>{tr('checkSpelling')}</button>
       {#if spellIssues.length === 0}
         <span>{tr('noIssues')}</span>
       {:else}
