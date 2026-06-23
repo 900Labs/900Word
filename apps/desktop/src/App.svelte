@@ -358,6 +358,10 @@
       : tr('markUnavailable', { label });
   }
 
+  function preserveEditorSelection(event: MouseEvent) {
+    event.preventDefault();
+  }
+
   function applyParagraph() {
     if (!editorEditable) {
       status = tr('editorReadOnly');
@@ -660,19 +664,85 @@
       <button type="button" onclick={redoDocument}>{tr('redo')}</button>
     </div>
 
-    <div class="tool-group" role="group" aria-label={tr('textFormatting')}>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('bold', tr('bold'))}>B</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('italic', tr('italic'))}>I</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('underline', tr('underline'))}>U</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('strikethrough', tr('strikethrough'))}>S</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('superscript', tr('superscript'))}>Sup</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyInlineMark('subscript', tr('subscript'))}>Sub</button>
+    <div class="tool-group formatting-tools" role="group" aria-label={tr('textFormatting')}>
+      <button
+        aria-label={tr('bold')}
+        class="format-button strong"
+        disabled={!editorEditable}
+        onmousedown={preserveEditorSelection}
+        title={tr('bold')}
+        type="button"
+        onclick={() => applyInlineMark('bold', tr('bold'))}
+      >
+        B
+      </button>
+      <button
+        aria-label={tr('italic')}
+        class="format-button italic"
+        disabled={!editorEditable}
+        onmousedown={preserveEditorSelection}
+        title={tr('italic')}
+        type="button"
+        onclick={() => applyInlineMark('italic', tr('italic'))}
+      >
+        I
+      </button>
+      <button
+        aria-label={tr('underline')}
+        class="format-button underline"
+        disabled={!editorEditable}
+        onmousedown={preserveEditorSelection}
+        title={tr('underline')}
+        type="button"
+        onclick={() => applyInlineMark('underline', tr('underline'))}
+      >
+        U
+      </button>
+      <button
+        aria-label={tr('strikethrough')}
+        class="format-button strike"
+        disabled={!editorEditable}
+        onmousedown={preserveEditorSelection}
+        title={tr('strikethrough')}
+        type="button"
+        onclick={() => applyInlineMark('strikethrough', tr('strikethrough'))}
+      >
+        S
+      </button>
+      <button
+        aria-label={tr('superscript')}
+        class="format-button script"
+        disabled={!editorEditable}
+        onmousedown={preserveEditorSelection}
+        title={tr('superscript')}
+        type="button"
+        onclick={() => applyInlineMark('superscript', tr('superscript'))}
+      >
+        x<sup>2</sup>
+      </button>
+      <button
+        aria-label={tr('subscript')}
+        class="format-button script"
+        disabled={!editorEditable}
+        onmousedown={preserveEditorSelection}
+        title={tr('subscript')}
+        type="button"
+        onclick={() => applyInlineMark('subscript', tr('subscript'))}
+      >
+        x<sub>2</sub>
+      </button>
     </div>
 
     <div class="tool-group" role="group" aria-label={tr('blockFormatting')}>
-      <button disabled={!editorEditable} type="button" onclick={applyParagraph}>{tr('paragraph')}</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyHeading(1)}>{tr('heading1')}</button>
-      <button disabled={!editorEditable} type="button" onclick={() => applyHeading(2)}>{tr('heading2')}</button>
+      <button disabled={!editorEditable} onmousedown={preserveEditorSelection} type="button" onclick={applyParagraph}>
+        {tr('paragraph')}
+      </button>
+      <button disabled={!editorEditable} onmousedown={preserveEditorSelection} type="button" onclick={() => applyHeading(1)}>
+        {tr('heading1')}
+      </button>
+      <button disabled={!editorEditable} onmousedown={preserveEditorSelection} type="button" onclick={() => applyHeading(2)}>
+        {tr('heading2')}
+      </button>
     </div>
 
     <div class="tool-group template-tools" role="group" aria-label={tr('templates')}>
