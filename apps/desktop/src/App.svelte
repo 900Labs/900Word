@@ -35,6 +35,26 @@
     high_contrast: boolean;
   }
 
+  interface RecentDocumentSummary {
+    token: string;
+    label: string;
+    is_current: boolean;
+  }
+
+  interface RecoveryDocumentSummary {
+    token: string;
+    label: string;
+    modified_unix_seconds: number;
+    byte_len: number;
+  }
+
+  interface DocumentFileState {
+    has_current_path: boolean;
+    dirty: boolean;
+    recent_documents: RecentDocumentSummary[];
+    recovery_documents: RecoveryDocumentSummary[];
+  }
+
   type ViewId = 'editor' | 'settings' | 'about';
 
   let title = $state('900Word');
@@ -44,6 +64,13 @@
   let stats = $state<DocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
   let spellIssues = $state<SpellIssue[]>([]);
   let projectionWarnings = $state<string[]>([]);
+  let filePathInput = $state('');
+  let fileState = $state<DocumentFileState>({
+    has_current_path: false,
+    dirty: false,
+    recent_documents: [],
+    recovery_documents: []
+  });
   let dictionaries = $state<DictionaryInfo[]>([]);
   let settings = $state<Settings>({
     telemetry_enabled: false,
@@ -52,27 +79,43 @@
   });
   let documentState: DocumentState | undefined;
   let editorSyncQueue = Promise.resolve();
+  let editorSyncError: string | null = null;
   let editorHost: HTMLDivElement;
   let view: ReturnType<typeof createEditor> | undefined;
 
-  async function loadDocument() {
+  async function newDocument() {
+    await waitForEditorSync();
     const document = await invoke<DocumentState>('new_document');
+    await loadDocumentIntoEditor(document, 'Ready');
+    filePathInput = '';
+    await refreshFileState();
+  }
+
+  async function loadDocumentIntoEditor(document: DocumentState, nextStatus: string) {
+    editorSyncError = null;
     documentState = document;
     title = document.meta.title;
     plainText = documentToText(document);
     stats = await invoke<DocumentStats>('get_document_stats');
-    projectionWarnings = documentProjectionWarnings(document);
+    projectionWarnings = collectDocumentWarnings(document);
     const editable = canEditProjectedDocument(document);
-    status = editable ? 'Ready' : 'Read-only projection warning';
+    status = editable ? nextStatus : 'Read-only projection warning';
     view?.destroy();
     view = createEditor(editorHost, document, handleEditorChange, { editable });
   }
 
   function handleEditorChange(change: EditorProjectedChange) {
     plainText = change.text;
-    editorSyncQueue = editorSyncQueue.then(() => syncEditorChange(change)).catch((error: unknown) => {
-      status = error instanceof Error ? error.message : String(error);
-    });
+    editorSyncError = null;
+    editorSyncQueue = editorSyncQueue
+      .then(() => syncEditorChange(change))
+      .then(() => {
+        editorSyncError = null;
+      })
+      .catch((error: unknown) => {
+        editorSyncError = error instanceof Error ? error.message : String(error);
+        status = editorSyncError;
+      });
   }
 
   async function syncEditorChange(change: EditorProjectedChange) {
@@ -92,7 +135,76 @@
       });
     }
     documentState = nextDocument;
+    projectionWarnings = collectDocumentWarnings(nextDocument);
+    fileState = { ...fileState, dirty: true };
     stats = await invoke<DocumentStats>('get_document_stats');
+  }
+
+  async function refreshFileState() {
+    fileState = await invoke<DocumentFileState>('get_document_file_state');
+  }
+
+  async function waitForEditorSync() {
+    await editorSyncQueue;
+    if (editorSyncError) {
+      throw new Error(editorSyncError);
+    }
+  }
+
+  async function openDocumentFromPath() {
+    await waitForEditorSync();
+    const document = await invoke<DocumentState>('open_document', {
+      path: filePathInput
+    });
+    await loadDocumentIntoEditor(document, 'Document opened');
+    await refreshFileState();
+  }
+
+  async function openRecentDocument(token: string) {
+    await waitForEditorSync();
+    const document = await invoke<DocumentState>('open_recent_document', {
+      token
+    });
+    await loadDocumentIntoEditor(document, 'Recent document opened');
+    await refreshFileState();
+  }
+
+  async function saveCurrentDocument() {
+    await waitForEditorSync();
+    fileState = await invoke<DocumentFileState>('save_document');
+    status = 'Document saved';
+  }
+
+  async function saveDocumentAsPath() {
+    await waitForEditorSync();
+    fileState = await invoke<DocumentFileState>('save_document_as', {
+      path: filePathInput
+    });
+    status = 'Document saved';
+  }
+
+  async function autosaveDocument() {
+    await waitForEditorSync();
+    await invoke<RecoveryDocumentSummary>('autosave_document');
+    await refreshFileState();
+    status = 'Recovery draft updated';
+  }
+
+  async function recoverDocument(token: string) {
+    await waitForEditorSync();
+    const document = await invoke<DocumentState>('recover_document', {
+      token
+    });
+    await loadDocumentIntoEditor(document, 'Recovery draft opened');
+    await refreshFileState();
+  }
+
+  async function discardRecovery(token: string) {
+    await invoke('discard_recovery', {
+      token
+    });
+    await refreshFileState();
+    status = 'Recovery draft discarded';
   }
 
   async function loadShellState() {
@@ -131,7 +243,7 @@
   }
 
   onMount(() => {
-    Promise.all([loadDocument(), loadShellState()]).catch((error: unknown) => {
+    Promise.all([newDocument(), loadShellState()]).catch((error: unknown) => {
       status = error instanceof Error ? error.message : String(error);
     });
 
@@ -139,6 +251,10 @@
       view?.destroy();
     };
   });
+
+  function collectDocumentWarnings(document: DocumentState): string[] {
+    return [...(document.warnings ?? []).map((warning) => warning.message), ...documentProjectionWarnings(document)];
+  }
 </script>
 
 <main class:high-contrast={settings.high_contrast} class="app-shell">
@@ -148,6 +264,18 @@
       <p>{status}</p>
     </div>
     <nav aria-label="Document actions">
+      <button type="button" onclick={newDocument}>New</button>
+      <input
+        aria-label="ODT path"
+        bind:value={filePathInput}
+        class="path-input"
+        placeholder="Document .odt path"
+        type="text"
+      />
+      <button type="button" onclick={openDocumentFromPath}>Open</button>
+      <button disabled={!fileState.has_current_path} type="button" onclick={saveCurrentDocument}>Save</button>
+      <button type="button" onclick={saveDocumentAsPath}>Save As</button>
+      <button type="button" onclick={autosaveDocument}>Autosave</button>
       <button type="button" onclick={exportText}>TXT</button>
       <button type="button" onclick={exportHtml}>HTML</button>
       <button type="button" onclick={exportPdf}>PDF</button>
@@ -187,6 +315,38 @@
 
   <section class="workspace" aria-label="Document workspace">
     <aside class="sidebar" aria-label="Document statistics">
+      <h2>File</h2>
+      <dl>
+        <div><dt>Saved</dt><dd>{fileState.has_current_path ? 'Yes' : 'No'}</dd></div>
+        <div><dt>Dirty</dt><dd>{fileState.dirty ? 'Yes' : 'No'}</dd></div>
+      </dl>
+
+      {#if fileState.recent_documents.length > 0}
+        <h2>Recent</h2>
+        <ul class="action-list">
+          {#each fileState.recent_documents as recent}
+            <li>
+              <button type="button" onclick={() => openRecentDocument(recent.token)}>
+                {recent.label}{recent.is_current ? ' *' : ''}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if fileState.recovery_documents.length > 0}
+        <h2>Recovery</h2>
+        <ul class="action-list">
+          {#each fileState.recovery_documents as recovery}
+            <li>
+              <span>{recovery.label}</span>
+              <button type="button" onclick={() => recoverDocument(recovery.token)}>Open</button>
+              <button type="button" onclick={() => discardRecovery(recovery.token)}>Discard</button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
       <h2>Stats</h2>
       <dl>
         <div><dt>Words</dt><dd>{stats.word_count}</dd></div>

@@ -32,13 +32,13 @@ Status: complete.
 
 ## Sprint 004: Local File Workflows
 
-Status: next.
+Status: complete.
 
-- Add open/save/save-as, autosave, crash recovery, recent files, and hostile-file validation.
+- Add open/save/save-as, manual autosave, recovery drafts, recent files, and hostile-file validation.
 
 ## Sprint 005: Editing Completeness
 
-Status: planned.
+Status: next.
 
 - Add toolbar, keyboard shortcuts, find/replace, page setup metadata, templates, and accessibility traversal.
 

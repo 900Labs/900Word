@@ -31,6 +31,10 @@ export interface DocumentState {
   sections: Array<{
     blocks: Block[];
   }>;
+  warnings?: Array<{
+    code: string;
+    message: string;
+  }>;
 }
 
 export interface EditorTextNode {

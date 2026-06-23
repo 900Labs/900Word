@@ -60,6 +60,16 @@ button:focus-visible,
   gap: 0.5rem;
 }
 
+.path-input {
+  min-width: min(18rem, 100%);
+  border: 1px solid #9aa7b8;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1d2433;
+  font: inherit;
+  padding: 0.45rem 0.6rem;
+}
+
 .view-tabs {
   display: flex;
   gap: 0.25rem;
@@ -110,6 +120,25 @@ button:focus-visible,
 .sidebar dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
+}
+
+.action-list {
+  display: grid;
+  gap: 0.45rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.action-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.action-list span {
+  flex: 1 1 8rem;
 }
 
 .editor-panel {

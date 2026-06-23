@@ -1,0 +1,43 @@
+# Sprint 004: Local File Workflows
+
+## Scope
+
+Implement local document file workflows without adding broad filesystem, shell, network, or dialog-plugin permissions.
+
+## Deliverables
+
+- Backend commands support new, open, save, save-as, open-recent, manual autosave, recovery listing, recovery open, recovery discard, and file-state queries.
+- User-selected `.odt` paths are validated for extension, traversal components, and size limits before read/write operations.
+- Saves use size-checked atomic writes.
+- Recent documents keep real paths backend-only and expose opaque tokens plus generic labels to the frontend.
+- Autosave writes recovery drafts using sanitized `recovery-<DOCUMENT_ID>.odt` filenames under `{TEMP_DIR}/900word-recovery`.
+- On Unix platforms, recovery directories and files are forced to owner-only permissions.
+- Recovery drafts open as dirty unsaved documents rather than adopting the recovery file as the save path.
+- The desktop shell exposes explicit path-based file controls without adding a dialog plugin or shell permissions.
+- Tests cover path traversal rejection, wrong extension rejection, recovery token validation, recent-summary privacy, output-size rejection, and private recovery-style file permissions on Unix.
+
+## Validation
+
+Run from the repository root:
+
+```bash
+npm run check
+npm run lint
+npm run test
+cargo test -p nine-hundred-word
+cargo test --workspace
+./scripts/verify-public-release.sh
+```
+
+## Evidence
+
+- `apps/desktop/src-tauri/src/lib.rs` contains local file workflow commands, recovery token validation, recent summaries, and tests.
+- `apps/desktop/src/App.svelte` exposes file controls and recovery/recent actions without displaying local paths.
+- `docs/PRIVACY_MODEL.md` documents recent and recovery privacy behavior.
+
+## Follow-Ups
+
+- Native file picker integration requires scoped dialog permissions and a matching capability review.
+- Explicit path entry remains a bootstrap trust boundary until native picker-granted file scopes are implemented.
+- Recovery encryption remains deferred until the encryption ADR is implemented and tested.
+- Periodic autosave, crash hooks, close handling, and dirty prompts remain Sprint 005+ editing/workflow work.

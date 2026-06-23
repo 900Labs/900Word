@@ -24,3 +24,6 @@ word-core = { path = "../../../crates/word-core" }
 word-export = { path = "../../../crates/word-export" }
 word-odf = { path = "../../../crates/word-odf" }
 word-spell = { path = "../../../crates/word-spell" }
+
+[dev-dependencies]
+tempfile.workspace = true
