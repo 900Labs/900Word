@@ -1,5 +1,4 @@
 import type { Node as ProseMirrorNode } from 'prosemirror-model';
-import { setBlockType as setProseMirrorBlockType, toggleMark } from 'prosemirror-commands';
 import { EditorState, type Transaction } from 'prosemirror-state';
 import { TextSelection } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
@@ -37,6 +36,7 @@ export interface EditorSelectionSnapshot {
 
 interface CreateEditorOptions {
   editable: boolean;
+  onInteraction?: () => void;
   onSelectionChange?: (selection: EditorSelectionSnapshot) => void;
 }
 
@@ -53,6 +53,20 @@ export function createEditor(
   const view = new EditorView(host, {
     state,
     editable: () => options.editable,
+    handleDOMEvents: {
+      focus() {
+        options.onInteraction?.();
+        return false;
+      },
+      keydown() {
+        options.onInteraction?.();
+        return false;
+      },
+      mousedown() {
+        options.onInteraction?.();
+        return false;
+      }
+    },
     dispatchTransaction(transaction) {
       const nextState = view.state.apply(transaction);
       view.updateState(nextState);
@@ -150,13 +164,12 @@ export function toggleEditorMark(
     return false;
   }
 
-  const changed = toggleMark(markType)(view.state, (transaction) => {
-    view.dispatch(transaction.scrollIntoView());
-  }, view);
-  if (!changed) {
+  const transaction = toggleEditorMarkTransaction(view.state, markName, fallbackSelection);
+  if (!transaction) {
     return false;
   }
 
+  view.dispatch(transaction.scrollIntoView());
   view.focus();
   return true;
 }
@@ -204,13 +217,12 @@ export function setEditorBlockType(
     return false;
   }
 
-  const changed = setProseMirrorBlockType(nodeType, attrs)(view.state, (transaction) => {
-    view.dispatch(transaction.scrollIntoView());
-  }, view);
-  if (!changed) {
+  const transaction = setEditorBlockTypeTransaction(view.state, blockName, attrs, fallbackSelection);
+  if (!transaction) {
     return false;
   }
 
+  view.dispatch(transaction.scrollIntoView());
   view.focus();
   return true;
 }

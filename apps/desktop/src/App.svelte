@@ -156,6 +156,8 @@
   let editorSyncQueue = Promise.resolve();
   let editorSyncError: string | null = null;
   let lastEditorSelection = $state<EditorSelectionSnapshot | undefined>();
+  let editorHasStarted = $state(false);
+  let editorIsEmpty = $state(true);
   let editorHost: HTMLDivElement;
   let printFrame: HTMLIFrameElement;
   let findInput = $state<HTMLInputElement | undefined>();
@@ -183,6 +185,8 @@
     documentState = document;
     title = document.meta.title;
     plainText = documentToText(document);
+    editorIsEmpty = plainText.trim().length === 0;
+    editorHasStarted = !editorIsEmpty;
     pageSetup = document.sections[0]?.page ?? defaultPageSetup();
     stats = await invoke<DocumentStats>('get_document_stats');
     projectionWarnings = collectDocumentWarnings(document);
@@ -191,6 +195,7 @@
     view?.destroy();
     view = createEditor(editorHost, document, handleEditorChange, {
       editable,
+      onInteraction: markEditorStarted,
       onSelectionChange: (selection) => {
         lastEditorSelection = selection;
       }
@@ -200,6 +205,8 @@
 
   function handleEditorChange(change: EditorProjectedChange) {
     plainText = change.text;
+    editorHasStarted = true;
+    editorIsEmpty = change.text.trim().length === 0;
     refreshFindState();
     editorSyncError = null;
     editorSyncQueue = editorSyncQueue
@@ -413,22 +420,35 @@
       : tr('markUnavailable', { label });
   }
 
-  function runToolbarMouseCommand(event: MouseEvent) {
+  function runToolbarPointerCommand(event: PointerEvent, command: () => void) {
+    if (event.button !== 0) {
+      return;
+    }
+    captureToolbarSelection(true);
     event.preventDefault();
-    captureToolbarSelection();
+    restoreEditorSelection(view, lastEditorSelection);
+    command();
   }
 
-  function captureToolbarSelection() {
+  function runToolbarKeyboardCommand(event: MouseEvent, command: () => void) {
+    event.preventDefault();
+    if (event.detail !== 0) {
+      return;
+    }
+    captureToolbarSelection(true);
+    restoreEditorSelection(view, lastEditorSelection);
+    command();
+  }
+
+  function captureToolbarSelection(includeEmpty = false) {
     const selection = snapshotEditorDomSelection(view) ?? (view ? snapshotEditorSelection(view) : undefined);
-    if (selection && !selection.empty) {
+    if (selection && (includeEmpty || !selection.empty)) {
       lastEditorSelection = selection;
     }
   }
 
-  function runToolbarCommand(event: MouseEvent, command: () => void) {
-    event.preventDefault();
-    restoreEditorSelection(view, lastEditorSelection);
-    command();
+  function markEditorStarted() {
+    editorHasStarted = true;
   }
 
   function applyParagraph() {
@@ -904,10 +924,10 @@
         aria-label={tr('bold')}
         class="format-button strong"
         disabled={!editorEditable}
-        onmousedown={runToolbarMouseCommand}
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('bold', tr('bold')))}
         title={tr('bold')}
         type="button"
-        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('bold', tr('bold')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('bold', tr('bold')))}
       >
         B
       </button>
@@ -915,10 +935,10 @@
         aria-label={tr('italic')}
         class="format-button italic"
         disabled={!editorEditable}
-        onmousedown={runToolbarMouseCommand}
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('italic', tr('italic')))}
         title={tr('italic')}
         type="button"
-        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('italic', tr('italic')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('italic', tr('italic')))}
       >
         I
       </button>
@@ -926,10 +946,10 @@
         aria-label={tr('underline')}
         class="format-button underline"
         disabled={!editorEditable}
-        onmousedown={runToolbarMouseCommand}
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('underline', tr('underline')))}
         title={tr('underline')}
         type="button"
-        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('underline', tr('underline')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('underline', tr('underline')))}
       >
         U
       </button>
@@ -937,10 +957,10 @@
         aria-label={tr('strikethrough')}
         class="format-button strike"
         disabled={!editorEditable}
-        onmousedown={runToolbarMouseCommand}
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
         title={tr('strikethrough')}
         type="button"
-        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
       >
         S
       </button>
@@ -948,10 +968,10 @@
         aria-label={tr('superscript')}
         class="format-button script"
         disabled={!editorEditable}
-        onmousedown={runToolbarMouseCommand}
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
         title={tr('superscript')}
         type="button"
-        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
       >
         x<sup>2</sup>
       </button>
@@ -959,10 +979,10 @@
         aria-label={tr('subscript')}
         class="format-button script"
         disabled={!editorEditable}
-        onmousedown={runToolbarMouseCommand}
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
         title={tr('subscript')}
         type="button"
-        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
       >
         x<sub>2</sub>
       </button>
@@ -971,25 +991,25 @@
     <div class="tool-group" role="group" aria-label={tr('blockFormatting')}>
       <button
         disabled={!editorEditable}
-        onmousedown={runToolbarMouseCommand}
+        onpointerdown={(event) => runToolbarPointerCommand(event, applyParagraph)}
         type="button"
-        onclick={(event) => runToolbarCommand(event, applyParagraph)}
+        onclick={(event) => runToolbarKeyboardCommand(event, applyParagraph)}
       >
         {tr('paragraph')}
       </button>
       <button
         disabled={!editorEditable}
-        onmousedown={runToolbarMouseCommand}
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyHeading(1))}
         type="button"
-        onclick={(event) => runToolbarCommand(event, () => applyHeading(1))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(1))}
       >
         {tr('heading1')}
       </button>
       <button
         disabled={!editorEditable}
-        onmousedown={runToolbarMouseCommand}
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyHeading(2))}
         type="button"
-        onclick={(event) => runToolbarCommand(event, () => applyHeading(2))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(2))}
       >
         {tr('heading2')}
       </button>
@@ -1093,7 +1113,7 @@
     >
       <div
         bind:this={editorHost}
-        class:empty-document={plainText.trim().length === 0}
+        class:empty-document={!editorHasStarted && editorIsEmpty}
         class="editor-host"
         data-placeholder={tr('startWriting')}
       ></div>

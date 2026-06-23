@@ -18,7 +18,6 @@ No third-party document fixtures from real users may be committed.
 | --- | --- | --- | --- |
 | `@tauri-apps/plugin-dialog` | Native Open and Save As dialogs | MIT OR Apache-2.0 | Frontend package for scoped file dialog access. |
 | `tauri-plugin-dialog` | Native Open and Save As dialogs | MIT OR Apache-2.0 | Rust plugin registered by the desktop app. |
-| `prosemirror-commands` | Editor toolbar mark and block commands | MIT | Uses ProseMirror's maintained command helpers instead of custom toolbar command dispatch. |
 
 ## Bundled Dictionaries
 
