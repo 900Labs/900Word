@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { EditorState, TextSelection } from 'prosemirror-state';
-import { findEditorDocMatches, setEditorBlockTypeTransaction, toggleEditorMarkTransaction } from './editor';
+import { EditorState, TextSelection, type Transaction } from 'prosemirror-state';
+import {
+  findEditorDocMatches,
+  restoreEditorSelection,
+  setEditorBlockTypeTransaction,
+  toggleEditorMarkTransaction
+} from './editor';
 import { supportedSchema } from './editorSchema';
 
 describe('findEditorDocMatches', () => {
@@ -92,5 +97,37 @@ describe('findEditorDocMatches', () => {
     const nextState = collapsedState.apply(transaction!);
     expect(nextState.doc.firstChild?.type.name).toBe('heading');
     expect(nextState.doc.firstChild?.attrs.level).toBe(1);
+  });
+
+  it('restores a toolbar selection before applying editor commands', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Hello world' }]
+        }
+      ]
+    });
+    let state = EditorState.create({ doc });
+    const view = {
+      state,
+      dispatch(transaction: Transaction) {
+        state = state.apply(transaction);
+        this.state = state;
+      }
+    };
+
+    const restored = restoreEditorSelection(view as unknown as Parameters<typeof restoreEditorSelection>[0], {
+      from: 1,
+      to: 6,
+      empty: false
+    });
+
+    expect(restored).toBe(true);
+    expect(view.state.selection.empty).toBe(false);
+    expect(view.state.selection.from).toBe(1);
+    expect(view.state.selection.to).toBe(6);
   });
 });

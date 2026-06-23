@@ -80,6 +80,60 @@ export function snapshotEditorSelection(view: EditorView): EditorSelectionSnapsh
   };
 }
 
+export function snapshotEditorDomSelection(view: EditorView | undefined): EditorSelectionSnapshot | undefined {
+  if (!view) {
+    return undefined;
+  }
+
+  const selection = view.dom.ownerDocument.getSelection();
+  if (!selection?.anchorNode || !selection.focusNode) {
+    return undefined;
+  }
+
+  if (!view.dom.contains(selection.anchorNode) || !view.dom.contains(selection.focusNode)) {
+    return undefined;
+  }
+
+  try {
+    const anchor = view.posAtDOM(selection.anchorNode, selection.anchorOffset);
+    const focus = view.posAtDOM(selection.focusNode, selection.focusOffset);
+    const from = Math.min(anchor, focus);
+    const to = Math.max(anchor, focus);
+    if (!isValidDocumentRange(view.state.doc, from, to)) {
+      return undefined;
+    }
+    return {
+      from,
+      to,
+      empty: from === to
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function restoreEditorSelection(
+  view: EditorView | undefined,
+  selection: EditorSelectionSnapshot | undefined
+): boolean {
+  if (!view || !selection || !isValidDocumentRange(view.state.doc, selection.from, selection.to)) {
+    return false;
+  }
+
+  if (view.state.selection.from === selection.from && view.state.selection.to === selection.to) {
+    return true;
+  }
+
+  try {
+    view.dispatch(
+      view.state.tr.setSelection(TextSelection.create(view.state.doc, selection.from, selection.to))
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function toggleEditorMark(
   view: EditorView | undefined,
   markName: SupportedMarkName,
@@ -294,9 +348,13 @@ function transactionWithFallbackSelection(
     !fallbackSelection.empty &&
     isValidDocumentRange(state.doc, fallbackSelection.from, fallbackSelection.to)
   ) {
-    transaction = transaction.setSelection(
-      TextSelection.create(state.doc, fallbackSelection.from, fallbackSelection.to)
-    );
+    try {
+      transaction = transaction.setSelection(
+        TextSelection.create(state.doc, fallbackSelection.from, fallbackSelection.to)
+      );
+    } catch {
+      return transaction;
+    }
   }
   return transaction;
 }

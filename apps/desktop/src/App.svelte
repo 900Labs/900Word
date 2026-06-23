@@ -6,8 +6,10 @@
     findEditorTextMatches,
     replaceAllEditorText,
     replaceEditorTextRange,
+    restoreEditorSelection,
     selectEditorTextRange,
     setEditorBlockType,
+    snapshotEditorDomSelection,
     toggleEditorMark,
     type EditorFindMatch,
     type EditorSelectionSnapshot,
@@ -375,7 +377,12 @@
   }
 
   function runToolbarMouseCommand(event: MouseEvent, command: () => void) {
+    const selection = snapshotEditorDomSelection(view);
     event.preventDefault();
+    if (selection) {
+      lastEditorSelection = selection;
+      restoreEditorSelection(view, selection);
+    }
     command();
   }
 
