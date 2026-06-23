@@ -16,6 +16,11 @@
     "test": "npm --workspace apps/desktop run test",
     "tauri:dev": "npm --workspace apps/desktop run tauri:dev",
     "tauri:build": "npm --workspace apps/desktop run tauri:build",
+    "budget:bundle": "./scripts/check-bundle-size.sh",
+    "scan:packages": "node scripts/scan-package-artifacts.mjs",
+    "sbom": "node scripts/generate-sbom.mjs",
+    "smoke:offline": "./scripts/verify-runtime-offline.sh",
+    "smoke:performance": "./scripts/performance-smoke.sh",
     "verify:local": "./scripts/verify-local.sh",
     "verify:public": "./scripts/verify-public-release.sh"
   }

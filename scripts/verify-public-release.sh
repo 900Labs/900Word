@@ -12,9 +12,9 @@ fail() {
 command -v rg >/dev/null 2>&1 || fail "rg is required"
 
 echo "==> Checking for OS metadata files"
-if find . \( -path './.git' -o -path './node_modules' -o -path './target' \) -prune -o \
+if find . \( -path './.git' -o -path './node_modules' -o -path './target' -o -path './apps/desktop/dist' -o -path './apps/desktop/src-tauri/target' \) -prune -o \
   \( -name .DS_Store -o -name Thumbs.db -o -name desktop.ini \) -print | grep -q .; then
-  find . \( -path './.git' -o -path './node_modules' -o -path './target' \) -prune -o \
+  find . \( -path './.git' -o -path './node_modules' -o -path './target' -o -path './apps/desktop/dist' -o -path './apps/desktop/src-tauri/target' \) -prune -o \
     \( -name .DS_Store -o -name Thumbs.db -o -name desktop.ini \) -print >&2
   fail "OS metadata files are present"
 fi
@@ -24,6 +24,8 @@ if rg -n -I '(/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|C:\\Users\\[^\\]+|Des
   --glob '!scripts/verify-public-release.sh' \
   --glob '!package-lock.json' \
   --glob '!target/**' \
+  --glob '!apps/desktop/dist/**' \
+  --glob '!apps/desktop/src-tauri/target/**' \
   --glob '!node_modules/**'; then
   fail "local path pattern found"
 fi
@@ -36,13 +38,15 @@ if rg -n -I --fixed-strings \
   . \
   --glob '!scripts/verify-public-release.sh' \
   --glob '!target/**' \
+  --glob '!apps/desktop/dist/**' \
+  --glob '!apps/desktop/src-tauri/target/**' \
   --glob '!node_modules/**'; then
   fail "private key material found"
 fi
 
 echo "==> Checking for generated package artifacts"
-if find . \( -path './.git' -o -path './node_modules' -o -path './target' \) -prune -o \
-  \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -print | grep -q .; then
+if find . \( -path './.git' -o -path './node_modules' -o -path './target' -o -path './apps/desktop/dist' -o -path './apps/desktop/src-tauri/target' \) -prune -o \
+  \( -name '*.dmg' -o -name '*.msi' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.app' -o -name '*.zip' \) -print | grep -q .; then
   fail "generated package artifact found"
 fi
 
@@ -53,6 +57,8 @@ if [[ -n "$HOSTNAME_SHORT" ]]; then
     --glob '!scripts/verify-public-release.sh' \
     --glob '!package-lock.json' \
     --glob '!target/**' \
+    --glob '!apps/desktop/dist/**' \
+    --glob '!apps/desktop/src-tauri/target/**' \
     --glob '!node_modules/**'; then
     fail "local hostname found"
   fi

@@ -20,11 +20,15 @@ jobs:
       - run: npm ci
       - run: cargo install tauri-cli --locked --version '^2.0.0'
       - run: npm run tauri:build
+      - name: Scan package artifacts
+        run: REQUIRE_PACKAGE_ARTIFACTS=1 node scripts/scan-package-artifacts.mjs apps/desktop/src-tauri/target/release/bundle
+      - name: Record artifact sizes
+        run: find apps/desktop/src-tauri/target/release/bundle -maxdepth 4 -type f -exec ls -lh {} +
       - uses: actions/upload-artifact@v7
         with:
           name: 900Word-macos-app
           path: apps/desktop/src-tauri/target/release/bundle/macos/*
-          if-no-files-found: warn
+          if-no-files-found: error
 
   windows:
     name: Windows App Bundle
@@ -39,8 +43,14 @@ jobs:
       - run: npm ci
       - run: cargo install tauri-cli --locked --version '^2.0.0'
       - run: npm run tauri:build
+      - name: Scan package artifacts
+        shell: bash
+        run: REQUIRE_PACKAGE_ARTIFACTS=1 node scripts/scan-package-artifacts.mjs apps/desktop/src-tauri/target/release/bundle
+      - name: Record artifact sizes
+        shell: bash
+        run: find apps/desktop/src-tauri/target/release/bundle -maxdepth 4 -type f -exec ls -lh {} +
       - uses: actions/upload-artifact@v7
         with:
           name: 900Word-windows-app
           path: apps/desktop/src-tauri/target/release/bundle/*
-          if-no-files-found: warn
+          if-no-files-found: error

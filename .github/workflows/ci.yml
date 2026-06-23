@@ -58,6 +58,24 @@ jobs:
       - name: Frontend tests
         run: npm run test
 
+      - name: Frontend build
+        run: npm run build
+
+      - name: Bundle size budget
+        run: npm run budget:bundle
+
+      - name: Runtime offline scan
+        run: npm run smoke:offline
+
+      - name: Package artifact scan
+        run: npm run scan:packages
+
+      - name: Generate SBOM
+        run: npm run sbom
+
+      - name: Performance smoke
+        run: npm run smoke:performance
+
       - name: Rust format
         run: cargo fmt --all -- --check
 

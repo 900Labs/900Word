@@ -45,6 +45,13 @@ jobs:
       - run: npm ci
       - run: ./scripts/verify-public-release.sh
       - run: npm run check
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+      - run: npm run budget:bundle
+      - run: npm run smoke:offline
+      - run: npm run scan:packages
+      - run: npm run sbom
       - run: cargo test --workspace
 
       - name: Build source archive
@@ -60,3 +67,4 @@ jobs:
           path: |
             900Word-*-src.tar.gz
             SHA256SUMS.txt
+            target/sbom/900word-sbom.json

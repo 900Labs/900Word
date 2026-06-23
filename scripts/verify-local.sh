@@ -17,6 +17,12 @@ fi
 run npm run check
 run npm run lint
 run npm run test
+run npm run build
+run npm run budget:bundle
+run npm run smoke:offline
+run npm run scan:packages
+run npm run sbom
+run npm run smoke:performance
 run cargo fmt --all -- --check
 run cargo check --workspace
 run cargo test --workspace

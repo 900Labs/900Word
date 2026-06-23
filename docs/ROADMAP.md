@@ -58,6 +58,6 @@ Status: complete.
 
 ## Sprint 008: Release Hardening
 
-Status: next.
+Status: complete.
 
 - Add performance smoke, bundle-size budget, package privacy scan, runtime offline scan, SBOM, and release checklist.
