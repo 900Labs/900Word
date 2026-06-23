@@ -25,14 +25,14 @@ Status: complete.
 
 ## Sprint 003: ODT MVP Round-Trip
 
-Status: next.
+Status: complete.
 
 - Implement ODT package open/save for paragraphs, runs, headings, lists, tables, images, metadata, and styles.
 - Add round-trip fixtures for RTL and CJK text.
 
 ## Sprint 004: Local File Workflows
 
-Status: planned.
+Status: next.
 
 - Add open/save/save-as, autosave, crash recovery, recent files, and hostile-file validation.
 

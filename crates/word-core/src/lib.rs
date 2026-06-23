@@ -338,6 +338,7 @@ pub struct AssetRef {
     pub id: String,
     pub media_type: String,
     pub byte_len: usize,
+    pub bytes: Vec<u8>,
     pub original_name: Option<String>,
 }
 

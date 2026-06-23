@@ -42,9 +42,25 @@ Editor sync flow:
 5. `word-core` applies changes and remains the durable source of truth.
 6. `word-odf` writes the supported ODT subset when a save command runs.
 
+## ODT Boundary
+
+`word-odf` owns OpenDocument Text package validation and conversion for the current MVP subset. It does not expose raw imported XML or HTML to the frontend.
+
+Current ODT support covers:
+
+- Paragraphs and headings with `word-core` style IDs.
+- Inline text runs with bold, italic, underline, strikethrough, superscript, subscript, and safe `http`, `https`, or `mailto` links.
+- Ordered and unordered lists.
+- Tables with paragraph content inside cells.
+- Page breaks as explicit `word-core` blocks.
+- Metadata title read/write.
+- Embedded PNG, JPEG, GIF, and WebP payloads through `AssetRef` bytes and `ImageBlock` references.
+
+Package preflight enforces raw package size, entry count, entry size, expanded size, path depth, XML depth, image size, safe archive paths, symlink rejection, encrypted entry rejection, executable/script entry rejection, first-entry stored ODT mimetype validation, image magic-byte validation, and XML entity/doctype rejection. Unsupported ODT elements are imported with warnings. Unsafe text links are stripped with warnings. Remote or path-traversing image references are ignored with warnings.
+
 ## Fixtures
 
-`crates/word-fixtures` contains generated fixtures only. JSON fixtures must use synthetic content, deterministic identifiers, and no real user documents.
+`crates/word-fixtures` contains generated fixtures only. JSON fixtures must use synthetic content, deterministic identifiers, and no real user documents. ODT round-trip tests generate package bytes in memory from synthetic document data rather than checking binary user documents into the repository.
 
 ## Deferred Systems
 

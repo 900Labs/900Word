@@ -1,24 +1,44 @@
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::Reader;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Display;
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
-use word_core::{Block, Document, Inline, Paragraph, Section, StyleId};
+use word_core::{
+    AssetRef, Block, Document, DocumentWarning, Heading, ImageBlock, Inline, InlineMark, ListBlock,
+    ListDefinition, ListItem, Paragraph, Section, Style, StyleId, StyleKind, Table, TableCell,
+    TableRow,
+};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const ODT_MIME_TYPE: &str = "application/vnd.oasis.opendocument.text";
+const TEXT_STYLE_PREFIX: &str = "900w";
+const ORDERED_LIST_STYLE: &str = "900w-ordered";
+const UNORDERED_LIST_STYLE: &str = "900w-unordered";
+const IMAGE_PARAGRAPH_STYLE: &str = "900w-image";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageLimits {
+    pub max_package_size: u64,
     pub max_entries: usize,
     pub max_entry_size: u64,
     pub max_total_expanded_size: u64,
+    pub max_path_depth: usize,
+    pub max_xml_depth: usize,
+    pub max_image_size: u64,
 }
 
 impl Default for PackageLimits {
     fn default() -> Self {
         Self {
+            max_package_size: 64 * 1024 * 1024,
             max_entries: 256,
             max_entry_size: 8 * 1024 * 1024,
             max_total_expanded_size: 32 * 1024 * 1024,
+            max_path_depth: 8,
+            max_xml_depth: 128,
+            max_image_size: 8 * 1024 * 1024,
         }
     }
 }
@@ -33,14 +53,46 @@ pub enum OdtError {
     TooManyEntries { count: usize },
     #[error("entry is too large: {name}")]
     EntryTooLarge { name: String },
+    #[error("package is too large")]
+    PackageTooLarge,
+    #[error("package path is too deep: {name}")]
+    PathTooDeep { name: String },
+    #[error("image entry is too large: {name}")]
+    ImageTooLarge { name: String },
+    #[error("unsupported or unsafe image type: {name}")]
+    UnsupportedImageType { name: String },
     #[error("package expanded size is too large")]
     ExpandedSizeTooLarge,
     #[error("unsafe package path: {name}")]
     UnsafePath { name: String },
+    #[error("symlink package entry is not allowed: {name}")]
+    SymlinkEntry { name: String },
+    #[error("encrypted package entry is not allowed: {name}")]
+    EncryptedEntry { name: String },
+    #[error("unexpected executable package entry: {name}")]
+    ExecutableEntry { name: String },
     #[error("missing ODT content.xml")]
     MissingContent,
     #[error("invalid ODT mimetype")]
     InvalidMimeType,
+    #[error("missing image asset: {asset_id}")]
+    MissingAsset { asset_id: String },
+    #[error("unsafe image asset name: {asset_id}")]
+    UnsafeAssetName { asset_id: String },
+    #[error("xml error in {name}: {message}")]
+    Xml { name: String, message: String },
+    #[error("xml depth exceeds limit in {name}")]
+    XmlTooDeep { name: String },
+    #[error("xml entity declarations are not allowed in {name}")]
+    XmlEntityDeclaration { name: String },
+}
+
+#[derive(Debug, Clone)]
+struct AssetPayload {
+    id: String,
+    media_type: String,
+    bytes: Vec<u8>,
+    original_name: String,
 }
 
 pub fn write_odt_bytes(document: &Document) -> Result<Vec<u8>, OdtError> {
@@ -55,47 +107,97 @@ pub fn write_odt_bytes(document: &Document) -> Result<Vec<u8>, OdtError> {
 
     let compressed = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     writer.start_file("content.xml", compressed)?;
-    writer.write_all(render_content_xml(document).as_bytes())?;
+    writer.write_all(render_content_xml(document)?.as_bytes())?;
 
     writer.start_file("meta.xml", compressed)?;
     writer.write_all(render_meta_xml(document).as_bytes())?;
 
     writer.start_file("META-INF/manifest.xml", compressed)?;
-    writer.write_all(render_manifest_xml().as_bytes())?;
+    writer.write_all(render_manifest_xml(document)?.as_bytes())?;
+
+    for asset in image_assets_in_document(document)? {
+        validate_image_asset(asset)?;
+        let path = asset_package_path(asset)?;
+        writer.start_file(path, compressed)?;
+        writer.write_all(&asset.bytes)?;
+    }
 
     let cursor = writer.finish()?;
     Ok(cursor.into_inner())
 }
 
 pub fn read_odt_bytes(bytes: &[u8]) -> Result<Document, OdtError> {
-    validate_odt_package(bytes, PackageLimits::default())?;
+    read_odt_bytes_with_limits(bytes, PackageLimits::default())
+}
+
+pub fn read_odt_bytes_with_limits(
+    bytes: &[u8],
+    limits: PackageLimits,
+) -> Result<Document, OdtError> {
+    validate_odt_package(bytes, limits)?;
 
     let cursor = Cursor::new(bytes);
     let mut archive = ZipArchive::new(cursor)?;
     let mut content = String::new();
-    archive
-        .by_name("content.xml")
-        .map_err(|_| OdtError::MissingContent)?
-        .read_to_string(&mut content)?;
+    let mut meta = String::new();
+    let mut asset_payloads = BTreeMap::new();
 
-    let paragraphs = extract_text_paragraphs(&content);
-    let mut document = Document::new_untitled();
-    document.sections = vec![Section {
-        blocks: paragraphs
-            .into_iter()
-            .map(|text| {
-                Block::Paragraph(Paragraph {
-                    style: StyleId::from("body"),
-                    inlines: vec![Inline::text(text)],
-                })
-            })
-            .collect(),
-        ..Section::default()
-    }];
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index)?;
+        if file.is_dir() {
+            continue;
+        }
+        let name = file.name().to_string();
+        match name.as_str() {
+            "content.xml" => {
+                file.read_to_string(&mut content)?;
+            }
+            "meta.xml" => {
+                file.read_to_string(&mut meta)?;
+            }
+            _ if name.starts_with("Pictures/") => {
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                let media_type = detect_image_media_type(&bytes)
+                    .ok_or_else(|| OdtError::UnsupportedImageType { name: name.clone() })?;
+                let id = name
+                    .rsplit('/')
+                    .next()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("image.bin")
+                    .to_string();
+                asset_payloads.insert(
+                    name.clone(),
+                    AssetPayload {
+                        id,
+                        media_type: media_type.to_string(),
+                        bytes,
+                        original_name: name,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    if content.is_empty() {
+        return Err(OdtError::MissingContent);
+    }
+
+    let mut document = parse_content_xml(&content, &asset_payloads)?;
+    if !meta.is_empty() {
+        if let Some(title) = extract_meta_title(&meta)? {
+            document.meta.title = title;
+        }
+    }
     Ok(document)
 }
 
 pub fn validate_odt_package(bytes: &[u8], limits: PackageLimits) -> Result<(), OdtError> {
+    if bytes.len() as u64 > limits.max_package_size {
+        return Err(OdtError::PackageTooLarge);
+    }
+
     let cursor = Cursor::new(bytes);
     let mut archive = ZipArchive::new(cursor)?;
     let entry_count = archive.len();
@@ -105,15 +207,23 @@ pub fn validate_odt_package(bytes: &[u8], limits: PackageLimits) -> Result<(), O
 
     let mut expanded_size = 0_u64;
     let mut has_content = false;
-    let mut has_mimetype = false;
+    let mut has_valid_mimetype = false;
 
     for index in 0..entry_count {
-        let file = archive.by_index(index)?;
+        let mut file = archive.by_index(index)?;
         let name = file.name().to_string();
-        validate_entry_path(&name)?;
+        validate_entry_path(&name, limits)?;
+        if index == 0 && name != "mimetype" {
+            return Err(OdtError::InvalidMimeType);
+        }
+        validate_entry_mode(&file, &name)?;
+        validate_entry_kind(&name)?;
 
         if file.size() > limits.max_entry_size {
             return Err(OdtError::EntryTooLarge { name });
+        }
+        if name.starts_with("Pictures/") && file.size() > limits.max_image_size {
+            return Err(OdtError::ImageTooLarge { name });
         }
 
         expanded_size = expanded_size.saturating_add(file.size());
@@ -121,11 +231,37 @@ pub fn validate_odt_package(bytes: &[u8], limits: PackageLimits) -> Result<(), O
             return Err(OdtError::ExpandedSizeTooLarge);
         }
 
-        if name == "content.xml" {
-            has_content = true;
-        }
-        if name == "mimetype" {
-            has_mimetype = true;
+        match name.as_str() {
+            "content.xml" => {
+                has_content = true;
+                let mut content = String::new();
+                file.read_to_string(&mut content)?;
+                validate_xml_preflight("content.xml", &content, limits)?;
+            }
+            "meta.xml" | "styles.xml" | "META-INF/manifest.xml" => {
+                let mut content = String::new();
+                file.read_to_string(&mut content)?;
+                validate_xml_preflight(&name, &content, limits)?;
+            }
+            "mimetype" => {
+                if index != 0 || file.compression() != CompressionMethod::Stored {
+                    return Err(OdtError::InvalidMimeType);
+                }
+                let mut value = String::new();
+                file.read_to_string(&mut value)?;
+                if value != ODT_MIME_TYPE {
+                    return Err(OdtError::InvalidMimeType);
+                }
+                has_valid_mimetype = true;
+            }
+            _ if name.starts_with("Pictures/") => {
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                if detect_image_media_type(&bytes).is_none() {
+                    return Err(OdtError::UnsupportedImageType { name });
+                }
+            }
+            _ => {}
         }
     }
 
@@ -133,18 +269,14 @@ pub fn validate_odt_package(bytes: &[u8], limits: PackageLimits) -> Result<(), O
         return Err(OdtError::MissingContent);
     }
 
-    if has_mimetype {
-        let mut mimetype = String::new();
-        archive.by_name("mimetype")?.read_to_string(&mut mimetype)?;
-        if mimetype != ODT_MIME_TYPE {
-            return Err(OdtError::InvalidMimeType);
-        }
+    if !has_valid_mimetype {
+        return Err(OdtError::InvalidMimeType);
     }
 
     Ok(())
 }
 
-fn validate_entry_path(name: &str) -> Result<(), OdtError> {
+fn validate_entry_path(name: &str, limits: PackageLimits) -> Result<(), OdtError> {
     if name.starts_with('/')
         || name.starts_with('\\')
         || name.contains('\\')
@@ -154,96 +286,1240 @@ fn validate_entry_path(name: &str) -> Result<(), OdtError> {
             name: name.to_string(),
         });
     }
+    if name.split('/').count() > limits.max_path_depth {
+        return Err(OdtError::PathTooDeep {
+            name: name.to_string(),
+        });
+    }
     Ok(())
 }
 
-fn render_content_xml(document: &Document) -> String {
-    let mut body = String::new();
-    for section in &document.sections {
-        for block in &section.blocks {
-            match block {
-                Block::Paragraph(paragraph) => {
-                    body.push_str("<text:p>");
-                    for inline in &paragraph.inlines {
-                        body.push_str(&escape_xml(&inline.text));
-                    }
-                    body.push_str("</text:p>");
-                }
-                Block::Heading(heading) => {
-                    body.push_str(&format!(
-                        "<text:h text:outline-level=\"{}\">",
-                        heading.level
-                    ));
-                    for inline in &heading.inlines {
-                        body.push_str(&escape_xml(&inline.text));
-                    }
-                    body.push_str("</text:h>");
-                }
-                _ => {
-                    body.push_str(
-                        "<text:p>[unsupported content preserved by 900Word warning]</text:p>",
-                    );
+fn validate_entry_mode(file: &zip::read::ZipFile<'_>, name: &str) -> Result<(), OdtError> {
+    const UNIX_FILE_TYPE_MASK: u32 = 0o170000;
+    const UNIX_SYMLINK: u32 = 0o120000;
+
+    if let Some(mode) = file.unix_mode() {
+        if mode & UNIX_FILE_TYPE_MASK == UNIX_SYMLINK {
+            return Err(OdtError::SymlinkEntry {
+                name: name.to_string(),
+            });
+        }
+    }
+    if file.encrypted() {
+        return Err(OdtError::EncryptedEntry {
+            name: name.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_entry_kind(name: &str) -> Result<(), OdtError> {
+    let lower = name.to_ascii_lowercase();
+    let executable = lower.starts_with("scripts/")
+        || lower.starts_with("basic/")
+        || lower.ends_with(".exe")
+        || lower.ends_with(".dll")
+        || lower.ends_with(".dylib")
+        || lower.ends_with(".so")
+        || lower.ends_with(".js")
+        || lower.ends_with(".sh")
+        || lower.ends_with(".bat")
+        || lower.ends_with(".cmd");
+
+    if executable {
+        return Err(OdtError::ExecutableEntry {
+            name: name.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_xml_preflight(
+    name: &str,
+    content: &str,
+    limits: PackageLimits,
+) -> Result<(), OdtError> {
+    let lower = content.to_ascii_lowercase();
+    if lower.contains("<!doctype") || lower.contains("<!entity") {
+        return Err(OdtError::XmlEntityDeclaration {
+            name: name.to_string(),
+        });
+    }
+
+    let mut reader = Reader::from_str(content);
+    reader.config_mut().trim_text(false);
+    let mut depth = 0_usize;
+    loop {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
+            Event::Start(_) => {
+                depth += 1;
+                if depth > limits.max_xml_depth {
+                    return Err(OdtError::XmlTooDeep {
+                        name: name.to_string(),
+                    });
                 }
             }
+            Event::Empty(_) => {
+                if depth + 1 > limits.max_xml_depth {
+                    return Err(OdtError::XmlTooDeep {
+                        name: name.to_string(),
+                    });
+                }
+            }
+            Event::End(_) => depth = depth.saturating_sub(1),
+            Event::DocType(_) => {
+                return Err(OdtError::XmlEntityDeclaration {
+                    name: name.to_string(),
+                })
+            }
+            Event::Eof => break,
+            _ => {}
         }
     }
 
-    format!(
+    Ok(())
+}
+
+fn render_content_xml(document: &Document) -> Result<String, OdtError> {
+    let mut body = String::new();
+    for section in &document.sections {
+        for block in &section.blocks {
+            render_block(block, document, &mut body)?;
+        }
+    }
+
+    let automatic_styles = render_automatic_styles(document);
+    Ok(format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
-         <office:document-content xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" \
-         xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" office:version=\"1.3\">\
-         <office:body><office:text>{body}</office:text></office:body></office:document-content>"
+         <office:document-content \
+         xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" \
+         xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" \
+         xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" \
+         xmlns:fo=\"urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0\" \
+         xmlns:table=\"urn:oasis:names:tc:opendocument:xmlns:table:1.0\" \
+         xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\" \
+         xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
+         xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\" \
+         office:version=\"1.3\">\
+         {automatic_styles}<office:body><office:text>{body}</office:text></office:body>\
+         </office:document-content>"
+    ))
+}
+
+fn render_automatic_styles(document: &Document) -> String {
+    let mut output = String::from("<office:automatic-styles>");
+    output.push_str(
+        "<text:list-style style:name=\"900w-unordered\">\
+         <text:list-level-style-bullet text:level=\"1\" text:bullet-char=\"&#8226;\"/>\
+         </text:list-style>\
+         <text:list-style style:name=\"900w-ordered\">\
+         <text:list-level-style-number text:level=\"1\" style:num-format=\"1\"/>\
+         </text:list-style>\
+         <style:style style:name=\"900w-image\" style:family=\"paragraph\"/>",
+    );
+
+    for style in document.styles.values() {
+        if style.kind == StyleKind::Paragraph && safe_style_name(style.id.as_str()) {
+            output.push_str(&format!(
+                "<style:style style:name=\"{}\" style:display-name=\"{}\" style:family=\"paragraph\"/>",
+                escape_xml(style.id.as_str()),
+                escape_xml(&style.name)
+            ));
+        }
+    }
+
+    for name in collect_text_style_names(document) {
+        output.push_str(&render_text_style(&name));
+    }
+
+    output.push_str("</office:automatic-styles>");
+    output
+}
+
+fn render_text_style(name: &str) -> String {
+    let marks = marks_from_text_style(name);
+    let mut properties = String::new();
+    if marks.contains(&InlineMark::Bold) {
+        properties.push_str(" fo:font-weight=\"bold\"");
+    }
+    if marks.contains(&InlineMark::Italic) {
+        properties.push_str(" fo:font-style=\"italic\"");
+    }
+    if marks.contains(&InlineMark::Underline) {
+        properties
+            .push_str(" style:text-underline-style=\"solid\" style:text-underline-type=\"single\"");
+    }
+    if marks.contains(&InlineMark::Strikethrough) {
+        properties.push_str(" style:text-line-through-style=\"solid\"");
+    }
+    if marks.contains(&InlineMark::Superscript) {
+        properties.push_str(" style:text-position=\"super 58%\"");
+    }
+    if marks.contains(&InlineMark::Subscript) {
+        properties.push_str(" style:text-position=\"sub 58%\"");
+    }
+
+    format!(
+        "<style:style style:name=\"{}\" style:family=\"text\"><style:text-properties{properties}/></style:style>",
+        escape_xml(name)
     )
+}
+
+fn render_block(block: &Block, document: &Document, output: &mut String) -> Result<(), OdtError> {
+    match block {
+        Block::Paragraph(paragraph) => {
+            output.push_str(&format!(
+                "<text:p text:style-name=\"{}\">",
+                escape_xml(paragraph.style.as_str())
+            ));
+            render_inlines(&paragraph.inlines, output);
+            output.push_str("</text:p>");
+        }
+        Block::Heading(heading) => {
+            output.push_str(&format!(
+                "<text:h text:outline-level=\"{}\">",
+                heading.level.clamp(1, 6)
+            ));
+            render_inlines(&heading.inlines, output);
+            output.push_str("</text:h>");
+        }
+        Block::List(list) => render_list(list, document, output)?,
+        Block::Table(table) => render_table(table, document, output)?,
+        Block::Image(image) => render_image(image, document, output)?,
+        Block::PageBreak => {
+            output.push_str("<text:soft-page-break/>");
+        }
+    }
+    Ok(())
+}
+
+fn render_list(list: &ListBlock, document: &Document, output: &mut String) -> Result<(), OdtError> {
+    let ordered = document
+        .lists
+        .get(&list.definition_id)
+        .map(|definition| definition.ordered)
+        .unwrap_or(false);
+    let style_name = if ordered {
+        ORDERED_LIST_STYLE
+    } else {
+        UNORDERED_LIST_STYLE
+    };
+
+    output.push_str(&format!(
+        "<text:list text:style-name=\"{}\">",
+        escape_xml(style_name)
+    ));
+    for item in &list.items {
+        output.push_str("<text:list-item>");
+        for block in &item.blocks {
+            render_block(block, document, output)?;
+        }
+        output.push_str("</text:list-item>");
+    }
+    output.push_str("</text:list>");
+    Ok(())
+}
+
+fn render_table(table: &Table, document: &Document, output: &mut String) -> Result<(), OdtError> {
+    output.push_str("<table:table>");
+    for row in &table.rows {
+        output.push_str("<table:table-row>");
+        for cell in &row.cells {
+            output.push_str("<table:table-cell>");
+            for block in &cell.blocks {
+                render_block(block, document, output)?;
+            }
+            output.push_str("</table:table-cell>");
+        }
+        output.push_str("</table:table-row>");
+    }
+    output.push_str("</table:table>");
+    Ok(())
+}
+
+fn render_image(
+    image: &ImageBlock,
+    document: &Document,
+    output: &mut String,
+) -> Result<(), OdtError> {
+    let asset = document
+        .assets
+        .get(&image.asset_id)
+        .ok_or_else(|| OdtError::MissingAsset {
+            asset_id: image.asset_id.clone(),
+        })?;
+    let href = asset_package_path(asset)?;
+    let alt = image.alt_text.as_deref().unwrap_or_default();
+    output.push_str(&format!(
+        "<text:p text:style-name=\"{IMAGE_PARAGRAPH_STYLE}\">\
+         <draw:frame draw:name=\"{}\" svg:title=\"{}\">\
+         <draw:image xlink:href=\"{}\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>\
+         </draw:frame></text:p>",
+        escape_xml(&image.asset_id),
+        escape_xml(alt),
+        escape_xml(&href)
+    ));
+    Ok(())
+}
+
+fn render_inlines(inlines: &[Inline], output: &mut String) {
+    for inline in inlines {
+        let mut rendered = escape_xml(&inline.text);
+        if let Some(style_name) = text_style_name(&inline.marks) {
+            rendered = format!(
+                "<text:span text:style-name=\"{}\">{rendered}</text:span>",
+                escape_xml(&style_name)
+            );
+        }
+        if let Some(href) = inline.link.as_deref().and_then(sanitize_text_href) {
+            rendered = format!(
+                "<text:a xlink:href=\"{}\">{rendered}</text:a>",
+                escape_xml(&href)
+            );
+        }
+        output.push_str(&rendered);
+    }
 }
 
 fn render_meta_xml(document: &Document) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
          <office:document-meta xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" \
-         xmlns:dc=\"http://purl.org/dc/elements/1.1/\" office:version=\"1.3\">\
-         <office:meta><dc:title>{}</dc:title><meta:generator xmlns:meta=\"urn:oasis:names:tc:opendocument:xmlns:meta:1.0\">900Word</meta:generator></office:meta>\
+         xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+         xmlns:meta=\"urn:oasis:names:tc:opendocument:xmlns:meta:1.0\" office:version=\"1.3\">\
+         <office:meta><dc:title>{}</dc:title><meta:generator>900Word</meta:generator></office:meta>\
          </office:document-meta>",
         escape_xml(&document.meta.title)
     )
 }
 
-fn render_manifest_xml() -> String {
-    format!(
+fn render_manifest_xml(document: &Document) -> Result<String, OdtError> {
+    let mut output = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
          <manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.3\">\
          <manifest:file-entry manifest:full-path=\"/\" manifest:media-type=\"{ODT_MIME_TYPE}\"/>\
          <manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\"/>\
-         <manifest:file-entry manifest:full-path=\"meta.xml\" manifest:media-type=\"text/xml\"/>\
-         </manifest:manifest>"
-    )
-}
+         <manifest:file-entry manifest:full-path=\"meta.xml\" manifest:media-type=\"text/xml\"/>"
+    );
 
-fn extract_text_paragraphs(content: &str) -> Vec<String> {
-    let mut paragraphs = Vec::new();
-    let mut rest = content;
-    while let Some(start) = rest.find("<text:p>") {
-        let after_start = &rest[start + "<text:p>".len()..];
-        let Some(end) = after_start.find("</text:p>") else {
-            break;
-        };
-        paragraphs.push(unescape_xml(&strip_tags(&after_start[..end])));
-        rest = &after_start[end + "</text:p>".len()..];
+    for asset in image_assets_in_document(document)? {
+        let media_type = validate_image_asset(asset)?;
+        output.push_str(&format!(
+            "<manifest:file-entry manifest:full-path=\"{}\" manifest:media-type=\"{}\"/>",
+            escape_xml(&asset_package_path(asset)?),
+            escape_xml(media_type)
+        ));
     }
-    paragraphs
+
+    output.push_str("</manifest:manifest>");
+    Ok(output)
 }
 
-fn strip_tags(input: &str) -> String {
-    let mut output = String::new();
-    let mut in_tag = false;
-    for ch in input.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => output.push(ch),
+fn image_assets_in_document(document: &Document) -> Result<Vec<&AssetRef>, OdtError> {
+    let mut ids = BTreeSet::new();
+    for section in &document.sections {
+        collect_image_asset_ids_from_blocks(&section.blocks, &mut ids);
+    }
+
+    ids.into_iter()
+        .map(|asset_id| {
+            document
+                .assets
+                .get(&asset_id)
+                .ok_or(OdtError::MissingAsset { asset_id })
+        })
+        .collect()
+}
+
+fn collect_image_asset_ids_from_blocks(blocks: &[Block], ids: &mut BTreeSet<String>) {
+    for block in blocks {
+        match block {
+            Block::Image(image) => {
+                ids.insert(image.asset_id.clone());
+            }
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_image_asset_ids_from_blocks(&item.blocks, ids);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_image_asset_ids_from_blocks(&cell.blocks, ids);
+                    }
+                }
+            }
             _ => {}
         }
     }
-    output
+}
+
+fn asset_package_path(asset: &AssetRef) -> Result<String, OdtError> {
+    if !safe_asset_name(&asset.id) {
+        return Err(OdtError::UnsafeAssetName {
+            asset_id: asset.id.clone(),
+        });
+    }
+    Ok(format!("Pictures/{}", asset.id))
+}
+
+fn validate_image_asset(asset: &AssetRef) -> Result<&'static str, OdtError> {
+    let detected =
+        detect_image_media_type(&asset.bytes).ok_or_else(|| OdtError::UnsupportedImageType {
+            name: asset.id.clone(),
+        })?;
+    if asset.media_type != detected || asset.byte_len != asset.bytes.len() {
+        return Err(OdtError::UnsupportedImageType {
+            name: asset.id.clone(),
+        });
+    }
+    Ok(detected)
+}
+
+fn safe_asset_name(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains('/')
+        && !value.contains('\\')
+        && !value.contains("..")
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '@'))
+}
+
+fn safe_style_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
+
+fn collect_text_style_names(document: &Document) -> BTreeSet<String> {
+    let mut styles = BTreeSet::new();
+    for section in &document.sections {
+        collect_text_styles_from_blocks(&section.blocks, &mut styles);
+    }
+    styles
+}
+
+fn collect_text_styles_from_blocks(blocks: &[Block], styles: &mut BTreeSet<String>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                collect_text_styles_from_inlines(&paragraph.inlines, styles)
+            }
+            Block::Heading(heading) => collect_text_styles_from_inlines(&heading.inlines, styles),
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_text_styles_from_blocks(&item.blocks, styles);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_text_styles_from_blocks(&cell.blocks, styles);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_text_styles_from_inlines(inlines: &[Inline], styles: &mut BTreeSet<String>) {
+    for inline in inlines {
+        if let Some(style_name) = text_style_name(&inline.marks) {
+            styles.insert(style_name);
+        }
+    }
+}
+
+fn parse_content_xml(
+    content: &str,
+    asset_payloads: &BTreeMap<String, AssetPayload>,
+) -> Result<Document, OdtError> {
+    let mut reader = Reader::from_str(content);
+    reader.config_mut().trim_text(false);
+
+    let mut state = ParseState::new(asset_payloads);
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error("content.xml", err))?
+        {
+            Event::Start(start) => state.start(&start)?,
+            Event::Empty(start) => state.empty(&start)?,
+            Event::End(end) => state.end(end.name().as_ref())?,
+            Event::Text(text) => {
+                if state.unsupported_depth == 0 {
+                    if let Some(active) = state.active_text.as_mut() {
+                        active.text.push_str(
+                            &text
+                                .xml10_content()
+                                .map_err(|err| xml_error("content.xml", err))?,
+                        );
+                    }
+                }
+            }
+            Event::CData(text) => {
+                if state.unsupported_depth == 0 {
+                    if let Some(active) = state.active_text.as_mut() {
+                        active.text.push_str(
+                            &text
+                                .xml10_content()
+                                .map_err(|err| xml_error("content.xml", err))?,
+                        );
+                    }
+                }
+            }
+            Event::DocType(_) => {
+                return Err(OdtError::XmlEntityDeclaration {
+                    name: "content.xml".to_string(),
+                })
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    Ok(state.into_document())
+}
+
+#[derive(Debug)]
+struct ParseState<'a> {
+    blocks: Vec<Block>,
+    contexts: Vec<ParseContext>,
+    active_text: Option<ActiveText>,
+    active_frame: Option<ImageFrame>,
+    styles: BTreeMap<StyleId, Style>,
+    assets: BTreeMap<String, AssetRef>,
+    asset_payloads: &'a BTreeMap<String, AssetPayload>,
+    lists: BTreeMap<String, ListDefinition>,
+    warnings: Vec<DocumentWarning>,
+    unsupported_elements: BTreeSet<String>,
+    unsupported_depth: usize,
+    list_counter: usize,
+}
+
+impl<'a> ParseState<'a> {
+    fn new(asset_payloads: &'a BTreeMap<String, AssetPayload>) -> Self {
+        Self {
+            blocks: Vec::new(),
+            contexts: Vec::new(),
+            active_text: None,
+            active_frame: None,
+            styles: Document::new_untitled().styles,
+            assets: BTreeMap::new(),
+            asset_payloads,
+            lists: BTreeMap::new(),
+            warnings: Vec::new(),
+            unsupported_elements: BTreeSet::new(),
+            unsupported_depth: 0,
+            list_counter: 0,
+        }
+    }
+
+    fn start(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.unsupported_depth > 0 {
+            self.unsupported_depth += 1;
+            return Ok(());
+        }
+
+        match local_name(start.name().as_ref()) {
+            b"document-content" | b"automatic-styles" | b"body" | b"text" => {}
+            b"p" => self.start_paragraph(start)?,
+            b"h" => self.start_heading(start)?,
+            b"span" => self.start_span(start)?,
+            b"a" => self.start_link(start)?,
+            b"list" => self.start_list(start)?,
+            b"list-item" => self
+                .contexts
+                .push(ParseContext::ListItem { blocks: Vec::new() }),
+            b"table" => self.contexts.push(ParseContext::Table { rows: Vec::new() }),
+            b"table-row" => self
+                .contexts
+                .push(ParseContext::TableRow { cells: Vec::new() }),
+            b"table-cell" => self
+                .contexts
+                .push(ParseContext::TableCell { blocks: Vec::new() }),
+            b"style" => self.start_style(start)?,
+            b"text-properties"
+            | b"list-style"
+            | b"list-level-style-bullet"
+            | b"list-level-style-number" => {}
+            b"frame" => self.start_frame(start)?,
+            b"image" => self.start_image(start)?,
+            unknown => {
+                self.warn_unsupported_element(unknown);
+                self.unsupported_depth = 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn empty(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.unsupported_depth > 0 {
+            return Ok(());
+        }
+
+        match local_name(start.name().as_ref()) {
+            b"s" => {
+                if let Some(active) = self.active_text.as_mut() {
+                    let count = attr_value(start, b"c")?
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(1);
+                    active.text.push_str(&" ".repeat(count.min(1000)));
+                }
+            }
+            b"line-break" => {
+                if let Some(active) = self.active_text.as_mut() {
+                    active.text.push('\n');
+                }
+            }
+            b"soft-page-break" => {
+                if self.active_text.is_none() {
+                    self.push_block(Block::PageBreak);
+                } else {
+                    self.warn(
+                        "odt_inline_page_break",
+                        "Inline page break was ignored during import",
+                    );
+                }
+            }
+            b"image" => self.start_image(start)?,
+            b"frame" => {
+                self.start_frame(start)?;
+                self.finish_frame();
+            }
+            b"style" => self.start_style(start)?,
+            b"document-content"
+            | b"automatic-styles"
+            | b"body"
+            | b"text"
+            | b"text-properties"
+            | b"list-style"
+            | b"list-level-style-bullet"
+            | b"list-level-style-number" => {}
+            unknown => self.warn_unsupported_element(unknown),
+        }
+        Ok(())
+    }
+
+    fn end(&mut self, name: &[u8]) -> Result<(), OdtError> {
+        if self.unsupported_depth > 0 {
+            self.unsupported_depth -= 1;
+            return Ok(());
+        }
+
+        match local_name(name) {
+            b"p" | b"h" => self.finish_text_block(),
+            b"span" => {
+                if let Some(active) = self.active_text.as_mut() {
+                    active.flush();
+                    active.mark_stack.pop();
+                }
+            }
+            b"a" => {
+                if let Some(active) = self.active_text.as_mut() {
+                    active.flush();
+                    active.link_stack.pop();
+                }
+            }
+            b"list-item" => self.finish_list_item(),
+            b"list" => self.finish_list(),
+            b"table-cell" => self.finish_table_cell(),
+            b"table-row" => self.finish_table_row(),
+            b"table" => self.finish_table(),
+            b"frame" => self.finish_frame(),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn start_style(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let Some(family) = attr_value(start, b"family")? else {
+            return Ok(());
+        };
+        if family != "paragraph" {
+            return Ok(());
+        }
+
+        let Some(style_name) = attr_value(start, b"name")? else {
+            return Ok(());
+        };
+        if style_name == IMAGE_PARAGRAPH_STYLE {
+            return Ok(());
+        }
+        if !safe_style_name(&style_name) {
+            self.warn(
+                "odt_unsafe_style_name",
+                "Unsafe paragraph style name was ignored during import",
+            );
+            return Ok(());
+        }
+
+        let display_name =
+            attr_value(start, b"display-name")?.unwrap_or_else(|| style_name.clone());
+        self.styles.insert(
+            StyleId::from(style_name.as_str()),
+            Style {
+                id: StyleId::from(style_name.as_str()),
+                name: display_name,
+                kind: StyleKind::Paragraph,
+            },
+        );
+        Ok(())
+    }
+
+    fn start_paragraph(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.active_text.is_some() {
+            self.warn(
+                "odt_nested_paragraph",
+                "Nested paragraph content was ignored",
+            );
+            return Ok(());
+        }
+        let style = attr_value(start, b"style-name")?.unwrap_or_else(|| "body".to_string());
+        self.active_text = Some(ActiveText::paragraph(StyleId::from(style.as_str())));
+        Ok(())
+    }
+
+    fn start_heading(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.active_text.is_some() {
+            self.warn("odt_nested_heading", "Nested heading content was ignored");
+            return Ok(());
+        }
+        let level = attr_value(start, b"outline-level")?
+            .and_then(|value| value.parse::<u8>().ok())
+            .unwrap_or(1)
+            .clamp(1, 6);
+        self.active_text = Some(ActiveText::heading(level));
+        Ok(())
+    }
+
+    fn start_span(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if let Some(active) = self.active_text.as_mut() {
+            active.flush();
+            let marks = attr_value(start, b"style-name")?
+                .map(|value| marks_from_text_style(&value))
+                .unwrap_or_default();
+            active.mark_stack.push(marks);
+        }
+        Ok(())
+    }
+
+    fn start_link(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let href = attr_value(start, b"href")?;
+        let sanitized = href.as_deref().and_then(sanitize_text_href);
+        if href.is_some() && sanitized.is_none() {
+            self.warn(
+                "odt_unsafe_link",
+                "Unsafe text link was stripped during import",
+            );
+        }
+        if let Some(active) = self.active_text.as_mut() {
+            active.flush();
+            active.link_stack.push(sanitized);
+        }
+        Ok(())
+    }
+
+    fn start_list(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        self.list_counter += 1;
+        let style = attr_value(start, b"style-name")?;
+        let ordered = style
+            .as_deref()
+            .map(|value| {
+                let lower = value.to_ascii_lowercase();
+                lower == ORDERED_LIST_STYLE || lower.ends_with("-ordered")
+            })
+            .unwrap_or(false);
+        let definition_id = style.unwrap_or_else(|| format!("list-{}", self.list_counter));
+        self.lists.insert(
+            definition_id.clone(),
+            ListDefinition {
+                ordered,
+                marker: None,
+            },
+        );
+        self.contexts.push(ParseContext::List {
+            definition_id,
+            ordered,
+            items: Vec::new(),
+        });
+        Ok(())
+    }
+
+    fn start_frame(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let name = attr_value(start, b"name")?;
+        let alt_text = attr_value(start, b"title")?;
+        self.active_frame = Some(ImageFrame {
+            name,
+            alt_text,
+            href: None,
+        });
+        Ok(())
+    }
+
+    fn start_image(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let href = attr_value(start, b"href")?;
+        if let Some(frame) = self.active_frame.as_mut() {
+            frame.href = href;
+        }
+        Ok(())
+    }
+
+    fn finish_text_block(&mut self) {
+        let Some(mut active) = self.active_text.take() else {
+            return;
+        };
+        active.flush();
+
+        let embedded = std::mem::take(&mut active.embedded_blocks);
+        let is_image_paragraph = matches!(
+            &active.kind,
+            ActiveTextKind::Paragraph { style } if style.as_str() == IMAGE_PARAGRAPH_STYLE
+        );
+        if is_image_paragraph {
+            active
+                .inlines
+                .retain(|inline| !inline.text.trim().is_empty());
+        }
+        if active.inlines.is_empty() && embedded.len() == 1 && is_image_paragraph {
+            self.push_block(embedded.into_iter().next().expect("checked length"));
+            return;
+        }
+        if active.inlines.is_empty() && embedded.is_empty() && is_image_paragraph {
+            return;
+        }
+
+        let block = match active.kind {
+            ActiveTextKind::Paragraph { style } => Block::Paragraph(Paragraph {
+                style,
+                inlines: active.inlines,
+            }),
+            ActiveTextKind::Heading { level } => Block::Heading(Heading {
+                level,
+                inlines: active.inlines,
+            }),
+        };
+        self.push_block(block);
+        for block in embedded {
+            self.push_block(block);
+        }
+    }
+
+    fn finish_list_item(&mut self) {
+        let Some(ParseContext::ListItem { blocks }) = self.contexts.pop() else {
+            self.warn("odt_misnested_list_item", "Misnested list item was ignored");
+            return;
+        };
+        match self.contexts.last_mut() {
+            Some(ParseContext::List { items, .. }) => items.push(ListItem { level: 1, blocks }),
+            _ => self.warn(
+                "odt_misnested_list_item",
+                "List item outside a list was ignored",
+            ),
+        }
+    }
+
+    fn finish_list(&mut self) {
+        let Some(ParseContext::List {
+            definition_id,
+            ordered,
+            items,
+        }) = self.contexts.pop()
+        else {
+            self.warn("odt_misnested_list", "Misnested list was ignored");
+            return;
+        };
+        self.lists.insert(
+            definition_id.clone(),
+            ListDefinition {
+                ordered,
+                marker: None,
+            },
+        );
+        self.push_block(Block::List(ListBlock {
+            definition_id,
+            items,
+        }));
+    }
+
+    fn finish_table_cell(&mut self) {
+        let Some(ParseContext::TableCell { blocks }) = self.contexts.pop() else {
+            self.warn(
+                "odt_misnested_table_cell",
+                "Misnested table cell was ignored",
+            );
+            return;
+        };
+        match self.contexts.last_mut() {
+            Some(ParseContext::TableRow { cells }) => cells.push(TableCell { blocks }),
+            _ => self.warn(
+                "odt_misnested_table_cell",
+                "Table cell outside a table row was ignored",
+            ),
+        }
+    }
+
+    fn finish_table_row(&mut self) {
+        let Some(ParseContext::TableRow { cells }) = self.contexts.pop() else {
+            self.warn("odt_misnested_table_row", "Misnested table row was ignored");
+            return;
+        };
+        match self.contexts.last_mut() {
+            Some(ParseContext::Table { rows }) => rows.push(TableRow { cells }),
+            _ => self.warn(
+                "odt_misnested_table_row",
+                "Table row outside a table was ignored",
+            ),
+        }
+    }
+
+    fn finish_table(&mut self) {
+        let Some(ParseContext::Table { rows }) = self.contexts.pop() else {
+            self.warn("odt_misnested_table", "Misnested table was ignored");
+            return;
+        };
+        self.push_block(Block::Table(Table { rows }));
+    }
+
+    fn finish_frame(&mut self) {
+        let Some(frame) = self.active_frame.take() else {
+            return;
+        };
+
+        let Some(href) = frame.href else {
+            self.warn(
+                "odt_image_missing_href",
+                "Image frame without a package href was ignored",
+            );
+            return;
+        };
+
+        if href.contains(':') || href.starts_with('/') || href.contains("..") {
+            self.warn(
+                "odt_unsafe_image_href",
+                "Unsafe image reference was ignored",
+            );
+            return;
+        }
+
+        let Some(payload) = self.asset_payloads.get(&href) else {
+            self.warn(
+                "odt_missing_image_payload",
+                "Image payload was missing from the package",
+            );
+            return;
+        };
+
+        let asset_id = frame.name.unwrap_or_else(|| payload.id.clone());
+        self.assets.insert(
+            asset_id.clone(),
+            AssetRef {
+                id: asset_id.clone(),
+                media_type: payload.media_type.clone(),
+                byte_len: payload.bytes.len(),
+                bytes: payload.bytes.clone(),
+                original_name: Some(payload.original_name.clone()),
+            },
+        );
+
+        let image = Block::Image(ImageBlock {
+            asset_id,
+            alt_text: frame.alt_text,
+        });
+
+        if let Some(active) = self.active_text.as_mut() {
+            active.embedded_blocks.push(image);
+        } else {
+            self.push_block(image);
+        }
+    }
+
+    fn push_block(&mut self, block: Block) {
+        match self.contexts.last_mut() {
+            Some(ParseContext::ListItem { blocks }) | Some(ParseContext::TableCell { blocks }) => {
+                blocks.push(block)
+            }
+            Some(_) => self.warn(
+                "odt_unsupported_structure",
+                "Block appeared in an unsupported ODT container and was ignored",
+            ),
+            None => self.blocks.push(block),
+        }
+    }
+
+    fn warn(&mut self, code: &str, message: &str) {
+        self.warnings.push(DocumentWarning {
+            code: code.to_string(),
+            message: message.to_string(),
+        });
+    }
+
+    fn warn_unsupported_element(&mut self, name: &[u8]) {
+        let local = String::from_utf8_lossy(name).into_owned();
+        if self.unsupported_elements.insert(local.clone()) {
+            self.warnings.push(DocumentWarning {
+                code: "odt_unsupported_element".to_string(),
+                message: format!("Unsupported ODT element '{local}' was ignored during import"),
+            });
+        }
+    }
+
+    fn into_document(self) -> Document {
+        let mut document = Document::new_untitled();
+        document.sections = vec![Section {
+            blocks: self.blocks,
+            ..Section::default()
+        }];
+        document.styles = self.styles;
+        document.assets = self.assets;
+        document.lists = self.lists;
+        document.warnings = self.warnings;
+        document
+    }
+}
+
+#[derive(Debug)]
+enum ParseContext {
+    List {
+        definition_id: String,
+        ordered: bool,
+        items: Vec<ListItem>,
+    },
+    ListItem {
+        blocks: Vec<Block>,
+    },
+    Table {
+        rows: Vec<TableRow>,
+    },
+    TableRow {
+        cells: Vec<TableCell>,
+    },
+    TableCell {
+        blocks: Vec<Block>,
+    },
+}
+
+#[derive(Debug)]
+struct ImageFrame {
+    name: Option<String>,
+    alt_text: Option<String>,
+    href: Option<String>,
+}
+
+#[derive(Debug)]
+enum ActiveTextKind {
+    Paragraph { style: StyleId },
+    Heading { level: u8 },
+}
+
+#[derive(Debug)]
+struct ActiveText {
+    kind: ActiveTextKind,
+    text: String,
+    inlines: Vec<Inline>,
+    mark_stack: Vec<Vec<InlineMark>>,
+    link_stack: Vec<Option<String>>,
+    embedded_blocks: Vec<Block>,
+}
+
+impl ActiveText {
+    fn paragraph(style: StyleId) -> Self {
+        Self {
+            kind: ActiveTextKind::Paragraph { style },
+            text: String::new(),
+            inlines: Vec::new(),
+            mark_stack: Vec::new(),
+            link_stack: Vec::new(),
+            embedded_blocks: Vec::new(),
+        }
+    }
+
+    fn heading(level: u8) -> Self {
+        Self {
+            kind: ActiveTextKind::Heading { level },
+            text: String::new(),
+            inlines: Vec::new(),
+            mark_stack: Vec::new(),
+            link_stack: Vec::new(),
+            embedded_blocks: Vec::new(),
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.text.is_empty() {
+            return;
+        }
+        let text = std::mem::take(&mut self.text);
+        self.inlines.push(Inline {
+            text,
+            marks: self.active_marks(),
+            link: self.active_link(),
+        });
+    }
+
+    fn active_marks(&self) -> Vec<InlineMark> {
+        let mut active = BTreeSet::new();
+        for marks in &self.mark_stack {
+            for mark in marks {
+                active.insert(mark_order(*mark));
+            }
+        }
+        active.into_iter().map(mark_from_order).collect()
+    }
+
+    fn active_link(&self) -> Option<String> {
+        self.link_stack.iter().rev().find_map(|href| href.clone())
+    }
+}
+
+fn extract_meta_title(meta: &str) -> Result<Option<String>, OdtError> {
+    let mut reader = Reader::from_str(meta);
+    reader.config_mut().trim_text(false);
+    let mut in_title = false;
+    let mut title = String::new();
+
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error("meta.xml", err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"title" => {
+                in_title = true;
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"title" => break,
+            Event::Text(text) if in_title => {
+                title.push_str(
+                    &text
+                        .xml10_content()
+                        .map_err(|err| xml_error("meta.xml", err))?,
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    if title.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(title))
+    }
+}
+
+fn attr_value(start: &BytesStart<'_>, local: &[u8]) -> Result<Option<String>, OdtError> {
+    for attr in start.attributes().with_checks(true) {
+        let attr = attr.map_err(|err| xml_error("content.xml", err))?;
+        if local_name(attr.key.as_ref()) == local {
+            return Ok(Some(
+                attr.decode_and_unescape_value(start.decoder())
+                    .map_err(|err| xml_error("content.xml", err))?
+                    .into_owned(),
+            ));
+        }
+    }
+    Ok(None)
+}
+
+fn local_name(name: &[u8]) -> &[u8] {
+    name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
+}
+
+fn text_style_name(marks: &[InlineMark]) -> Option<String> {
+    if marks.is_empty() {
+        return None;
+    }
+    let orders: BTreeSet<u8> = marks.iter().copied().map(mark_order).collect();
+    let mut tokens = Vec::new();
+    for order in orders.iter() {
+        tokens.push(match mark_from_order(*order) {
+            InlineMark::Bold => "b",
+            InlineMark::Italic => "i",
+            InlineMark::Underline => "u",
+            InlineMark::Strikethrough => "strike",
+            InlineMark::Superscript => "super",
+            InlineMark::Subscript => "sub",
+        });
+    }
+    Some(format!("{TEXT_STYLE_PREFIX}-{}", tokens.join("-")))
+}
+
+fn marks_from_text_style(style_name: &str) -> Vec<InlineMark> {
+    let Some(tokens) = style_name.strip_prefix(&format!("{TEXT_STYLE_PREFIX}-")) else {
+        return Vec::new();
+    };
+
+    let mut marks = BTreeSet::new();
+    for token in tokens.split('-') {
+        let mark = match token {
+            "b" => Some(InlineMark::Bold),
+            "i" => Some(InlineMark::Italic),
+            "u" => Some(InlineMark::Underline),
+            "strike" => Some(InlineMark::Strikethrough),
+            "super" => Some(InlineMark::Superscript),
+            "sub" => Some(InlineMark::Subscript),
+            _ => None,
+        };
+        if let Some(mark) = mark {
+            marks.insert(mark_order(mark));
+        }
+    }
+    marks.into_iter().map(mark_from_order).collect()
+}
+
+fn mark_order(mark: InlineMark) -> u8 {
+    match mark {
+        InlineMark::Bold => 0,
+        InlineMark::Italic => 1,
+        InlineMark::Underline => 2,
+        InlineMark::Strikethrough => 3,
+        InlineMark::Superscript => 4,
+        InlineMark::Subscript => 5,
+    }
+}
+
+fn mark_from_order(order: u8) -> InlineMark {
+    match order {
+        0 => InlineMark::Bold,
+        1 => InlineMark::Italic,
+        2 => InlineMark::Underline,
+        3 => InlineMark::Strikethrough,
+        4 => InlineMark::Superscript,
+        _ => InlineMark::Subscript,
+    }
+}
+
+fn sanitize_text_href(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")
+    {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
 }
 
 fn escape_xml(input: &str) -> String {
@@ -255,27 +1531,103 @@ fn escape_xml(input: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn unescape_xml(input: &str) -> String {
-    input
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+fn xml_error(name: &str, err: impl Display) -> OdtError {
+    OdtError::Xml {
+        name: name.to_string(),
+        message: err.to_string(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use word_core::{Style, StyleKind};
+
+    const SAMPLE_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1,
+        13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
 
     #[test]
-    fn generated_odt_round_trips_body_text() {
-        let document = Document::new_untitled();
+    fn generated_odt_round_trips_mvp_blocks_and_multilingual_text() {
+        let document = sample_document();
 
         let bytes = write_odt_bytes(&document).expect("write should succeed");
         let parsed = read_odt_bytes(&bytes).expect("read should succeed");
 
-        assert_eq!(parsed.stats().word_count, 2);
+        assert_eq!(parsed.meta.title, "ODT MVP Sample");
+        assert!(parsed.warnings.is_empty());
+        assert_eq!(parsed.sections[0].blocks.len(), 5);
+        assert_eq!(
+            parsed
+                .style(&StyleId::from("caption"))
+                .map(|style| style.name.as_str()),
+            Some("Caption")
+        );
+
+        let Block::Heading(heading) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a heading");
+        };
+        assert_eq!(heading.level, 1);
+
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[1] else {
+            panic!("second block should be a paragraph");
+        };
+        assert_eq!(paragraph.style.as_str(), "caption");
+        assert_eq!(paragraph.inlines[0].marks, vec![InlineMark::Bold]);
+        assert_eq!(
+            paragraph.inlines[1].marks,
+            vec![InlineMark::Italic, InlineMark::Underline]
+        );
+        assert_eq!(
+            paragraph.inlines[1].link.as_deref(),
+            Some("https://example.invalid/reference")
+        );
+        assert!(paragraph
+            .inlines
+            .iter()
+            .any(|inline| inline.text.contains("العربية")));
+        assert!(paragraph
+            .inlines
+            .iter()
+            .any(|inline| inline.text.contains("中文")));
+
+        let Block::List(list) = &parsed.sections[0].blocks[2] else {
+            panic!("third block should be a list");
+        };
+        assert_eq!(list.items.len(), 2);
+        assert_eq!(
+            parsed
+                .lists
+                .get(&list.definition_id)
+                .map(|definition| definition.ordered),
+            Some(false)
+        );
+
+        let Block::Table(table) = &parsed.sections[0].blocks[3] else {
+            panic!("fourth block should be a table");
+        };
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0].cells.len(), 2);
+
+        let Block::Image(image) = &parsed.sections[0].blocks[4] else {
+            panic!("fifth block should be an image");
+        };
+        assert_eq!(image.alt_text.as_deref(), Some("Synthetic sample image"));
+        let asset = parsed
+            .assets
+            .get(&image.asset_id)
+            .expect("image asset should be present");
+        assert_eq!(asset.media_type, "image/png");
+        assert_eq!(asset.bytes, SAMPLE_PNG);
+
+        let reparsed =
+            read_odt_bytes(&write_odt_bytes(&parsed).expect("rewrite should succeed")).unwrap();
+        assert_eq!(
+            reparsed.sections[0].blocks.len(),
+            parsed.sections[0].blocks.len()
+        );
     }
 
     #[test]
@@ -298,5 +1650,323 @@ mod tests {
             .expect_err("unsafe path should fail");
 
         assert!(matches!(err, OdtError::UnsafePath { .. }));
+    }
+
+    #[test]
+    fn xml_entity_declaration_is_rejected() {
+        let bytes = test_package_with_content(
+            r#"<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><office:document-content/>"#,
+        );
+
+        let err = validate_odt_package(&bytes, PackageLimits::default())
+            .expect_err("entity declaration should fail");
+
+        assert!(matches!(err, OdtError::XmlEntityDeclaration { .. }));
+    }
+
+    #[test]
+    fn oversized_image_entry_is_rejected() {
+        let bytes = test_package_with_image(vec![1, 2, 3, 4, 5]);
+        let limits = PackageLimits {
+            max_image_size: 4,
+            ..PackageLimits::default()
+        };
+
+        let err = validate_odt_package(&bytes, limits).expect_err("oversized image should fail");
+
+        assert!(matches!(err, OdtError::ImageTooLarge { .. }));
+    }
+
+    #[test]
+    fn unsupported_image_payload_type_is_rejected() {
+        let bytes = test_package_with_image(b"<svg><script/></svg>".to_vec());
+
+        let err = validate_odt_package(&bytes, PackageLimits::default())
+            .expect_err("svg payload should fail");
+
+        assert!(matches!(err, OdtError::UnsupportedImageType { .. }));
+    }
+
+    #[test]
+    fn missing_mimetype_is_rejected() {
+        let bytes = test_package_without_mimetype(
+            r#"<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>"#,
+        );
+
+        let err = validate_odt_package(&bytes, PackageLimits::default())
+            .expect_err("missing mimetype should fail");
+
+        assert!(matches!(err, OdtError::InvalidMimeType));
+    }
+
+    #[test]
+    fn package_size_limit_is_enforced() {
+        let bytes = test_package_with_content(
+            r#"<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>"#,
+        );
+        let limits = PackageLimits {
+            max_package_size: bytes.len() as u64 - 1,
+            ..PackageLimits::default()
+        };
+
+        let err = validate_odt_package(&bytes, limits).expect_err("oversized package should fail");
+
+        assert!(matches!(err, OdtError::PackageTooLarge));
+    }
+
+    #[test]
+    fn path_depth_limit_is_enforced() {
+        let bytes = test_package_with_content(
+            r#"<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>"#,
+        );
+        let limits = PackageLimits {
+            max_path_depth: 0,
+            ..PackageLimits::default()
+        };
+
+        let err = validate_odt_package(&bytes, limits).expect_err("deep path should fail");
+
+        assert!(matches!(err, OdtError::PathTooDeep { .. }));
+    }
+
+    #[test]
+    fn unsupported_odt_element_imports_with_warning() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:p>Visible text</text:p>
+                <text:note><text:note-body><text:p>Unsupported footnote</text:p></text:note-body></text:note>
+              </office:text></office:body>
+            </office:document-content>"#;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        assert_eq!(parsed.sections[0].blocks.len(), 1);
+        assert!(!parsed.sections[0].blocks.iter().any(
+            |block| matches!(block, Block::Paragraph(paragraph) if paragraph
+                .inlines
+                .iter()
+                .any(|inline| inline.text.contains("Unsupported footnote")))
+        ));
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsupported_element"));
+    }
+
+    #[test]
+    fn page_break_round_trips_as_block() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                style: StyleId::from("body"),
+                inlines: vec![Inline::text("Before")],
+            }),
+            Block::PageBreak,
+            Block::Paragraph(Paragraph {
+                style: StyleId::from("body"),
+                inlines: vec![Inline::text("After")],
+            }),
+        ];
+
+        let parsed =
+            read_odt_bytes(&write_odt_bytes(&document).expect("write should succeed")).unwrap();
+
+        assert!(matches!(parsed.sections[0].blocks[1], Block::PageBreak));
+    }
+
+    #[test]
+    fn remote_image_reference_imports_with_warning() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+              xmlns:xlink="http://www.w3.org/1999/xlink"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:p text:style-name="900w-image">
+                  <draw:frame draw:name="remote.png">
+                    <draw:image xlink:href="https://example.invalid/remote.png"/>
+                  </draw:frame>
+                </text:p>
+              </office:text></office:body>
+            </office:document-content>"#;
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        assert!(parsed.sections[0].blocks.is_empty());
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsafe_image_href"));
+    }
+
+    fn sample_document() -> Document {
+        let mut document = Document::new_untitled();
+        document.meta.title = "ODT MVP Sample".to_string();
+        document
+            .register_style(Style {
+                id: StyleId::from("caption"),
+                name: "Caption".to_string(),
+                kind: StyleKind::Paragraph,
+            })
+            .expect("style should register");
+        document.assets.insert(
+            "sample.png".to_string(),
+            AssetRef {
+                id: "sample.png".to_string(),
+                media_type: "image/png".to_string(),
+                byte_len: SAMPLE_PNG.len(),
+                bytes: SAMPLE_PNG.to_vec(),
+                original_name: Some("sample.png".to_string()),
+            },
+        );
+        document.lists.insert(
+            "tasks".to_string(),
+            ListDefinition {
+                ordered: false,
+                marker: None,
+            },
+        );
+        document.sections[0].blocks = vec![
+            Block::Heading(Heading {
+                level: 1,
+                inlines: vec![Inline::text("Sprint 003")],
+            }),
+            Block::Paragraph(Paragraph {
+                style: StyleId::from("caption"),
+                inlines: vec![
+                    Inline {
+                        text: "Bold العربية 中文 ".to_string(),
+                        marks: vec![InlineMark::Bold],
+                        link: None,
+                    },
+                    Inline {
+                        text: "linked text".to_string(),
+                        marks: vec![InlineMark::Italic, InlineMark::Underline],
+                        link: Some("https://example.invalid/reference".to_string()),
+                    },
+                ],
+            }),
+            Block::List(ListBlock {
+                definition_id: "tasks".to_string(),
+                items: vec![
+                    ListItem {
+                        level: 1,
+                        blocks: vec![Block::Paragraph(Paragraph {
+                            style: StyleId::from("body"),
+                            inlines: vec![Inline::text("First item")],
+                        })],
+                    },
+                    ListItem {
+                        level: 1,
+                        blocks: vec![Block::Paragraph(Paragraph {
+                            style: StyleId::from("body"),
+                            inlines: vec![Inline::text("Second item")],
+                        })],
+                    },
+                ],
+            }),
+            Block::Table(Table {
+                rows: vec![
+                    TableRow {
+                        cells: vec![
+                            TableCell {
+                                blocks: vec![Block::Paragraph(Paragraph {
+                                    style: StyleId::from("body"),
+                                    inlines: vec![Inline::text("A1")],
+                                })],
+                            },
+                            TableCell {
+                                blocks: vec![Block::Paragraph(Paragraph {
+                                    style: StyleId::from("body"),
+                                    inlines: vec![Inline::text("B1")],
+                                })],
+                            },
+                        ],
+                    },
+                    TableRow {
+                        cells: vec![TableCell {
+                            blocks: vec![Block::Paragraph(Paragraph {
+                                style: StyleId::from("body"),
+                                inlines: vec![Inline::text("A2")],
+                            })],
+                        }],
+                    },
+                ],
+            }),
+            Block::Image(ImageBlock {
+                asset_id: "sample.png".to_string(),
+                alt_text: Some("Synthetic sample image".to_string()),
+            }),
+        ];
+        document
+    }
+
+    fn test_package_with_content(content: &str) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        writer
+            .start_file(
+                "mimetype",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(ODT_MIME_TYPE.as_bytes()).unwrap();
+        writer
+            .start_file(
+                "content.xml",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(content.as_bytes()).unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn test_package_without_mimetype(content: &str) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        writer
+            .start_file(
+                "content.xml",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(content.as_bytes()).unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn test_package_with_image(image: Vec<u8>) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        writer
+            .start_file(
+                "mimetype",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(ODT_MIME_TYPE.as_bytes()).unwrap();
+        writer
+            .start_file(
+                "content.xml",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer
+            .write_all(
+                br#"<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>"#,
+            )
+            .unwrap();
+        writer
+            .start_file(
+                "Pictures/image.png",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(&image).unwrap();
+        writer.finish().unwrap().into_inner()
     }
 }

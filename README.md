@@ -24,6 +24,7 @@ Current foundation:
 - ProseMirror editing surface projected from a Rust-owned document model.
 - Editor, Settings, and About shell views for the desktop workspace.
 - Constrained ProseMirror schema for the current `word-core` projection.
+- ODT MVP package read/write for paragraphs, headings, inline marks, links, lists, tables, page breaks, metadata, named styles, and allowlisted embedded image bytes.
 - Rust workspace crates for document model, ODT handling, spell-check boundaries, export, and sanitized fixtures.
 - Generated JSON fixtures with multilingual sample content only.
 - No telemetry by default.
@@ -34,7 +35,7 @@ Current foundation:
 Planned MVP:
 
 - Create, open, edit, and save `.odt` documents.
-- Paragraphs, headings, inline formatting, lists, tables, images, page breaks, and named styles.
+- Broader document layout metadata and expanded ODT compatibility fixtures.
 - Undo/redo, word count, find/replace, autosave, and crash recovery.
 - TXT, sanitized HTML, and basic PDF export.
 - Hunspell-based spell-check boundary with documented dictionary licensing.
