@@ -51,6 +51,18 @@ impl Document {
         }
     }
 
+    pub fn style(&self, style_id: &StyleId) -> Option<&Style> {
+        self.styles.get(style_id)
+    }
+
+    pub fn register_style(&mut self, style: Style) -> Result<(), DocumentError> {
+        validate_non_empty("style id", style.id.as_str())?;
+        validate_non_empty("style name", &style.name)?;
+        self.styles.insert(style.id.clone(), style);
+        self.touch();
+        Ok(())
+    }
+
     pub fn apply_command(&mut self, command: DocumentCommand) -> Result<(), DocumentError> {
         match command {
             DocumentCommand::UpdateTitle { title } => {
@@ -515,5 +527,43 @@ mod tests {
             .expect_err("blank title should fail");
 
         assert_eq!(err, DocumentError::EmptyField { field: "title" });
+    }
+
+    #[test]
+    fn default_style_registry_contains_body_and_heading() {
+        let document = Document::new_untitled();
+
+        assert_eq!(
+            document
+                .style(&StyleId::from("body"))
+                .map(|style| style.name.as_str()),
+            Some("Body")
+        );
+        assert_eq!(
+            document
+                .style(&StyleId::from("heading-1"))
+                .map(|style| style.kind),
+            Some(StyleKind::Paragraph)
+        );
+    }
+
+    #[test]
+    fn style_registry_rejects_empty_style_name() {
+        let mut document = Document::new_untitled();
+
+        let err = document
+            .register_style(Style {
+                id: StyleId::from("caption"),
+                name: " ".to_string(),
+                kind: StyleKind::Paragraph,
+            })
+            .expect_err("blank style name should fail");
+
+        assert_eq!(
+            err,
+            DocumentError::EmptyField {
+                field: "style name"
+            }
+        );
     }
 }

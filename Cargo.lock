@@ -4326,6 +4326,9 @@ dependencies = [
 name = "word-fixtures"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "serde_json",
+ "uuid",
  "word-core",
 ]
 

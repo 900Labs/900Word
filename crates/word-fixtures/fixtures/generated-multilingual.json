@@ -1,0 +1,93 @@
+{
+  "id": "00000000-0000-4000-8000-000000000001",
+  "meta": {
+    "title": "Generated multilingual sample",
+    "subject": null,
+    "keywords": [],
+    "created_at": "2026-01-01T00:00:00Z",
+    "modified_at": "2026-01-01T00:00:00Z",
+    "generator": "900Word"
+  },
+  "sections": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "blocks": [
+        {
+          "type": "Heading",
+          "value": {
+            "level": 1,
+            "inlines": [
+              {
+                "text": "Generated sample",
+                "marks": [],
+                "link": null
+              }
+            ]
+          }
+        },
+        {
+          "type": "Paragraph",
+          "value": {
+            "style": "body",
+            "inlines": [
+              {
+                "text": "Hello offline world.",
+                "marks": [],
+                "link": null
+              }
+            ]
+          }
+        },
+        {
+          "type": "Paragraph",
+          "value": {
+            "style": "body",
+            "inlines": [
+              {
+                "text": "مرحبا بالعالم",
+                "marks": [],
+                "link": null
+              }
+            ]
+          }
+        },
+        {
+          "type": "Paragraph",
+          "value": {
+            "style": "body",
+            "inlines": [
+              {
+                "text": "你好，世界",
+                "marks": [],
+                "link": null
+              }
+            ]
+          }
+        }
+      ],
+      "page": {
+        "width_mm": 210,
+        "height_mm": 297,
+        "margin_top_mm": 25,
+        "margin_right_mm": 25,
+        "margin_bottom_mm": 25,
+        "margin_left_mm": 25
+      }
+    }
+  ],
+  "styles": {
+    "body": {
+      "id": "body",
+      "name": "Body",
+      "kind": "Paragraph"
+    },
+    "heading-1": {
+      "id": "heading-1",
+      "name": "Heading 1",
+      "kind": "Paragraph"
+    }
+  },
+  "lists": {},
+  "assets": {},
+  "warnings": []
+}

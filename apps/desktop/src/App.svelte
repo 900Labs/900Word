@@ -2,7 +2,14 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
   import { createEditor } from './lib/editor';
-  import { documentToText, type DocumentState } from './lib/documentProjection';
+  import {
+    buildEditorSyncCommands,
+    canEditProjectedDocument,
+    documentProjectionWarnings,
+    documentToText,
+    type DocumentState,
+    type EditorProjectedChange
+  } from './lib/documentProjection';
 
   interface DocumentStats {
     word_count: number;
@@ -36,25 +43,56 @@
   let plainText = $state('');
   let stats = $state<DocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
   let spellIssues = $state<SpellIssue[]>([]);
+  let projectionWarnings = $state<string[]>([]);
   let dictionaries = $state<DictionaryInfo[]>([]);
   let settings = $state<Settings>({
     telemetry_enabled: false,
     language_tag: 'en',
     high_contrast: false
   });
+  let documentState: DocumentState | undefined;
+  let editorSyncQueue = Promise.resolve();
   let editorHost: HTMLDivElement;
   let view: ReturnType<typeof createEditor> | undefined;
 
   async function loadDocument() {
     const document = await invoke<DocumentState>('new_document');
+    documentState = document;
     title = document.meta.title;
     plainText = documentToText(document);
     stats = await invoke<DocumentStats>('get_document_stats');
-    status = 'Ready';
+    projectionWarnings = documentProjectionWarnings(document);
+    const editable = canEditProjectedDocument(document);
+    status = editable ? 'Ready' : 'Read-only projection warning';
     view?.destroy();
-    view = createEditor(editorHost, plainText, (text) => {
-      plainText = text;
+    view = createEditor(editorHost, document, handleEditorChange, { editable });
+  }
+
+  function handleEditorChange(change: EditorProjectedChange) {
+    plainText = change.text;
+    editorSyncQueue = editorSyncQueue.then(() => syncEditorChange(change)).catch((error: unknown) => {
+      status = error instanceof Error ? error.message : String(error);
     });
+  }
+
+  async function syncEditorChange(change: EditorProjectedChange) {
+    if (!documentState || !canEditProjectedDocument(documentState)) {
+      return;
+    }
+
+    const commands = buildEditorSyncCommands(documentState, change.blocks);
+    if (commands.length === 0) {
+      return;
+    }
+
+    let nextDocument = documentState;
+    for (const command of commands) {
+      nextDocument = await invoke<DocumentState>('apply_document_command', {
+        command
+      });
+    }
+    documentState = nextDocument;
+    stats = await invoke<DocumentStats>('get_document_stats');
   }
 
   async function loadShellState() {
@@ -163,6 +201,15 @@
         <ul>
           {#each spellIssues as issue}
             <li>{issue.word}</li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if projectionWarnings.length > 0}
+        <h2>Projection</h2>
+        <ul>
+          {#each projectionWarnings as warning}
+            <li>{warning}</li>
           {/each}
         </ul>
       {/if}

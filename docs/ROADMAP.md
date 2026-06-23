@@ -18,14 +18,14 @@ Status: complete.
 
 ## Sprint 002: Core Model And Editor Projection
 
-Status: next.
+Status: complete.
 
 - Implement `word-core` model, commands, undo/redo, word count, styles, and JSON fixtures.
 - Add ProseMirror schema that maps only to supported `word-core` structures.
 
 ## Sprint 003: ODT MVP Round-Trip
 
-Status: planned.
+Status: next.
 
 - Implement ODT package open/save for paragraphs, runs, headings, lists, tables, images, metadata, and styles.
 - Add round-trip fixtures for RTL and CJK text.

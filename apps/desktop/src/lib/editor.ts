@@ -1,24 +1,35 @@
-import { schema } from 'prosemirror-schema-basic';
 import { EditorState } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
 import 'prosemirror-view/style/prosemirror.css';
+import {
+  documentToEditorDoc,
+  editorDocToWordCoreBlocks,
+  type DocumentState,
+  type EditorDoc,
+  type EditorProjectedChange
+} from './documentProjection';
+import { supportedSchema } from './editorSchema';
 
 export function createEditor(
   host: HTMLElement,
-  initialText: string,
-  onChange: (text: string) => void
+  document: DocumentState,
+  onChange: (change: EditorProjectedChange) => void,
+  options: { editable: boolean } = { editable: true }
 ): EditorView {
-  const paragraph = schema.nodes.paragraph.create(null, initialText ? schema.text(initialText) : null);
   const state = EditorState.create({
-    doc: schema.nodes.doc.create(null, [paragraph])
+    doc: supportedSchema.nodeFromJSON(documentToEditorDoc(document))
   });
 
   const view = new EditorView(host, {
     state,
+    editable: () => options.editable,
     dispatchTransaction(transaction) {
       const nextState = view.state.apply(transaction);
       view.updateState(nextState);
-      onChange(view.state.doc.textContent);
+      onChange({
+        text: view.state.doc.textContent,
+        blocks: editorDocToWordCoreBlocks(view.state.doc.toJSON() as EditorDoc)
+      });
     }
   });
 
