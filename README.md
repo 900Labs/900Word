@@ -28,6 +28,7 @@ Current foundation:
 - Local file workflow commands for new/open/save/save-as, autosave, recovery drafts, and privacy-preserving recent document tokens.
 - Editing toolbar controls for undo/redo, inline marks, paragraph/heading styles, find/replace, sanitized starter templates, ODT-backed page setup metadata, and keyboard-accessible view traversal.
 - Hunspell-shaped word-list spell-check loading with a generated minimal `en-US` bootstrap dictionary, user dictionary folder support, missing-dictionary fallback, and initial UI localization.
+- Local TXT, sanitized HTML, and basic PDF export-to-path workflows, plus a WebView print flow using sanitized print HTML.
 - Rust workspace crates for document model, ODT handling, spell-check boundaries, export, and sanitized fixtures.
 - Generated JSON fixtures with multilingual sample content only.
 - No telemetry by default.
@@ -40,7 +41,6 @@ Planned MVP:
 - Create, open, edit, and save `.odt` documents.
 - Expanded ODT compatibility fixtures and broader layout fidelity.
 - Expanded editing workflows.
-- TXT, sanitized HTML, and basic PDF export.
 - Hunspell affix expansion, broader dictionary compatibility, and more complete dictionary packaging.
 - Accessibility, keyboard navigation, and high-contrast refinements.
 

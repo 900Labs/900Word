@@ -106,6 +106,12 @@ pub struct SpellCheckResult {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportFileResult {
+    pub format: String,
+    pub byte_len: u64,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -142,6 +148,10 @@ pub fn run() {
             export_txt,
             export_html,
             export_pdf,
+            export_txt_to_path,
+            export_html_to_path,
+            export_pdf_to_path,
+            prepare_print_html,
             check_spelling,
             list_dictionaries,
             get_settings,
@@ -351,6 +361,45 @@ fn export_pdf(state: State<'_, AppState>) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
+fn export_txt_to_path(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<ExportFileResult, String> {
+    let path = validate_path(&path, "txt")?;
+    let session = lock_session(&state)?;
+    let text = word_export::export_txt(&session.document).map_err(|err| err.to_string())?;
+    write_export_bytes_to_path("txt", &path, text.as_bytes())
+}
+
+#[tauri::command]
+fn export_html_to_path(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<ExportFileResult, String> {
+    let path = validate_path(&path, "html")?;
+    let session = lock_session(&state)?;
+    let html = word_export::export_html(&session.document).map_err(|err| err.to_string())?;
+    write_export_bytes_to_path("html", &path, html.as_bytes())
+}
+
+#[tauri::command]
+fn export_pdf_to_path(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<ExportFileResult, String> {
+    let path = validate_path(&path, "pdf")?;
+    let session = lock_session(&state)?;
+    let pdf = word_export::export_basic_pdf(&session.document).map_err(|err| err.to_string())?;
+    write_export_bytes_to_path("pdf", &path, &pdf)
+}
+
+#[tauri::command]
+fn prepare_print_html(state: State<'_, AppState>) -> Result<String, String> {
+    let session = lock_session(&state)?;
+    word_export::export_print_html(&session.document).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn check_spelling(
     text: String,
     language_tag: String,
@@ -518,6 +567,18 @@ fn read_document_from_path(path: &Path) -> Result<Document, String> {
     }
     let bytes = std::fs::read(path).map_err(safe_io_error)?;
     word_odf::read_odt_bytes(&bytes).map_err(|err| err.to_string())
+}
+
+fn write_export_bytes_to_path(
+    format: &str,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<ExportFileResult, String> {
+    write_bytes_atomically(path, bytes, false)?;
+    Ok(ExportFileResult {
+        format: format.to_string(),
+        byte_len: bytes.len() as u64,
+    })
 }
 
 fn remember_recent_path(session: &mut DocumentSession, path: PathBuf) {
@@ -834,6 +895,30 @@ mod tests {
         let err = validate_path("document.txt", "odt").expect_err("txt path should fail");
 
         assert_eq!(err, "expected .odt document path");
+    }
+
+    #[test]
+    fn export_write_validates_extension_without_leaking_path() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let target = dir.path().join("private-client-name.txt");
+        let result = write_export_bytes_to_path("txt", &target, b"hello")
+            .expect("export write should succeed");
+
+        assert_eq!(result.format, "txt");
+        assert_eq!(result.byte_len, 5);
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("export should exist"),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn txt_export_path_rejects_wrong_extension_message_only() {
+        let err = validate_path("private-client-name.html", "txt")
+            .expect_err("wrong export extension should fail");
+
+        assert_eq!(err, "expected .txt document path");
+        assert!(!err.contains("private-client-name"));
     }
 
     #[test]

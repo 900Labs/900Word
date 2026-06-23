@@ -33,6 +33,14 @@ All external files are untrusted.
 
 HTML import must strip scripts, event handlers, unsafe CSS URLs, `javascript:`, unexpected `file:`, unsafe SVG, iframe, object, embed, and remote loads by default.
 
+## Export Policy
+
+Sprint 007 exporters write only to user-entered paths with validated `.txt`, `.html`, or `.pdf` extensions and no traversal components. Export command results expose only the format and byte length to the frontend.
+
+HTML export is generated from `word-core`, escapes document text, strips unsafe link schemes, does not emit scripts, event handlers, iframe/object/embed content, remote images, local file references, or raw imported HTML, and includes a restrictive offline CSP meta tag. Print HTML uses the same sanitizer and adds page setup CSS for WebView print.
+
+PDF export is a minimal generated document for smoke testing and simple sharing. It contains no local paths, hostnames, usernames, embedded files, remote references, scripts, or macros. Non-ASCII text is degraded in the bootstrap PDF adapter until a font/layout strategy is accepted.
+
 ## Dictionary Input Policy
 
 Hunspell-shaped `.aff` and `.dic` files are treated as untrusted local input. Sprint 006 supports UTF-8 word-list dictionaries only, enforces a per-file size limit for user dictionaries, ignores incomplete user dictionary pairs, validates language-tag filenames, and exposes no local dictionary paths to frontend state. Affix-rule expansion is deferred.

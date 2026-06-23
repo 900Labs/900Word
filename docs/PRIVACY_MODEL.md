@@ -12,6 +12,8 @@ The Sprint 004 desktop shell uses explicit path entry instead of a native file p
 
 Spell-check user dictionaries live under `{APP_DATA_DIR}/dictionaries`. The backend creates this folder with owner-only permissions on Unix platforms. Frontend dictionary state includes language tag, display name, source type, and license label only; it does not include local dictionary paths or filenames.
 
+TXT, HTML, and PDF export paths are user-entered in the Sprint 007 shell. Backend export commands validate format-specific extensions and traversal components, write atomically, and return only export format and byte length to frontend state. Export success messages do not include private filenames or local paths.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -19,6 +21,8 @@ Logs may include high-level operation names and error categories. Logs must not 
 ## Metadata
 
 Exporters must avoid adding local usernames, hostnames, absolute paths, or private build metadata to ODT, HTML, TXT, PDF, or EPUB outputs.
+
+Sprint 007 HTML and print exports are generated from the `word-core` model with offline CSP metadata and no remote image or script emission. The basic PDF adapter is generated locally and does not embed local path metadata.
 
 ## Network
 

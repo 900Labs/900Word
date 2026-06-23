@@ -42,6 +42,11 @@
     warnings: string[];
   }
 
+  interface ExportFileResult {
+    format: string;
+    byte_len: number;
+  }
+
   interface DictionaryInfo {
     language_tag: string;
     display_name: string;
@@ -95,6 +100,7 @@
   let spellIssues = $state<SpellIssue[]>([]);
   let projectionWarnings = $state<string[]>([]);
   let filePathInput = $state('');
+  let exportPathInput = $state('');
   let fileState = $state<DocumentFileState>({
     has_current_path: false,
     dirty: false,
@@ -122,6 +128,7 @@
   let editorSyncQueue = Promise.resolve();
   let editorSyncError: string | null = null;
   let editorHost: HTMLDivElement;
+  let printFrame: HTMLIFrameElement;
   let findInput: HTMLInputElement;
   let view: ReturnType<typeof createEditor> | undefined;
 
@@ -276,18 +283,53 @@
   }
 
   async function exportText() {
-    const text = await invoke<string>('export_txt');
-    status = tr('exportTxtPrepared', { characters: text.length });
+    try {
+      await waitForEditorSync();
+      const result = await invoke<ExportFileResult>('export_txt_to_path', {
+        path: exportPathInput
+      });
+      status = tr('exportTxtSaved', { bytes: result.byte_len });
+    } catch (error) {
+      setStatusFromError(error);
+    }
   }
 
   async function exportHtml() {
-    const html = await invoke<string>('export_html');
-    status = tr('exportHtmlPrepared', { characters: html.length });
+    try {
+      await waitForEditorSync();
+      const result = await invoke<ExportFileResult>('export_html_to_path', {
+        path: exportPathInput
+      });
+      status = tr('exportHtmlSaved', { bytes: result.byte_len });
+    } catch (error) {
+      setStatusFromError(error);
+    }
   }
 
   async function exportPdf() {
-    const pdf = await invoke<number[]>('export_pdf');
-    status = tr('exportPdfPrepared', { bytes: pdf.length });
+    try {
+      await waitForEditorSync();
+      const result = await invoke<ExportFileResult>('export_pdf_to_path', {
+        path: exportPathInput
+      });
+      status = tr('exportPdfSaved', { bytes: result.byte_len });
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  async function printDocument() {
+    try {
+      await waitForEditorSync();
+      const html = await invoke<string>('prepare_print_html');
+      printFrame.srcdoc = html;
+      await new Promise((resolve) => window.setTimeout(resolve, 75));
+      printFrame.contentWindow?.focus();
+      printFrame.contentWindow?.print();
+      status = tr('printPrepared');
+    } catch (error) {
+      setStatusFromError(error);
+    }
   }
 
   async function checkSpelling() {
@@ -452,7 +494,7 @@
     const key = event.key.toLowerCase();
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     const targetIsInput = target?.tagName === 'INPUT' || target?.tagName === 'SELECT' || target?.tagName === 'TEXTAREA';
-    if (targetIsInput && !['f', 's'].includes(key)) {
+    if (targetIsInput && !['f', 'p', 's'].includes(key)) {
       return;
     }
 
@@ -473,6 +515,9 @@
     } else if (key === 's') {
       event.preventDefault();
       saveCurrentDocument().catch(setStatusFromError);
+    } else if (key === 'p') {
+      event.preventDefault();
+      printDocument().catch(setStatusFromError);
     } else if (key === 'z') {
       event.preventDefault();
       if (event.shiftKey) {
@@ -558,9 +603,17 @@
       <button disabled={!fileState.has_current_path} type="button" onclick={saveCurrentDocument}>{tr('save')}</button>
       <button type="button" onclick={saveDocumentAsPath}>{tr('saveAs')}</button>
       <button type="button" onclick={autosaveDocument}>{tr('autosave')}</button>
+      <input
+        aria-label={tr('exportPath')}
+        bind:value={exportPathInput}
+        class="path-input"
+        placeholder={tr('exportPathPlaceholder')}
+        type="text"
+      />
       <button type="button" onclick={exportText}>{tr('exportTxt')}</button>
       <button type="button" onclick={exportHtml}>{tr('exportHtml')}</button>
       <button type="button" onclick={exportPdf}>{tr('exportPdf')}</button>
+      <button type="button" onclick={printDocument}>{tr('print')}</button>
       <button type="button" onclick={checkSpelling}>{tr('checkSpelling')}</button>
     </nav>
   </header>
@@ -852,4 +905,6 @@
       </div>
     </div>
   </section>
+
+  <iframe bind:this={printFrame} class="print-frame" title={tr('printFrame')}></iframe>
 </main>

@@ -8,4 +8,5 @@ All notable changes to 900Word are tracked here.
 
 - Repository bootstrap with Rust workspace, Tauri/Svelte desktop shell, public documentation, validation scripts, and governance scaffolding.
 - Initial `word-core`, `word-odf`, `word-spell`, `word-export`, and `word-fixtures` crates.
+- TXT, sanitized HTML, basic PDF export-to-path workflows, and sanitized WebView print preparation.
 - Public-release privacy scanning for source files.

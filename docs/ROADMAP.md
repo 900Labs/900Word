@@ -50,13 +50,14 @@ Status: complete.
 
 ## Sprint 007: Export And Print
 
-Status: next.
+Status: complete.
 
-- Add TXT, sanitized HTML, and basic PDF export.
+- Add TXT, sanitized HTML, and basic PDF export-to-path workflows.
+- Add sanitized print HTML and WebView print action.
 - Keep deterministic pagination deferred.
 
 ## Sprint 008: Release Hardening
 
-Status: planned.
+Status: next.
 
 - Add performance smoke, bundle-size budget, package privacy scan, runtime offline scan, SBOM, and release checklist.

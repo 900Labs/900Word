@@ -28,10 +28,15 @@ export type UiStringKey =
   | 'editingToolbar'
   | 'exportHtml'
   | 'exportHtmlPrepared'
+  | 'exportHtmlSaved'
+  | 'exportPath'
+  | 'exportPathPlaceholder'
   | 'exportPdf'
   | 'exportPdfPrepared'
+  | 'exportPdfSaved'
   | 'exportTxt'
   | 'exportTxtPrepared'
+  | 'exportTxtSaved'
   | 'file'
   | 'find'
   | 'findAndReplace'
@@ -68,6 +73,9 @@ export type UiStringKey =
   | 'paragraphUnchanged'
   | 'pageSetupUpdated'
   | 'previous'
+  | 'print'
+  | 'printFrame'
+  | 'printPrepared'
   | 'projection'
   | 'ready'
   | 'recent'
@@ -149,10 +157,15 @@ const english: UiStrings = {
   editingToolbar: 'Editing toolbar',
   exportHtml: 'Export HTML',
   exportHtmlPrepared: 'HTML export prepared ({characters} characters)',
+  exportHtmlSaved: 'HTML export written ({bytes} bytes)',
+  exportPath: 'Export path',
+  exportPathPlaceholder: 'Export .txt, .html, or .pdf path',
   exportPdf: 'Export PDF',
   exportPdfPrepared: 'PDF export prepared ({bytes} bytes)',
+  exportPdfSaved: 'PDF export written ({bytes} bytes)',
   exportTxt: 'Export TXT',
   exportTxtPrepared: 'TXT export prepared ({characters} characters)',
+  exportTxtSaved: 'TXT export written ({bytes} bytes)',
   file: 'File',
   find: 'Find',
   findAndReplace: 'Find and replace',
@@ -189,6 +202,9 @@ const english: UiStrings = {
   paragraphUnchanged: 'Paragraph unchanged',
   pageSetupUpdated: 'Page setup updated',
   previous: 'Prev',
+  print: 'Print',
+  printFrame: 'Print document',
+  printPrepared: 'Print view prepared',
   projection: 'Projection',
   ready: 'Ready',
   recent: 'Recent',
@@ -259,8 +275,13 @@ const spanish: Partial<UiStrings> = {
   editorReadOnly: 'El editor es de solo lectura',
   editingToolbar: 'Barra de edicion',
   exportHtmlPrepared: 'Exportacion HTML preparada ({characters} caracteres)',
+  exportHtmlSaved: 'Exportacion HTML escrita ({bytes} bytes)',
+  exportPath: 'Ruta de exportacion',
+  exportPathPlaceholder: 'Ruta .txt, .html o .pdf',
   exportPdfPrepared: 'Exportacion PDF preparada ({bytes} bytes)',
+  exportPdfSaved: 'Exportacion PDF escrita ({bytes} bytes)',
   exportTxtPrepared: 'Exportacion TXT preparada ({characters} caracteres)',
+  exportTxtSaved: 'Exportacion TXT escrita ({bytes} bytes)',
   file: 'Archivo',
   find: 'Buscar',
   findAndReplace: 'Buscar y reemplazar',
@@ -281,6 +302,8 @@ const spanish: Partial<UiStrings> = {
   open: 'Abrir',
   page: 'Pagina',
   pageSetupUpdated: 'Pagina actualizada',
+  print: 'Imprimir',
+  printPrepared: 'Vista de impresion preparada',
   ready: 'Listo',
   recent: 'Recientes',
   recovery: 'Recuperacion',
