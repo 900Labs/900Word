@@ -70,7 +70,7 @@ select:focus-visible {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   background: #ecefed;
 }
 
@@ -342,8 +342,12 @@ select:focus-visible {
 .workspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(15rem, 19rem) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   background: #dfe4e2;
+}
+
+.workspace.has-sidebar {
+  grid-template-columns: minmax(15rem, 19rem) minmax(0, 1fr);
 }
 
 .sidebar {
@@ -461,6 +465,7 @@ select:focus-visible {
 }
 
 .editor-host {
+  position: relative;
   width: min(100%, 56rem);
   min-height: 48rem;
   margin: 0 auto 2rem;
@@ -471,6 +476,15 @@ select:focus-visible {
   box-shadow:
     0 1px 2px rgba(22, 27, 34, 0.08),
     0 18px 48px rgba(22, 27, 34, 0.16);
+}
+
+.editor-host.empty-document:not(:focus-within)::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  top: clamp(2rem, 4vw, 4rem);
+  left: clamp(2rem, 4vw, 4rem);
+  color: #8a939c;
+  pointer-events: none;
 }
 
 .ProseMirror {
@@ -517,6 +531,14 @@ select:focus-visible {
   font-size: 1.1rem;
 }
 
+.form-surface h3 {
+  margin: 0;
+  color: #39434d;
+  font-size: 0.88rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
 .form-surface label {
   display: grid;
   gap: 0.35rem;
@@ -532,6 +554,15 @@ select:focus-visible {
   margin: 0;
   display: grid;
   gap: 0.55rem;
+}
+
+.settings-group {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.9rem;
+  border: 1px solid #d5dad8;
+  border-radius: 6px;
+  background: #f8faf9;
 }
 
 .check-row {
@@ -551,6 +582,39 @@ select:focus-visible {
 
 .muted {
   color: #66717b;
+}
+
+.bottom-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.8rem;
+  border-top: 1px solid #c8ced2;
+  background: #f7f8f7;
+  color: #39434d;
+  font-size: 0.82rem;
+}
+
+.bottom-group {
+  min-width: 0;
+  display: flex;
+  flex: 1 1 15rem;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.7rem;
+  align-items: center;
+}
+
+.bottom-label {
+  color: #20242c;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.bottom-toolbar strong {
+  color: #20242c;
+  font-variant-numeric: tabular-nums;
 }
 
 .print-frame {
@@ -573,7 +637,9 @@ select:focus-visible {
 .high-contrast .view-tabs,
 .high-contrast .tool-group,
 .high-contrast .editor-host,
-.high-contrast .form-surface {
+.high-contrast .form-surface,
+.high-contrast .settings-group,
+.high-contrast .bottom-toolbar {
   border-color: #050505;
 }
 
@@ -582,7 +648,8 @@ select:focus-visible {
 }
 
 .high-contrast .sidebar,
-.high-contrast .editor-panel {
+.high-contrast .editor-panel,
+.high-contrast .bottom-toolbar {
   background: #ffffff;
   border-color: #050505;
 }
@@ -619,7 +686,8 @@ select:focus-visible {
     box-shadow: none;
   }
 
-  .workspace {
+  .workspace,
+  .workspace.has-sidebar {
     grid-template-columns: 1fr;
   }
 

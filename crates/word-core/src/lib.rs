@@ -177,7 +177,7 @@ impl Default for Section {
             id: Uuid::new_v4(),
             blocks: vec![Block::Paragraph(Paragraph {
                 style: StyleId::from("body"),
-                inlines: vec![Inline::text("Start writing...")],
+                inlines: Vec::new(),
             })],
             page: PageSetup::default(),
         }
@@ -541,10 +541,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_document_has_body_text() {
+    fn new_document_starts_with_empty_body_paragraph() {
         let document = Document::new_untitled();
 
-        assert_eq!(document.stats().word_count, 2);
+        assert_eq!(document.stats().word_count, 0);
+        assert_eq!(document.stats().character_count, 0);
         assert_eq!(document.stats().block_count, 1);
     }
 

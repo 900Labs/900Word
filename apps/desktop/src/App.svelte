@@ -127,6 +127,11 @@
   let uiDirection = $derived(localeDirection(settings.ui_locale));
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
+  let showWorkspaceSidebar = $derived(
+    fileState.recent_documents.length > 0 ||
+      fileState.recovery_documents.length > 0 ||
+      projectionWarnings.length > 0
+  );
   let editorSyncQueue = Promise.resolve();
   let editorSyncError: string | null = null;
   let lastEditorSelection = $state<EditorSelectionSnapshot | undefined>();
@@ -836,132 +841,48 @@
     </div>
   </section>
 
-  <section class="workspace" aria-label={tr('documentWorkspace')}>
-    <aside class="sidebar" aria-label={tr('documentStatistics')}>
-      <h2>{tr('file')}</h2>
-      <dl>
-        <div><dt>{tr('saved')}</dt><dd>{fileState.has_current_path ? tr('yes') : tr('no')}</dd></div>
-        <div><dt>{tr('dirty')}</dt><dd>{fileState.dirty ? tr('yes') : tr('no')}</dd></div>
-      </dl>
+  <section
+    class={showWorkspaceSidebar ? 'workspace has-sidebar' : 'workspace'}
+    aria-label={tr('documentWorkspace')}
+  >
+    {#if showWorkspaceSidebar}
+      <aside class="sidebar" aria-label={tr('documentStatistics')}>
+        {#if fileState.recent_documents.length > 0}
+          <h2>{tr('recent')}</h2>
+          <ul class="action-list">
+            {#each fileState.recent_documents as recent}
+              <li>
+                <button type="button" onclick={() => openRecentDocument(recent.token)}>
+                  {recent.label}{recent.is_current ? ' *' : ''}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
 
-      <h2>{tr('page')}</h2>
-      <div class="page-setup">
-        <label>
-          {tr('width')}
-          <input
-            min="50"
-            max="500"
-            type="number"
-            value={pageSetup.width_mm}
-            oninput={(event) => updatePageSetupField('width_mm', event.currentTarget.valueAsNumber)}
-          />
-        </label>
-        <label>
-          {tr('height')}
-          <input
-            min="50"
-            max="500"
-            type="number"
-            value={pageSetup.height_mm}
-            oninput={(event) => updatePageSetupField('height_mm', event.currentTarget.valueAsNumber)}
-          />
-        </label>
-        <label>
-          {tr('top')}
-          <input
-            min="0"
-            max="100"
-            type="number"
-            value={pageSetup.margin_top_mm}
-            oninput={(event) => updatePageSetupField('margin_top_mm', event.currentTarget.valueAsNumber)}
-          />
-        </label>
-        <label>
-          {tr('right')}
-          <input
-            min="0"
-            max="100"
-            type="number"
-            value={pageSetup.margin_right_mm}
-            oninput={(event) => updatePageSetupField('margin_right_mm', event.currentTarget.valueAsNumber)}
-          />
-        </label>
-        <label>
-          {tr('bottom')}
-          <input
-            min="0"
-            max="100"
-            type="number"
-            value={pageSetup.margin_bottom_mm}
-            oninput={(event) => updatePageSetupField('margin_bottom_mm', event.currentTarget.valueAsNumber)}
-          />
-        </label>
-        <label>
-          {tr('left')}
-          <input
-            min="0"
-            max="100"
-            type="number"
-            value={pageSetup.margin_left_mm}
-            oninput={(event) => updatePageSetupField('margin_left_mm', event.currentTarget.valueAsNumber)}
-          />
-        </label>
-        <button type="button" onclick={applyPageSetup}>{tr('applyPage')}</button>
-      </div>
+        {#if fileState.recovery_documents.length > 0}
+          <h2>{tr('recovery')}</h2>
+          <ul class="action-list">
+            {#each fileState.recovery_documents as recovery}
+              <li>
+                <span>{recovery.label}</span>
+                <button type="button" onclick={() => recoverDocument(recovery.token)}>{tr('recover')}</button>
+                <button type="button" onclick={() => discardRecovery(recovery.token)}>{tr('discard')}</button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
 
-      {#if fileState.recent_documents.length > 0}
-        <h2>{tr('recent')}</h2>
-        <ul class="action-list">
-          {#each fileState.recent_documents as recent}
-            <li>
-              <button type="button" onclick={() => openRecentDocument(recent.token)}>
-                {recent.label}{recent.is_current ? ' *' : ''}
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-
-      {#if fileState.recovery_documents.length > 0}
-        <h2>{tr('recovery')}</h2>
-        <ul class="action-list">
-          {#each fileState.recovery_documents as recovery}
-            <li>
-              <span>{recovery.label}</span>
-              <button type="button" onclick={() => recoverDocument(recovery.token)}>{tr('recover')}</button>
-              <button type="button" onclick={() => discardRecovery(recovery.token)}>{tr('discard')}</button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-
-      <h2>{tr('stats')}</h2>
-      <dl>
-        <div><dt>{tr('words')}</dt><dd>{stats.word_count}</dd></div>
-        <div><dt>{tr('characters')}</dt><dd>{stats.character_count}</dd></div>
-        <div><dt>{tr('blocks')}</dt><dd>{stats.block_count}</dd></div>
-      </dl>
-
-      <h2>{tr('spelling')}</h2>
-      {#if spellIssues.length === 0}
-        <p>{tr('noIssues')}</p>
-      {:else}
-        <ul>
-          {#each spellIssues as issue}
-            <li>{issue.word}</li>
-          {/each}
-        </ul>
-      {/if}
-
-      {#if projectionWarnings.length > 0}
-        <h2>{tr('projection')}</h2>
-        <ul>
-          {#each projectionWarnings as warning}
-            <li>{warning}</li>
-          {/each}
-        </ul>
-      {/if}
-    </aside>
+        {#if projectionWarnings.length > 0}
+          <h2>{tr('projection')}</h2>
+          <ul>
+            {#each projectionWarnings as warning}
+              <li>{warning}</li>
+            {/each}
+          </ul>
+        {/if}
+      </aside>
+    {/if}
 
     <div
       aria-label={tr('editor')}
@@ -970,7 +891,12 @@
       id="editor-view"
       role="tabpanel"
     >
-      <div bind:this={editorHost} class="editor-host"></div>
+      <div
+        bind:this={editorHost}
+        class:empty-document={plainText.trim().length === 0}
+        class="editor-host"
+        data-placeholder={tr('startWriting')}
+      ></div>
     </div>
 
     <div
@@ -982,6 +908,73 @@
     >
       <div class="form-surface">
         <h2>{tr('settings')}</h2>
+
+        <section class="settings-group" aria-labelledby="page-settings-heading">
+          <h3 id="page-settings-heading">{tr('page')}</h3>
+          <div class="page-setup">
+            <label>
+              {tr('width')}
+              <input
+                min="50"
+                max="500"
+                type="number"
+                value={pageSetup.width_mm}
+                oninput={(event) => updatePageSetupField('width_mm', event.currentTarget.valueAsNumber)}
+              />
+            </label>
+            <label>
+              {tr('height')}
+              <input
+                min="50"
+                max="500"
+                type="number"
+                value={pageSetup.height_mm}
+                oninput={(event) => updatePageSetupField('height_mm', event.currentTarget.valueAsNumber)}
+              />
+            </label>
+            <label>
+              {tr('top')}
+              <input
+                min="0"
+                max="100"
+                type="number"
+                value={pageSetup.margin_top_mm}
+                oninput={(event) => updatePageSetupField('margin_top_mm', event.currentTarget.valueAsNumber)}
+              />
+            </label>
+            <label>
+              {tr('right')}
+              <input
+                min="0"
+                max="100"
+                type="number"
+                value={pageSetup.margin_right_mm}
+                oninput={(event) => updatePageSetupField('margin_right_mm', event.currentTarget.valueAsNumber)}
+              />
+            </label>
+            <label>
+              {tr('bottom')}
+              <input
+                min="0"
+                max="100"
+                type="number"
+                value={pageSetup.margin_bottom_mm}
+                oninput={(event) => updatePageSetupField('margin_bottom_mm', event.currentTarget.valueAsNumber)}
+              />
+            </label>
+            <label>
+              {tr('left')}
+              <input
+                min="0"
+                max="100"
+                type="number"
+                value={pageSetup.margin_left_mm}
+                oninput={(event) => updatePageSetupField('margin_left_mm', event.currentTarget.valueAsNumber)}
+              />
+            </label>
+            <button type="button" onclick={applyPageSetup}>{tr('applyPage')}</button>
+          </div>
+        </section>
 
         <label>
           {tr('dictionary')}
@@ -1035,6 +1028,28 @@
       </div>
     </div>
   </section>
+
+  <footer class="bottom-toolbar" aria-label={tr('documentStatistics')}>
+    <div class="bottom-group">
+      <span class="bottom-label">{tr('file')}</span>
+      <span>{tr('saved')}: <strong>{fileState.has_current_path ? tr('yes') : tr('no')}</strong></span>
+      <span>{tr('dirty')}: <strong>{fileState.dirty ? tr('yes') : tr('no')}</strong></span>
+    </div>
+    <div class="bottom-group">
+      <span class="bottom-label">{tr('stats')}</span>
+      <span>{tr('words')}: <strong>{stats.word_count}</strong></span>
+      <span>{tr('characters')}: <strong>{stats.character_count}</strong></span>
+      <span>{tr('blocks')}: <strong>{stats.block_count}</strong></span>
+    </div>
+    <div class="bottom-group">
+      <span class="bottom-label">{tr('spelling')}</span>
+      {#if spellIssues.length === 0}
+        <span>{tr('noIssues')}</span>
+      {:else}
+        <span>{tr('spellIssueCount', { count: spellIssues.length })}</span>
+      {/if}
+    </div>
+  </footer>
 
   <iframe bind:this={printFrame} class="print-frame" title={tr('printFrame')}></iframe>
 </main>

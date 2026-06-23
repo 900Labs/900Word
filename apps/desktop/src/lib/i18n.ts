@@ -97,6 +97,7 @@ export type UiStringKey =
   | 'spellIssueCount'
   | 'spelling'
   | 'starting'
+  | 'startWriting'
   | 'statusNoSpellingIssues'
   | 'stats'
   | 'strikethrough'
@@ -226,6 +227,7 @@ const english: UiStrings = {
   spellIssueCount: '{count} spelling issue(s)',
   spelling: 'Spelling',
   starting: 'Starting...',
+  startWriting: 'Start writing...',
   statusNoSpellingIssues: 'No spelling issues found',
   stats: 'Stats',
   strikethrough: 'Strike',
@@ -320,6 +322,7 @@ const spanish: Partial<UiStrings> = {
   settingsUpdated: 'Ajustes guardados',
   spelling: 'Ortografia',
   starting: 'Iniciando...',
+  startWriting: 'Empieza a escribir...',
   statusNoSpellingIssues: 'No se encontraron problemas de ortografia',
   stats: 'Estadisticas',
   telemetry: 'Telemetria',

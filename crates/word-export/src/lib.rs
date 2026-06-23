@@ -402,12 +402,12 @@ mod tests {
     use word_core::{ImageBlock, ListBlock, ListDefinition, ListItem, Table, TableCell, TableRow};
 
     #[test]
-    fn txt_export_contains_body_text() {
+    fn txt_export_preserves_empty_document_text() {
         let document = Document::new_untitled();
 
         assert_eq!(
             export_txt(&document).expect("txt export should succeed"),
-            "Start writing..."
+            ""
         );
     }
 
@@ -538,7 +538,7 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF-1.4"));
         assert!(pdf.ends_with(b"%%EOF\n"));
         assert!(pdf.windows(4).any(|window| window == b"xref"));
-        assert!(pdf
+        assert!(!pdf
             .windows("Start writing...".len())
             .any(|window| window == b"Start writing..."));
     }
