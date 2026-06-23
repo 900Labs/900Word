@@ -310,9 +310,9 @@ select:focus-visible {
   top: calc(100% + 0.45rem);
   right: 0;
   z-index: 20;
-  width: min(42rem, calc(100vw - 2rem));
-  display: grid;
-  grid-template-columns: minmax(10rem, 1fr) auto auto auto auto minmax(9rem, 1fr) auto auto;
+  width: min(34rem, calc(100vw - 2rem));
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.4rem;
   align-items: center;
   padding: 0.55rem;
@@ -324,7 +324,19 @@ select:focus-visible {
 
 .find-popover input[type="search"],
 .find-popover input[type="text"] {
-  min-width: 0;
+  flex: 1 1 11rem;
+  min-width: 9rem;
+}
+
+.find-popover button,
+.find-popover .check-row,
+.find-popover .match-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.find-popover button {
+  min-width: fit-content;
 }
 
 .workspace {
@@ -603,7 +615,6 @@ select:focus-visible {
   .find-popover {
     position: static;
     width: 100%;
-    grid-template-columns: 1fr;
     margin-top: 0.35rem;
     box-shadow: none;
   }
