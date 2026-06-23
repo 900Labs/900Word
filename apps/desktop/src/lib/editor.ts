@@ -1,4 +1,5 @@
 import type { Node as ProseMirrorNode } from 'prosemirror-model';
+import { setBlockType as setProseMirrorBlockType, toggleMark } from 'prosemirror-commands';
 import { EditorState, type Transaction } from 'prosemirror-state';
 import { TextSelection } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
@@ -143,12 +144,19 @@ export function toggleEditorMark(
     return false;
   }
 
-  const transaction = toggleEditorMarkTransaction(view.state, markName, fallbackSelection);
-  if (!transaction) {
+  restoreEditorSelection(view, fallbackSelection);
+  const markType = supportedSchema.marks[markName];
+  if (!markType) {
     return false;
   }
 
-  view.dispatch(transaction.scrollIntoView());
+  const changed = toggleMark(markType)(view.state, (transaction) => {
+    view.dispatch(transaction.scrollIntoView());
+  }, view);
+  if (!changed) {
+    return false;
+  }
+
   view.focus();
   return true;
 }
@@ -190,12 +198,19 @@ export function setEditorBlockType(
     return false;
   }
 
-  const transaction = setEditorBlockTypeTransaction(view.state, blockName, attrs, fallbackSelection);
-  if (!transaction) {
+  restoreEditorSelection(view, fallbackSelection);
+  const nodeType = supportedSchema.nodes[blockName];
+  if (!nodeType) {
     return false;
   }
 
-  view.dispatch(transaction.scrollIntoView());
+  const changed = setProseMirrorBlockType(nodeType, attrs)(view.state, (transaction) => {
+    view.dispatch(transaction.scrollIntoView());
+  }, view);
+  if (!changed) {
+    return false;
+  }
+
   view.focus();
   return true;
 }

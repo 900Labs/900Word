@@ -8,7 +8,7 @@ Runtime recent-document state keeps actual paths backend-only. The frontend rece
 
 Autosave writes recovery drafts under `{TEMP_DIR}/900word-recovery` using sanitized `recovery-<DOCUMENT_ID>.odt` filenames. On Unix platforms the recovery directory is forced to owner-only permissions and recovery files are written with owner-only permissions. Recovery summaries exposed to the frontend include only an opaque token, generic label, byte length, and modified timestamp. Recovery files are not encrypted in the Sprint 004 implementation and may contain document content, so encryption remains a deferred feature.
 
-The Sprint 004 desktop shell uses explicit path entry instead of a native file picker. Rust commands validate extensions, traversal components, and document size limits, but native picker-granted file scopes remain deferred until dialog permissions are added and reviewed.
+The desktop shell uses native Tauri dialogs for ODT open and Save As flows. Dialog output is still treated as untrusted input: Rust commands validate extensions, traversal components, and document size limits before read/write operations. The frontend does not display private local paths after selection.
 
 Spell-check user dictionaries live under `{APP_DATA_DIR}/dictionaries`. The backend creates this folder with owner-only permissions on Unix platforms. Frontend dictionary state includes language tag, display name, source type, and license label only; it does not include local dictionary paths or filenames.
 

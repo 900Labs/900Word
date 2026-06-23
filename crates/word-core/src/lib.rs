@@ -594,6 +594,14 @@ mod tests {
     }
 
     #[test]
+    fn new_document_defaults_to_a4_page_setup() {
+        let document = Document::new_untitled();
+
+        assert_eq!(document.sections[0].page.width_mm, 210);
+        assert_eq!(document.sections[0].page.height_mm, 297);
+    }
+
+    #[test]
     fn page_setup_rejects_invalid_dimensions_and_margins() {
         let mut document = Document::new_untitled();
 

@@ -25,6 +25,6 @@ Complete.
 
 ## Follow-Ups
 
-- Add native save/export dialogs after dialog permissions and picker-granted file scopes are reviewed.
+- Add native export dialogs after export-specific picker behavior and privacy copy are reviewed.
 - Replace the text-oriented PDF adapter with an accepted layout/font strategy before claiming faithful pagination or complex script output.
 - Add end-to-end print smoke coverage once browser/WebView automation is introduced.

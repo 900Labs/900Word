@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
   import { onMount, tick } from 'svelte';
   import {
     createEditor,
@@ -10,6 +11,7 @@
     selectEditorTextRange,
     setEditorBlockType,
     snapshotEditorDomSelection,
+    snapshotEditorSelection,
     toggleEditorMark,
     type EditorFindMatch,
     type EditorSelectionSnapshot,
@@ -92,8 +94,24 @@
     description: string;
   }
 
+  interface PageFormat {
+    id: string;
+    label: string;
+    width_mm: number;
+    height_mm: number;
+  }
+
   type ViewId = 'editor' | 'settings' | 'about';
   const viewOrder: ViewId[] = ['editor', 'settings', 'about'];
+  const odtFileFilters = [{ name: 'OpenDocument Text', extensions: ['odt'] }];
+  const pageFormats: PageFormat[] = [
+    { id: 'a4', label: 'A4 (210 x 297 mm)', width_mm: 210, height_mm: 297 },
+    { id: 'a3', label: 'A3 (297 x 420 mm)', width_mm: 297, height_mm: 420 },
+    { id: 'a5', label: 'A5 (148 x 210 mm)', width_mm: 148, height_mm: 210 },
+    { id: 'letter', label: 'US Letter (216 x 279 mm)', width_mm: 216, height_mm: 279 },
+    { id: 'legal', label: 'US Legal (216 x 356 mm)', width_mm: 216, height_mm: 356 },
+    { id: 'tabloid', label: 'Tabloid (279 x 432 mm)', width_mm: 279, height_mm: 432 }
+  ];
 
   let title = $state('900Word');
   let status = $state(translate('en-US', 'starting'));
@@ -102,7 +120,6 @@
   let stats = $state<DocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
   let spellIssues = $state<SpellIssue[]>([]);
   let projectionWarnings = $state<string[]>([]);
-  let filePathInput = $state('');
   let exportPathInput = $state('');
   let fileState = $state<DocumentFileState>({
     has_current_path: false,
@@ -148,8 +165,7 @@
   async function newDocument() {
     await waitForEditorSync();
     const document = await invoke<DocumentState>('new_document');
-    await loadDocumentIntoEditor(document, tr('ready'));
-    filePathInput = '';
+    await loadDocumentIntoEditor(document, '');
     await refreshFileState();
   }
 
@@ -159,7 +175,6 @@
       templateId: selectedTemplateId
     });
     await loadDocumentIntoEditor(document, tr('templateLoaded'));
-    filePathInput = '';
     await refreshFileState();
   }
 
@@ -231,13 +246,24 @@
     }
   }
 
-  async function openDocumentFromPath() {
+  async function openDocumentAtPath(path: string) {
     await waitForEditorSync();
     const document = await invoke<DocumentState>('open_document', {
-      path: filePathInput
+      path
     });
     await loadDocumentIntoEditor(document, tr('documentOpened'));
     await refreshFileState();
+  }
+
+  async function openDocumentWithDialog() {
+    const selected = await openDialog({
+      multiple: false,
+      filters: odtFileFilters
+    });
+    if (typeof selected !== 'string') {
+      return;
+    }
+    await openDocumentAtPath(selected);
   }
 
   async function openRecentDocument(token: string) {
@@ -255,12 +281,23 @@
     status = tr('documentSaved');
   }
 
-  async function saveDocumentAsPath() {
+  async function saveDocumentAsPath(path: string) {
     await waitForEditorSync();
     fileState = await invoke<DocumentFileState>('save_document_as', {
-      path: filePathInput
+      path
     });
     status = tr('documentSavedAs');
+  }
+
+  async function saveDocumentAsWithDialog() {
+    const selected = await saveDialog({
+      defaultPath: defaultDocumentFileName(),
+      filters: odtFileFilters
+    });
+    if (!selected) {
+      return;
+    }
+    await saveDocumentAsPath(selected);
   }
 
   async function autosaveDocument() {
@@ -376,20 +413,22 @@
       : tr('markUnavailable', { label });
   }
 
-  function runToolbarMouseCommand(event: MouseEvent, command: () => void) {
-    const selection = snapshotEditorDomSelection(view);
+  function runToolbarMouseCommand(event: MouseEvent) {
     event.preventDefault();
-    if (selection) {
-      lastEditorSelection = selection;
-      restoreEditorSelection(view, selection);
-    }
-    command();
+    captureToolbarSelection();
   }
 
-  function runToolbarKeyboardCommand(event: MouseEvent, command: () => void) {
-    if (event.detail === 0) {
-      command();
+  function captureToolbarSelection() {
+    const selection = snapshotEditorDomSelection(view) ?? (view ? snapshotEditorSelection(view) : undefined);
+    if (selection && !selection.empty) {
+      lastEditorSelection = selection;
     }
+  }
+
+  function runToolbarCommand(event: MouseEvent, command: () => void) {
+    event.preventDefault();
+    restoreEditorSelection(view, lastEditorSelection);
+    command();
   }
 
   function applyParagraph() {
@@ -564,6 +603,35 @@
     pageSetup = { ...pageSetup, [field]: Math.trunc(value) };
   }
 
+  function updatePageFormat(formatId: string) {
+    const format = pageFormats.find((candidate) => candidate.id === formatId);
+    if (!format) {
+      return;
+    }
+    pageSetup = {
+      ...pageSetup,
+      width_mm: format.width_mm,
+      height_mm: format.height_mm
+    };
+  }
+
+  function currentPageFormatId() {
+    return (
+      pageFormats.find(
+        (format) => format.width_mm === pageSetup.width_mm && format.height_mm === pageSetup.height_mm
+      )?.id ?? 'custom'
+    );
+  }
+
+  function defaultDocumentFileName() {
+    const cleaned = title
+      .replace(/[\\/:*?"<>|]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const baseName = cleaned.length > 0 ? cleaned : 'Untitled Document';
+    return baseName.toLowerCase().endsWith('.odt') ? baseName : `${baseName}.odt`;
+  }
+
   function handleGlobalKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && fileMenuOpen) {
       event.preventDefault();
@@ -677,7 +745,6 @@
   <header class="topbar">
     <div>
       <h1>{title}</h1>
-      <p>{status}</p>
     </div>
   </header>
 
@@ -706,21 +773,12 @@
             <span class="menu-shortcut">Cmd+N</span>
           </button>
 
-          <div class="menu-field" role="none">
-            <label for="file-menu-odt-path">{tr('odtPath')}</label>
-            <div class="menu-input-row">
-              <input
-                id="file-menu-odt-path"
-                aria-label={tr('odtPath')}
-                bind:value={filePathInput}
-                placeholder={tr('odtPathPlaceholder')}
-                type="text"
-              />
-              <button class="menu-inline-button" type="button" onclick={() => runFileMenuAction(openDocumentFromPath)}>
-                {tr('open')}
-              </button>
-            </div>
-          </div>
+          <button class="menu-command" type="button" onclick={() => runFileMenuAction(openDocumentWithDialog)}>
+            <span class="menu-glyph glyph-open" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('open')}</span>
+            </span>
+          </button>
 
           <div class="menu-separator" role="separator"></div>
 
@@ -736,7 +794,7 @@
             </span>
             <span class="menu-shortcut">Cmd+S</span>
           </button>
-          <button class="menu-command" type="button" onclick={() => runFileMenuAction(saveDocumentAsPath)}>
+          <button class="menu-command" type="button" onclick={() => runFileMenuAction(saveDocumentAsWithDialog)}>
             <span class="menu-glyph glyph-save-as" aria-hidden="true"></span>
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('saveAs')}</span>
@@ -846,10 +904,10 @@
         aria-label={tr('bold')}
         class="format-button strong"
         disabled={!editorEditable}
-        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('bold', tr('bold')))}
+        onmousedown={runToolbarMouseCommand}
         title={tr('bold')}
         type="button"
-        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('bold', tr('bold')))}
+        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('bold', tr('bold')))}
       >
         B
       </button>
@@ -857,10 +915,10 @@
         aria-label={tr('italic')}
         class="format-button italic"
         disabled={!editorEditable}
-        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('italic', tr('italic')))}
+        onmousedown={runToolbarMouseCommand}
         title={tr('italic')}
         type="button"
-        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('italic', tr('italic')))}
+        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('italic', tr('italic')))}
       >
         I
       </button>
@@ -868,10 +926,10 @@
         aria-label={tr('underline')}
         class="format-button underline"
         disabled={!editorEditable}
-        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('underline', tr('underline')))}
+        onmousedown={runToolbarMouseCommand}
         title={tr('underline')}
         type="button"
-        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('underline', tr('underline')))}
+        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('underline', tr('underline')))}
       >
         U
       </button>
@@ -879,10 +937,10 @@
         aria-label={tr('strikethrough')}
         class="format-button strike"
         disabled={!editorEditable}
-        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
+        onmousedown={runToolbarMouseCommand}
         title={tr('strikethrough')}
         type="button"
-        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
+        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
       >
         S
       </button>
@@ -890,10 +948,10 @@
         aria-label={tr('superscript')}
         class="format-button script"
         disabled={!editorEditable}
-        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
+        onmousedown={runToolbarMouseCommand}
         title={tr('superscript')}
         type="button"
-        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
+        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
       >
         x<sup>2</sup>
       </button>
@@ -901,10 +959,10 @@
         aria-label={tr('subscript')}
         class="format-button script"
         disabled={!editorEditable}
-        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
+        onmousedown={runToolbarMouseCommand}
         title={tr('subscript')}
         type="button"
-        onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
+        onclick={(event) => runToolbarCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
       >
         x<sub>2</sub>
       </button>
@@ -913,25 +971,25 @@
     <div class="tool-group" role="group" aria-label={tr('blockFormatting')}>
       <button
         disabled={!editorEditable}
-        onmousedown={(event) => runToolbarMouseCommand(event, applyParagraph)}
+        onmousedown={runToolbarMouseCommand}
         type="button"
-        onclick={(event) => runToolbarKeyboardCommand(event, applyParagraph)}
+        onclick={(event) => runToolbarCommand(event, applyParagraph)}
       >
         {tr('paragraph')}
       </button>
       <button
         disabled={!editorEditable}
-        onmousedown={(event) => runToolbarMouseCommand(event, () => applyHeading(1))}
+        onmousedown={runToolbarMouseCommand}
         type="button"
-        onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(1))}
+        onclick={(event) => runToolbarCommand(event, () => applyHeading(1))}
       >
         {tr('heading1')}
       </button>
       <button
         disabled={!editorEditable}
-        onmousedown={(event) => runToolbarMouseCommand(event, () => applyHeading(2))}
+        onmousedown={runToolbarMouseCommand}
         type="button"
-        onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(2))}
+        onclick={(event) => runToolbarCommand(event, () => applyHeading(2))}
       >
         {tr('heading2')}
       </button>
@@ -1054,6 +1112,19 @@
         <section class="settings-group" aria-labelledby="page-settings-heading">
           <h3 id="page-settings-heading">{tr('page')}</h3>
           <div class="page-setup">
+            <label class="page-format-field">
+              {tr('pageSize')}
+              <select
+                aria-label={tr('pageSize')}
+                value={currentPageFormatId()}
+                onchange={(event) => updatePageFormat(event.currentTarget.value)}
+              >
+                {#each pageFormats as format}
+                  <option value={format.id}>{format.label}</option>
+                {/each}
+                <option value="custom">{tr('custom')}</option>
+              </select>
+            </label>
             <label>
               {tr('width')}
               <input

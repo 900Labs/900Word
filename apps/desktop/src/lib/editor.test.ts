@@ -3,7 +3,9 @@ import { EditorState, TextSelection, type Transaction } from 'prosemirror-state'
 import {
   findEditorDocMatches,
   restoreEditorSelection,
+  setEditorBlockType,
   setEditorBlockTypeTransaction,
+  toggleEditorMark,
   toggleEditorMarkTransaction
 } from './editor';
 import { supportedSchema } from './editorSchema';
@@ -129,5 +131,73 @@ describe('findEditorDocMatches', () => {
     expect(view.state.selection.empty).toBe(false);
     expect(view.state.selection.from).toBe(1);
     expect(view.state.selection.to).toBe(6);
+  });
+
+  it('toggles a mark through the toolbar command path with a fallback selection', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Hello world' }]
+        }
+      ]
+    });
+    let state = EditorState.create({ doc });
+    const view = {
+      state,
+      dispatch(transaction: Transaction) {
+        state = state.apply(transaction);
+        this.state = state;
+      },
+      focus() {}
+    };
+
+    const changed = toggleEditorMark(view as unknown as Parameters<typeof toggleEditorMark>[0], 'bold', {
+      from: 1,
+      to: 6,
+      empty: false
+    });
+
+    expect(changed).toBe(true);
+    expect(view.state.doc.firstChild?.firstChild?.marks.map((mark) => mark.type.name)).toEqual(['bold']);
+  });
+
+  it('changes block type through the toolbar command path with a fallback selection', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Heading text' }]
+        }
+      ]
+    });
+    let state = EditorState.create({ doc });
+    const view = {
+      state,
+      dispatch(transaction: Transaction) {
+        state = state.apply(transaction);
+        this.state = state;
+      },
+      focus() {}
+    };
+
+    const changed = setEditorBlockType(
+      view as unknown as Parameters<typeof setEditorBlockType>[0],
+      'heading',
+      { level: 1 },
+      {
+        from: 1,
+        to: 8,
+        empty: false
+      }
+    );
+
+    expect(changed).toBe(true);
+    expect(view.state.doc.firstChild?.type.name).toBe('heading');
+    expect(view.state.doc.firstChild?.attrs.level).toBe(1);
   });
 });

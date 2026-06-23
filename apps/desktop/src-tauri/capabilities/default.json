@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Default permissions for the main 900Word window.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:webview:allow-print"]
+  "permissions": [
+    "core:default",
+    "core:webview:allow-print",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
 }

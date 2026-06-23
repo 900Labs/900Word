@@ -97,8 +97,7 @@ select:focus-visible {
   color: #ffffff;
 }
 
-.topbar h1,
-.topbar p {
+.topbar h1 {
   margin: 0;
 }
 
@@ -106,19 +105,6 @@ select:focus-visible {
   font-size: 1.08rem;
   line-height: 1.25;
   font-weight: 750;
-}
-
-.topbar p {
-  width: fit-content;
-  max-width: 100%;
-  margin-top: 0.28rem;
-  padding: 0.14rem 0.45rem;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #dfe6e3;
-  font-size: 0.78rem;
-  line-height: 1.45;
 }
 
 .menu-strip {
@@ -273,6 +259,10 @@ select:focus-visible {
 .glyph-new::before {
   content: "+";
   font-size: 1.15rem;
+}
+
+.glyph-open::before {
+  content: "O";
 }
 
 .glyph-save::before {
@@ -673,6 +663,14 @@ select:focus-visible {
 .page-setup input {
   width: 100%;
   min-width: 0;
+}
+
+.page-format-field {
+  grid-column: 1 / -1;
+}
+
+.page-format-field select {
+  max-width: none;
 }
 
 .page-setup button {

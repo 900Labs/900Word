@@ -15,6 +15,7 @@ export type UiStringKey =
   | 'characters'
   | 'checkSpelling'
   | 'close'
+  | 'custom'
   | 'dictionary'
   | 'documentActions'
   | 'documentFormat'
@@ -66,8 +67,6 @@ export type UiStringKey =
   | 'no'
   | 'off'
   | 'offlineDictionaryFallback'
-  | 'odtPath'
-  | 'odtPathPlaceholder'
   | 'open'
   | 'openRecent'
   | 'page'
@@ -75,13 +74,13 @@ export type UiStringKey =
   | 'paragraphApplied'
   | 'paragraphUnchanged'
   | 'pageSetupUpdated'
+  | 'pageSize'
   | 'pdf'
   | 'previous'
   | 'print'
   | 'printFrame'
   | 'printPrepared'
   | 'projection'
-  | 'ready'
   | 'recent'
   | 'recover'
   | 'recovery'
@@ -150,6 +149,7 @@ const english: UiStrings = {
   characters: 'Characters',
   checkSpelling: 'Check Spelling',
   close: 'Close',
+  custom: 'Custom',
   dictionary: 'Dictionary',
   documentActions: 'Document actions',
   documentFormat: 'Document format',
@@ -201,8 +201,6 @@ const english: UiStrings = {
   noMatches: 'No matches',
   off: 'Off',
   offlineDictionaryFallback: 'Dictionary fallback used',
-  odtPath: 'ODT path',
-  odtPathPlaceholder: 'Document .odt path',
   open: 'Open',
   openRecent: 'Open',
   page: 'Page',
@@ -210,13 +208,13 @@ const english: UiStrings = {
   paragraphApplied: 'Paragraph applied',
   paragraphUnchanged: 'Paragraph unchanged',
   pageSetupUpdated: 'Page setup updated',
+  pageSize: 'Page size',
   pdf: 'PDF',
   previous: 'Prev',
   print: 'Print',
   printFrame: 'Print document',
   printPrepared: 'Print view prepared',
   projection: 'Projection',
-  ready: 'Ready',
   recent: 'Recent',
   recover: 'Open',
   recovery: 'Recovery',
@@ -275,6 +273,7 @@ const spanish: Partial<UiStrings> = {
   case: 'Mayusculas',
   characters: 'Caracteres',
   checkSpelling: 'Revisar ortografia',
+  custom: 'Personalizado',
   dictionary: 'Diccionario',
   documentActions: 'Acciones del documento',
   documentFormat: 'Formato de documento',
@@ -312,15 +311,13 @@ const spanish: Partial<UiStrings> = {
   noMatches: 'Sin coincidencias',
   no: 'No',
   off: 'Apagado',
-  odtPath: 'Ruta ODT',
-  odtPathPlaceholder: 'Ruta del documento .odt',
   open: 'Abrir',
   page: 'Pagina',
   pageSetupUpdated: 'Pagina actualizada',
+  pageSize: 'Tamano de pagina',
   pdf: 'PDF',
   print: 'Imprimir',
   printPrepared: 'Vista de impresion preparada',
-  ready: 'Listo',
   recent: 'Recientes',
   recovery: 'Recuperacion',
   recoveryDiscarded: 'Borrador de recuperacion descartado',

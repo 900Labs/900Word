@@ -127,6 +127,7 @@ impl Default for Settings {
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             new_document,
             new_document_from_template,

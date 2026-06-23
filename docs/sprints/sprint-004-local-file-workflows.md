@@ -2,7 +2,7 @@
 
 ## Scope
 
-Implement local document file workflows without adding broad filesystem, shell, network, or dialog-plugin permissions.
+Implement local document file workflows without adding broad filesystem, shell, or network permissions.
 
 ## Deliverables
 
@@ -13,7 +13,7 @@ Implement local document file workflows without adding broad filesystem, shell, 
 - Autosave writes recovery drafts using sanitized `recovery-<DOCUMENT_ID>.odt` filenames under `{TEMP_DIR}/900word-recovery`.
 - On Unix platforms, recovery directories and files are forced to owner-only permissions.
 - Recovery drafts open as dirty unsaved documents rather than adopting the recovery file as the save path.
-- The desktop shell exposes explicit path-based file controls without adding a dialog plugin or shell permissions.
+- The desktop shell uses native dialogs for ODT Open and Save As with scoped dialog permissions.
 - Tests cover path traversal rejection, wrong extension rejection, recovery token validation, recent-summary privacy, output-size rejection, and private recovery-style file permissions on Unix.
 
 ## Validation
@@ -33,11 +33,11 @@ cargo test --workspace
 
 - `apps/desktop/src-tauri/src/lib.rs` contains local file workflow commands, recovery token validation, recent summaries, and tests.
 - `apps/desktop/src/App.svelte` exposes file controls and recovery/recent actions without displaying local paths.
+- `apps/desktop/src-tauri/capabilities/default.json` allows only scoped open/save dialog permissions in addition to the core shell permissions.
 - `docs/PRIVACY_MODEL.md` documents recent and recovery privacy behavior.
 
 ## Follow-Ups
 
-- Native file picker integration requires scoped dialog permissions and a matching capability review.
-- Explicit path entry remains a bootstrap trust boundary until native picker-granted file scopes are implemented.
+- Export path dialogs remain future work; Sprint 007 still uses explicit export paths.
 - Recovery encryption remains deferred until the encryption ADR is implemented and tested.
 - Periodic autosave, crash hooks, close handling, and dirty prompts remain Sprint 005+ editing/workflow work.
