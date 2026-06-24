@@ -98,3 +98,12 @@ Status: complete.
 - Sync edited table cell text and supported cell blocks back through the existing document command path.
 - Add a default 2x2 insert-table toolbar control.
 - Keep row/column structural editing, delete-table controls, merged cells, table styling, and unsupported nested cell content deferred.
+
+## Sprint 013: Headers, Footers, And Page Fields
+
+Status: complete.
+
+- Add section-level header/footer page regions to `word-core`.
+- Add simple Settings-panel editing for headers, footers, first-page variants, and page-field insertion.
+- Persist 900Word-authored page regions and fields through ODT and include them in TXT, HTML, print HTML, and basic PDF exports.
+- Keep deterministic pagination, rich region editing, and complex external header/footer fidelity deferred.

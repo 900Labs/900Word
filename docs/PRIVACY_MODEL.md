@@ -18,6 +18,8 @@ Sprint 011 hyperlink editing stores user-entered safe link targets inside docume
 
 Sprint 012 table editing stores supported cell content in the existing local document model. Unsupported cell content keeps the editor projection read-only rather than serializing private details into UI state or logs.
 
+Sprint 013 header/footer editing stores simple page-region paragraphs and typed page fields in the existing local document model. Unsupported imported header/footer complexity is marked read-only with generic warnings. Page-number, page-count, and date field rendering does not inspect local paths, account data, hostnames, or network state.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -27,6 +29,8 @@ Logs may include high-level operation names and error categories. Logs must not 
 Exporters must avoid adding local usernames, hostnames, absolute paths, or private build metadata to ODT, HTML, TXT, PDF, or EPUB outputs.
 
 Sprint 007 HTML and print exports are generated from the `word-core` model with offline CSP metadata and no remote image or script emission. The basic PDF adapter is generated locally and does not embed local path metadata.
+
+Sprint 013 TXT, HTML, print HTML, and basic PDF exports include simple header/footer text and render page fields with predictable placeholder values where pagination is not available. These outputs do not add local usernames, hostnames, absolute paths, or private build metadata.
 
 ## Network
 

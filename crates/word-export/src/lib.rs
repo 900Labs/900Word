@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 use word_core::{
-    Block, Document, Heading, Inline, InlineMark, ListDefinition, PageSetup, Paragraph,
-    ParagraphFormat, Style, StyleKind,
+    Block, Document, Heading, Inline, InlineMark, PageField, PageRegion, PageRegionBlock,
+    PageSetup, Paragraph, ParagraphFormat, Section, Style, StyleKind,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -23,10 +23,12 @@ pub fn export_txt(document: &Document) -> Result<String, ExportError> {
 
     let mut output = String::new();
     for section in &document.sections {
+        push_section_regions_text(section, document, true, &mut output);
         for block in &section.blocks {
-            push_block_text(block, &mut output);
+            push_block_text(block, document, &mut output);
             output.push('\n');
         }
+        push_section_regions_text(section, document, false, &mut output);
     }
     Ok(output.trim_end().to_string())
 }
@@ -95,9 +97,11 @@ fn export_html_with_options(
 
     for section in &document.sections {
         output.push_str("<section>");
+        push_section_regions_html(section, document, true, &mut output);
         for block in &section.blocks {
-            push_block_html(block, &document.lists, &document.styles, &mut output);
+            push_block_html(block, document, &mut output);
         }
+        push_section_regions_html(section, document, false, &mut output);
         output.push_str("</section>");
     }
 
@@ -105,14 +109,66 @@ fn export_html_with_options(
     Ok(output)
 }
 
-fn push_block_text(block: &Block, output: &mut String) {
+fn push_section_regions_text(
+    section: &Section,
+    document: &Document,
+    before_body: bool,
+    output: &mut String,
+) {
+    if before_body {
+        if section.page_regions.different_first_page {
+            push_region_text(
+                "First page header",
+                &section.page_regions.first_header,
+                document,
+                output,
+            );
+        }
+        push_region_text("Header", &section.page_regions.header, document, output);
+    } else {
+        push_region_text("Footer", &section.page_regions.footer, document, output);
+        if section.page_regions.different_first_page {
+            push_region_text(
+                "First page footer",
+                &section.page_regions.first_footer,
+                document,
+                output,
+            );
+        }
+    }
+}
+
+fn push_region_text(label: &str, region: &PageRegion, document: &Document, output: &mut String) {
+    if region.blocks.is_empty() {
+        return;
+    }
+    output.push('[');
+    output.push_str(label);
+    output.push_str("]\n");
+    for block in &region.blocks {
+        push_page_region_block_text(block, document, output);
+        output.push('\n');
+    }
+}
+
+fn push_page_region_block_text(block: &PageRegionBlock, document: &Document, output: &mut String) {
     match block {
-        Block::Paragraph(paragraph) => push_paragraph_text(paragraph, output),
-        Block::Heading(heading) => push_heading_text(heading, output),
+        PageRegionBlock::Paragraph(paragraph) => {
+            for inline in &paragraph.inlines {
+                output.push_str(&inline_export_text(inline, document));
+            }
+        }
+    }
+}
+
+fn push_block_text(block: &Block, document: &Document, output: &mut String) {
+    match block {
+        Block::Paragraph(paragraph) => push_paragraph_text(paragraph, document, output),
+        Block::Heading(heading) => push_heading_text(heading, document, output),
         Block::List(list) => {
             for item in &list.items {
                 for block in &item.blocks {
-                    push_block_text(block, output);
+                    push_block_text(block, document, output);
                     output.push('\n');
                 }
             }
@@ -121,7 +177,7 @@ fn push_block_text(block: &Block, output: &mut String) {
             for row in &table.rows {
                 for cell in &row.cells {
                     for block in &cell.blocks {
-                        push_block_text(block, output);
+                        push_block_text(block, document, output);
                     }
                     output.push('\t');
                 }
@@ -137,40 +193,93 @@ fn push_block_text(block: &Block, output: &mut String) {
     }
 }
 
-fn push_paragraph_text(paragraph: &Paragraph, output: &mut String) {
+fn push_paragraph_text(paragraph: &Paragraph, document: &Document, output: &mut String) {
     for inline in &paragraph.inlines {
-        output.push_str(&inline.text);
+        output.push_str(&inline_export_text(inline, document));
     }
 }
 
-fn push_heading_text(heading: &Heading, output: &mut String) {
+fn push_heading_text(heading: &Heading, document: &Document, output: &mut String) {
     for inline in &heading.inlines {
-        output.push_str(&inline.text);
+        output.push_str(&inline_export_text(inline, document));
     }
 }
 
-fn push_block_html(
-    block: &Block,
-    lists: &BTreeMap<String, ListDefinition>,
-    styles: &BTreeMap<word_core::StyleId, Style>,
+fn push_section_regions_html(
+    section: &Section,
+    document: &Document,
+    before_body: bool,
     output: &mut String,
 ) {
+    if before_body {
+        if section.page_regions.different_first_page {
+            push_region_html(
+                "first-header",
+                &section.page_regions.first_header,
+                document,
+                output,
+            );
+        }
+        push_region_html("header", &section.page_regions.header, document, output);
+    } else {
+        push_region_html("footer", &section.page_regions.footer, document, output);
+        if section.page_regions.different_first_page {
+            push_region_html(
+                "first-footer",
+                &section.page_regions.first_footer,
+                document,
+                output,
+            );
+        }
+    }
+}
+
+fn push_region_html(kind: &str, region: &PageRegion, document: &Document, output: &mut String) {
+    if region.blocks.is_empty() {
+        return;
+    }
+    let tag = if kind.ends_with("footer") {
+        "footer"
+    } else {
+        "header"
+    };
+    output.push('<');
+    output.push_str(tag);
+    output.push_str(" data-page-region=\"");
+    output.push_str(kind);
+    output.push_str("\">");
+    for block in &region.blocks {
+        match block {
+            PageRegionBlock::Paragraph(paragraph) => {
+                output.push_str("<p>");
+                push_inlines_html(&paragraph.inlines, document, output);
+                output.push_str("</p>");
+            }
+        }
+    }
+    output.push_str("</");
+    output.push_str(tag);
+    output.push('>');
+}
+
+fn push_block_html(block: &Block, document: &Document, output: &mut String) {
     match block {
         Block::Paragraph(paragraph) => {
             output.push_str("<p");
-            output.push_str(&paragraph_html_attrs(paragraph, styles));
+            output.push_str(&paragraph_html_attrs(paragraph, &document.styles));
             output.push('>');
-            push_inlines_html(&paragraph.inlines, output);
+            push_inlines_html(&paragraph.inlines, document, output);
             output.push_str("</p>");
         }
         Block::Heading(heading) => {
             let level = heading.level.clamp(1, 6);
             output.push_str(&format!("<h{level}>"));
-            push_inlines_html(&heading.inlines, output);
+            push_inlines_html(&heading.inlines, document, output);
             output.push_str(&format!("</h{level}>"));
         }
         Block::List(list) => {
-            let tag = if lists
+            let tag = if document
+                .lists
                 .get(&list.definition_id)
                 .map(|definition| definition.ordered)
                 .unwrap_or(false)
@@ -185,7 +294,7 @@ fn push_block_html(
             for item in &list.items {
                 output.push_str("<li>");
                 for block in &item.blocks {
-                    push_block_html(block, lists, styles, output);
+                    push_block_html(block, document, output);
                 }
                 output.push_str("</li>");
             }
@@ -200,7 +309,7 @@ fn push_block_html(
                 for cell in &row.cells {
                     output.push_str("<td>");
                     for block in &cell.blocks {
-                        push_block_html(block, lists, styles, output);
+                        push_block_html(block, document, output);
                     }
                     output.push_str("</td>");
                 }
@@ -223,13 +332,22 @@ fn push_block_html(
     }
 }
 
-fn push_inlines_html(inlines: &[Inline], output: &mut String) {
+fn push_inlines_html(inlines: &[Inline], document: &Document, output: &mut String) {
     for inline in inlines {
-        push_inline_html(inline, output);
+        push_inline_html(inline, document, output);
     }
 }
 
-fn push_inline_html(inline: &Inline, output: &mut String) {
+fn push_inline_html(inline: &Inline, document: &Document, output: &mut String) {
+    if let Some(field) = inline.field {
+        output.push_str("<span data-page-field=\"");
+        output.push_str(page_field_name(field));
+        output.push_str("\">");
+        output.push_str(&escape_html(&inline_export_text(inline, document)));
+        output.push_str("</span>");
+        return;
+    }
+
     let safe_href = inline.link.as_deref().and_then(sanitize_href);
     if let Some(href) = safe_href {
         output.push_str("<a rel=\"noreferrer\" href=\"");
@@ -272,7 +390,7 @@ fn push_inline_html(inline: &Inline, output: &mut String) {
         opened_marks.push(tag);
     }
 
-    output.push_str(&escape_html(&inline.text));
+    output.push_str(&escape_html(&inline_export_text(inline, document)));
 
     for tag in opened_marks.into_iter().rev() {
         output.push_str("</");
@@ -286,6 +404,23 @@ fn push_inline_html(inline: &Inline, output: &mut String) {
 
     if safe_href.is_some() {
         output.push_str("</a>");
+    }
+}
+
+fn inline_export_text(inline: &Inline, document: &Document) -> String {
+    match inline.field {
+        Some(PageField::PageNumber) => "1".to_string(),
+        Some(PageField::PageCount) => "1".to_string(),
+        Some(PageField::Date) => document.meta.modified_at.format("%Y-%m-%d").to_string(),
+        None => inline.text.clone(),
+    }
+}
+
+fn page_field_name(field: PageField) -> &'static str {
+    match field {
+        PageField::PageNumber => "page-number",
+        PageField::PageCount => "page-count",
+        PageField::Date => "date",
     }
 }
 
@@ -534,7 +669,10 @@ fn escape_html(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use word_core::{ImageBlock, ListBlock, ListDefinition, ListItem, Table, TableCell, TableRow};
+    use word_core::{
+        ImageBlock, ListBlock, ListDefinition, ListItem, PageRegionParagraph, Table, TableCell,
+        TableRow,
+    };
 
     #[test]
     fn txt_export_preserves_empty_document_text() {
@@ -583,6 +721,37 @@ mod tests {
     }
 
     #[test]
+    fn exports_include_page_regions_and_render_fields() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page_regions.header.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![
+                    Inline::text("Header "),
+                    Inline::field(PageField::PageNumber),
+                    Inline::text("/"),
+                    Inline::field(PageField::PageCount),
+                ],
+            })];
+        document.sections[0].page_regions.footer.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![Inline::text("Footer "), Inline::field(PageField::Date)],
+            })];
+
+        let text = export_txt(&document).expect("txt export should succeed");
+        let html = export_html(&document).expect("html export should succeed");
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+
+        assert!(text.contains("[Header]\nHeader 1/1"));
+        assert!(text.contains("[Footer]\nFooter "));
+        assert!(html.contains("data-page-region=\"header\""));
+        assert!(html.contains("data-page-field=\"page-number\">1</span>"));
+        assert!(html.contains("data-page-field=\"date\""));
+        assert!(pdf
+            .windows("Header 1/1".len())
+            .any(|window| window == b"Header 1/1"));
+    }
+
+    #[test]
     fn html_export_escapes_text() {
         let mut document = Document::new_untitled();
         document.meta.title = "<Draft>".to_string();
@@ -603,6 +772,7 @@ mod tests {
                 marks: vec![InlineMark::Bold],
                 link: Some("javascript:alert(1)".to_string()),
                 style: Default::default(),
+                field: None,
             }],
         })];
 
@@ -637,6 +807,7 @@ mod tests {
                     text_color: Some("#1f2937".to_string()),
                     highlight_color: Some("#fff3bf".to_string()),
                 },
+                field: None,
             }],
         })];
 

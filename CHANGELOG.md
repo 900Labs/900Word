@@ -13,3 +13,4 @@ All notable changes to 900Word are tracked here.
 - Public-release privacy scanning for source files.
 - Heading navigator sidebar and safe hyperlink insert/edit/remove workflows.
 - Editable table projection for supported table cells and a default 2x2 insert-table command.
+- Section-level header/footer MVP with simple page fields for page number, total page count, and date.

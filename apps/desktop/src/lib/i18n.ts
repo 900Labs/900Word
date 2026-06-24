@@ -10,6 +10,7 @@ export type UiStringKey =
   | 'alignLeft'
   | 'alignRight'
   | 'apply'
+  | 'applyHeadersFooters'
   | 'applyPage'
   | 'autosave'
   | 'autosaveUpdated'
@@ -28,8 +29,10 @@ export type UiStringKey =
   | 'clearFormatting'
   | 'close'
   | 'custom'
+  | 'dateField'
   | 'decreaseIndent'
   | 'dictionary'
+  | 'differentFirstPage'
   | 'documentActions'
   | 'documentFormat'
   | 'documentOpened'
@@ -60,8 +63,16 @@ export type UiStringKey =
   | 'fontControls'
   | 'fontFamily'
   | 'fontSize'
+  | 'footer'
+  | 'footerFields'
   | 'formattingCleared'
   | 'addToDictionary'
+  | 'firstFooter'
+  | 'firstFooterFields'
+  | 'firstHeader'
+  | 'firstHeaderFields'
+  | 'header'
+  | 'headerFields'
   | 'heading1'
   | 'heading2'
   | 'heading3'
@@ -69,6 +80,7 @@ export type UiStringKey =
   | 'headingJumped'
   | 'headingUnchanged'
   | 'height'
+  | 'headersFooters'
   | 'highContrast'
   | 'highlightColor'
   | 'html'
@@ -112,6 +124,10 @@ export type UiStringKey =
   | 'openLinkPanel'
   | 'openRecent'
   | 'page'
+  | 'pageCount'
+  | 'pageNumber'
+  | 'pageRegionsReadOnly'
+  | 'pageRegionsUpdated'
   | 'paragraph'
   | 'paragraphApplied'
   | 'paragraphControls'
@@ -210,6 +226,7 @@ const english: UiStrings = {
   alignLeft: 'Align left',
   alignRight: 'Align right',
   apply: 'Apply',
+  applyHeadersFooters: 'Apply Headers and Footers',
   applyPage: 'Apply Page',
   autosave: 'Autosave',
   autosaveUpdated: 'Recovery draft updated',
@@ -228,8 +245,10 @@ const english: UiStrings = {
   clearFormatting: 'Clear formatting',
   close: 'Close',
   custom: 'Custom',
+  dateField: 'Date',
   decreaseIndent: 'Decrease indent',
   dictionary: 'Dictionary',
+  differentFirstPage: 'Different first page',
   documentActions: 'Document actions',
   documentFormat: 'Document format',
   documentOpened: 'Document opened',
@@ -260,8 +279,16 @@ const english: UiStrings = {
   fontControls: 'Font controls',
   fontFamily: 'Font family',
   fontSize: 'Font size',
+  footer: 'Footer',
+  footerFields: 'Footer fields',
   formattingCleared: 'Formatting cleared',
   addToDictionary: 'Add',
+  firstFooter: 'First-page footer',
+  firstFooterFields: 'First-page footer fields',
+  firstHeader: 'First-page header',
+  firstHeaderFields: 'First-page header fields',
+  header: 'Header',
+  headerFields: 'Header fields',
   heading1: 'H1',
   heading2: 'H2',
   heading3: 'H3',
@@ -269,6 +296,7 @@ const english: UiStrings = {
   headingJumped: 'Jumped to {heading}',
   headingUnchanged: 'Heading {level} unchanged',
   height: 'Height',
+  headersFooters: 'Headers and footers',
   highContrast: 'High contrast',
   highlightColor: 'Highlight color',
   html: 'HTML',
@@ -312,6 +340,10 @@ const english: UiStrings = {
   openLinkPanel: 'Insert or edit link',
   openRecent: 'Open',
   page: 'Page',
+  pageCount: 'Page count',
+  pageNumber: 'Page number',
+  pageRegionsReadOnly: 'Imported header/footer content is read-only',
+  pageRegionsUpdated: 'Headers and footers updated',
   paragraph: 'P',
   paragraphApplied: 'Paragraph applied',
   paragraphControls: 'Paragraph controls',

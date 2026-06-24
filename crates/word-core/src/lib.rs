@@ -132,6 +132,35 @@ impl Document {
                 self.touch();
                 Ok(())
             }
+            DocumentCommand::UpdatePageRegion {
+                section_index,
+                region,
+                blocks,
+            } => {
+                let section = self
+                    .sections
+                    .get_mut(section_index)
+                    .ok_or(DocumentError::SectionOutOfBounds { section_index })?;
+                let slot = section.page_regions.region_mut(region);
+                if slot.read_only {
+                    return Err(DocumentError::ReadOnlyPageRegion { region });
+                }
+                slot.blocks = blocks;
+                self.touch();
+                Ok(())
+            }
+            DocumentCommand::SetDifferentFirstPage {
+                section_index,
+                enabled,
+            } => {
+                let section = self
+                    .sections
+                    .get_mut(section_index)
+                    .ok_or(DocumentError::SectionOutOfBounds { section_index })?;
+                section.page_regions.different_first_page = enabled;
+                self.touch();
+                Ok(())
+            }
             DocumentCommand::UpdateStyle { style } => self.register_style(style),
         }
     }
@@ -170,6 +199,8 @@ pub struct Section {
     pub id: Uuid,
     pub blocks: Vec<Block>,
     pub page: PageSetup,
+    #[serde(default, skip_serializing_if = "PageRegions::is_default")]
+    pub page_regions: PageRegions,
 }
 
 impl Default for Section {
@@ -182,6 +213,7 @@ impl Default for Section {
                 inlines: Vec::new(),
             })],
             page: PageSetup::default(),
+            page_regions: PageRegions::default(),
         }
     }
 }
@@ -243,6 +275,120 @@ impl PageSetup {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PageRegions {
+    #[serde(default, skip_serializing_if = "PageRegion::is_default")]
+    pub header: PageRegion,
+    #[serde(default, skip_serializing_if = "PageRegion::is_default")]
+    pub footer: PageRegion,
+    #[serde(default, skip_serializing_if = "PageRegion::is_default")]
+    pub first_header: PageRegion,
+    #[serde(default, skip_serializing_if = "PageRegion::is_default")]
+    pub first_footer: PageRegion,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub different_first_page: bool,
+}
+
+impl PageRegions {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub fn region(&self, kind: PageRegionKind) -> &PageRegion {
+        match kind {
+            PageRegionKind::Header => &self.header,
+            PageRegionKind::Footer => &self.footer,
+            PageRegionKind::FirstHeader => &self.first_header,
+            PageRegionKind::FirstFooter => &self.first_footer,
+        }
+    }
+
+    pub fn region_mut(&mut self, kind: PageRegionKind) -> &mut PageRegion {
+        match kind {
+            PageRegionKind::Header => &mut self.header,
+            PageRegionKind::Footer => &mut self.footer,
+            PageRegionKind::FirstHeader => &mut self.first_header,
+            PageRegionKind::FirstFooter => &mut self.first_footer,
+        }
+    }
+
+    pub fn has_content(&self) -> bool {
+        [
+            self.header(),
+            self.footer(),
+            self.first_header(),
+            self.first_footer(),
+        ]
+        .iter()
+        .any(|region| region.has_content())
+    }
+
+    pub fn has_read_only_content(&self) -> bool {
+        [
+            self.header(),
+            self.footer(),
+            self.first_header(),
+            self.first_footer(),
+        ]
+        .iter()
+        .any(|region| region.read_only)
+    }
+
+    pub fn header(&self) -> &PageRegion {
+        &self.header
+    }
+
+    pub fn footer(&self) -> &PageRegion {
+        &self.footer
+    }
+
+    pub fn first_header(&self) -> &PageRegion {
+        &self.first_header
+    }
+
+    pub fn first_footer(&self) -> &PageRegion {
+        &self.first_footer
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PageRegion {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<PageRegionBlock>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
+}
+
+impl PageRegion {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub fn has_content(&self) -> bool {
+        !self.blocks.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageRegionKind {
+    Header,
+    Footer,
+    FirstHeader,
+    FirstFooter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+pub enum PageRegionBlock {
+    Paragraph(PageRegionParagraph),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageRegionParagraph {
+    pub inlines: Vec<Inline>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Block {
@@ -299,7 +445,7 @@ pub struct Paragraph {
 impl Paragraph {
     fn push_text(&self, output: &mut String) {
         for inline in &self.inlines {
-            output.push_str(&inline.text);
+            inline.push_text(output);
         }
     }
 }
@@ -313,7 +459,7 @@ pub struct Heading {
 impl Heading {
     fn push_text(&self, output: &mut String) {
         for inline in &self.inlines {
-            output.push_str(&inline.text);
+            inline.push_text(output);
         }
     }
 }
@@ -325,6 +471,8 @@ pub struct Inline {
     pub link: Option<String>,
     #[serde(default, skip_serializing_if = "InlineStyle::is_default")]
     pub style: InlineStyle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<PageField>,
 }
 
 impl Inline {
@@ -334,6 +482,43 @@ impl Inline {
             marks: Vec::new(),
             link: None,
             style: InlineStyle::default(),
+            field: None,
+        }
+    }
+
+    pub fn field(field: PageField) -> Self {
+        Self {
+            text: field.fallback_text().to_string(),
+            marks: Vec::new(),
+            link: None,
+            style: InlineStyle::default(),
+            field: Some(field),
+        }
+    }
+
+    fn push_text(&self, output: &mut String) {
+        if let Some(field) = self.field {
+            output.push_str(field.fallback_text());
+        } else {
+            output.push_str(&self.text);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageField {
+    PageNumber,
+    PageCount,
+    Date,
+}
+
+impl PageField {
+    pub fn fallback_text(self) -> &'static str {
+        match self {
+            PageField::PageNumber => "1",
+            PageField::PageCount => "1",
+            PageField::Date => "1970-01-01",
         }
     }
 }
@@ -521,6 +706,15 @@ pub enum DocumentCommand {
         section_index: usize,
         page: PageSetup,
     },
+    UpdatePageRegion {
+        section_index: usize,
+        region: PageRegionKind,
+        blocks: Vec<PageRegionBlock>,
+    },
+    SetDifferentFirstPage {
+        section_index: usize,
+        enabled: bool,
+    },
     UpdateStyle {
         style: Style,
     },
@@ -587,6 +781,12 @@ pub enum DocumentError {
     NothingToRedo,
     #[error("invalid page setup: {reason}")]
     InvalidPageSetup { reason: &'static str },
+    #[error("page region {region:?} is read-only")]
+    ReadOnlyPageRegion { region: PageRegionKind },
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DocumentError> {
@@ -716,6 +916,57 @@ mod tests {
             .expect("page setup should update");
 
         assert_eq!(document.sections[0].page, page);
+    }
+
+    #[test]
+    fn command_updates_page_region_and_first_page_toggle() {
+        let mut document = Document::new_untitled();
+        let blocks = vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+            inlines: vec![
+                Inline::text("Draft page "),
+                Inline::field(PageField::PageNumber),
+            ],
+        })];
+
+        document
+            .apply_command(DocumentCommand::UpdatePageRegion {
+                section_index: 0,
+                region: PageRegionKind::Header,
+                blocks: blocks.clone(),
+            })
+            .expect("header should update");
+        document
+            .apply_command(DocumentCommand::SetDifferentFirstPage {
+                section_index: 0,
+                enabled: true,
+            })
+            .expect("first page toggle should update");
+
+        assert_eq!(document.sections[0].page_regions.header.blocks, blocks);
+        assert!(document.sections[0].page_regions.different_first_page);
+    }
+
+    #[test]
+    fn read_only_page_region_rejects_command_update() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page_regions.footer.read_only = true;
+
+        let err = document
+            .apply_command(DocumentCommand::UpdatePageRegion {
+                section_index: 0,
+                region: PageRegionKind::Footer,
+                blocks: vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                    inlines: vec![Inline::text("Replacement")],
+                })],
+            })
+            .expect_err("read-only region should reject updates");
+
+        assert_eq!(
+            err,
+            DocumentError::ReadOnlyPageRegion {
+                region: PageRegionKind::Footer
+            }
+        );
     }
 
     #[test]

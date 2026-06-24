@@ -8,6 +8,9 @@ import {
   documentToEditorDoc,
   documentToText,
   editorDocToWordCoreBlocks,
+  pageFieldTokens,
+  pageRegionTextToBlocks,
+  pageRegionToText,
   type DocumentState
 } from './documentProjection';
 
@@ -26,6 +29,72 @@ describe('documentToText', () => {
     };
 
     expect(documentToText(document)).toBe('Title\nBody');
+  });
+
+  it('converts page region tokens to typed field inlines and back', () => {
+    const blocks = pageRegionTextToBlocks(`Page ${pageFieldTokens.page_number} of ${pageFieldTokens.page_count}\n${pageFieldTokens.date}`);
+
+    expect(blocks).toEqual([
+      {
+        type: 'Paragraph',
+        value: {
+          inlines: [
+            { text: 'Page ', marks: [], link: null },
+            { text: '1', marks: [], link: null, field: 'page_number' },
+            { text: ' of ', marks: [], link: null },
+            { text: '1', marks: [], link: null, field: 'page_count' }
+          ]
+        }
+      },
+      {
+        type: 'Paragraph',
+        value: {
+          inlines: [{ text: '1970-01-01', marks: [], link: null, field: 'date' }]
+        }
+      }
+    ]);
+    expect(pageRegionToText({ blocks })).toBe(`Page ${pageFieldTokens.page_number} of ${pageFieldTokens.page_count}\n${pageFieldTokens.date}`);
+  });
+
+  it('warns when imported page regions are read-only', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          page_regions: {
+            header: { read_only: true, blocks: [{ type: 'Paragraph', value: { inlines: [{ text: 'Header' }] } }] }
+          },
+          blocks: [{ type: 'Paragraph', value: { inlines: [{ text: 'Body' }] } }]
+        }
+      ]
+    };
+
+    expect(documentProjectionWarnings(document)).toContain(
+      'Header/footer content with unsupported ODT structure is preserved read-only.'
+    );
+  });
+
+  it('warns instead of flattening semantic page fields in body content', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Paragraph',
+              value: {
+                inlines: [{ text: '1', field: 'page_number' }]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(documentProjectionWarnings(document)).toContain(
+      'Page fields in the document body are preserved but read-only in the editor projection.'
+    );
+    expect(buildEditorSyncCommands(document, [])).toEqual([]);
   });
 
   it('projects supported word-core blocks to ProseMirror JSON', () => {

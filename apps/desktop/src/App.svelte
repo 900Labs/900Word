@@ -40,11 +40,18 @@
     documentOutlineFromEditableBlocks,
     documentProjectionWarnings,
     documentToText,
+    pageFieldTokens,
+    pageRegionIsReadOnly,
+    pageRegionTextToBlocks,
+    pageRegionToText,
     type DocumentStyle,
+    type DocumentCommand,
     type DocumentState,
     type EditorProjectedChange,
     type DocumentOutlineEntry,
     type ListBlock,
+    type PageField,
+    type PageRegionKind,
     type PageSetup
   } from './lib/documentProjection';
   import { localeDirection, translate, uiLocales, type UiStringKey } from './lib/i18n';
@@ -195,6 +202,11 @@
   let ignoredSpellWords = new Set<string>();
   let ignoredSpellInstances = new Set<string>();
   let pageSetup = $state<PageSetup>(defaultPageSetup());
+  let headerText = $state('');
+  let footerText = $state('');
+  let firstHeaderText = $state('');
+  let firstFooterText = $state('');
+  let differentFirstPage = $state(false);
   let findQuery = $state('');
   let replaceText = $state('');
   let findCaseSensitive = $state(false);
@@ -264,6 +276,12 @@
     editorIsEmpty = plainText.trim().length === 0;
     editorHasStarted = !editorIsEmpty;
     pageSetup = document.sections[0]?.page ?? defaultPageSetup();
+    const pageRegions = document.sections[0]?.page_regions ?? {};
+    headerText = pageRegionToText(pageRegions.header);
+    footerText = pageRegionToText(pageRegions.footer);
+    firstHeaderText = pageRegionToText(pageRegions.first_header);
+    firstFooterText = pageRegionToText(pageRegions.first_footer);
+    differentFirstPage = Boolean(pageRegions.different_first_page);
     stats = await invoke<DocumentStats>('get_document_stats');
     projectionWarnings = collectDocumentWarnings(document);
     spellIssues = [];
@@ -1047,6 +1065,84 @@
     } catch (error) {
       setStatusFromError(error);
     }
+  }
+
+  async function applyPageRegions() {
+    if (!documentState) {
+      return;
+    }
+    if (pageRegionsReadOnly()) {
+      status = tr('pageRegionsReadOnly');
+      return;
+    }
+
+    try {
+      await waitForEditorSync();
+      let document = documentState;
+      const commands: DocumentCommand[] = [
+        {
+          type: 'update_page_region',
+          section_index: 0,
+          region: 'header',
+          blocks: pageRegionTextToBlocks(headerText)
+        },
+        {
+          type: 'update_page_region',
+          section_index: 0,
+          region: 'footer',
+          blocks: pageRegionTextToBlocks(footerText)
+        },
+        {
+          type: 'update_page_region',
+          section_index: 0,
+          region: 'first_header',
+          blocks: pageRegionTextToBlocks(firstHeaderText)
+        },
+        {
+          type: 'update_page_region',
+          section_index: 0,
+          region: 'first_footer',
+          blocks: pageRegionTextToBlocks(firstFooterText)
+        },
+        {
+          type: 'set_different_first_page',
+          section_index: 0,
+          enabled: differentFirstPage
+        }
+      ];
+      for (const command of commands) {
+        document = await invoke<DocumentState>('apply_document_command', {
+          command
+        });
+      }
+      await loadDocumentIntoEditor(document, tr('pageRegionsUpdated'));
+      await refreshFileState();
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  function insertPageFieldToken(region: PageRegionKind, field: PageField) {
+    const token = pageFieldTokens[field];
+    if (region === 'header') {
+      headerText += token;
+    } else if (region === 'footer') {
+      footerText += token;
+    } else if (region === 'first_header') {
+      firstHeaderText += token;
+    } else {
+      firstFooterText += token;
+    }
+  }
+
+  function pageRegionsReadOnly() {
+    const regions = documentState?.sections[0]?.page_regions;
+    return (
+      pageRegionIsReadOnly(regions?.header) ||
+      pageRegionIsReadOnly(regions?.footer) ||
+      pageRegionIsReadOnly(regions?.first_header) ||
+      pageRegionIsReadOnly(regions?.first_footer)
+    );
   }
 
   function updatePageSetupField(field: keyof PageSetup, value: number) {
@@ -2046,6 +2142,74 @@
             </label>
             <button type="button" onclick={applyPageSetup}>{tr('applyPage')}</button>
           </div>
+        </section>
+
+        <section class="settings-group" aria-labelledby="page-regions-heading">
+          <h3 id="page-regions-heading">{tr('headersFooters')}</h3>
+          <label class="check-row">
+            <input bind:checked={differentFirstPage} disabled={pageRegionsReadOnly()} type="checkbox" />
+            {tr('differentFirstPage')}
+          </label>
+          <div class="page-regions-grid">
+            <label>
+              {tr('header')}
+              <textarea
+                bind:value={headerText}
+                disabled={pageRegionsReadOnly()}
+                rows="2"
+              ></textarea>
+            </label>
+            <div class="field-button-row" role="group" aria-label={tr('headerFields')}>
+              <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('header', 'page_number')}>{tr('pageNumber')}</button>
+              <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('header', 'page_count')}>{tr('pageCount')}</button>
+              <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('header', 'date')}>{tr('dateField')}</button>
+            </div>
+
+            <label>
+              {tr('footer')}
+              <textarea
+                bind:value={footerText}
+                disabled={pageRegionsReadOnly()}
+                rows="2"
+              ></textarea>
+            </label>
+            <div class="field-button-row" role="group" aria-label={tr('footerFields')}>
+              <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('footer', 'page_number')}>{tr('pageNumber')}</button>
+              <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('footer', 'page_count')}>{tr('pageCount')}</button>
+              <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('footer', 'date')}>{tr('dateField')}</button>
+            </div>
+
+            {#if differentFirstPage}
+              <label>
+                {tr('firstHeader')}
+                <textarea
+                  bind:value={firstHeaderText}
+                  disabled={pageRegionsReadOnly()}
+                  rows="2"
+                ></textarea>
+              </label>
+              <div class="field-button-row" role="group" aria-label={tr('firstHeaderFields')}>
+                <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('first_header', 'page_number')}>{tr('pageNumber')}</button>
+                <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('first_header', 'page_count')}>{tr('pageCount')}</button>
+                <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('first_header', 'date')}>{tr('dateField')}</button>
+              </div>
+
+              <label>
+                {tr('firstFooter')}
+                <textarea
+                  bind:value={firstFooterText}
+                  disabled={pageRegionsReadOnly()}
+                  rows="2"
+                ></textarea>
+              </label>
+              <div class="field-button-row" role="group" aria-label={tr('firstFooterFields')}>
+                <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('first_footer', 'page_number')}>{tr('pageNumber')}</button>
+                <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('first_footer', 'page_count')}>{tr('pageCount')}</button>
+                <button disabled={pageRegionsReadOnly()} type="button" onclick={() => insertPageFieldToken('first_footer', 'date')}>{tr('dateField')}</button>
+              </div>
+            {/if}
+          </div>
+          <button disabled={pageRegionsReadOnly()} type="button" onclick={applyPageRegions}>{tr('applyHeadersFooters')}</button>
         </section>
 
         <label>
