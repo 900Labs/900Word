@@ -772,6 +772,58 @@ export function adjustSelectedListLevelTransaction(
   return changed ? transaction : undefined;
 }
 
+export function insertDefaultTable(
+  view: EditorView | undefined,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = insertDefaultTableTransaction(view.state, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function insertDefaultTableTransaction(
+  state: EditorState,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const table = createDefaultTableNode();
+  if (!table) {
+    return undefined;
+  }
+
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const range = selectedTopLevelRange(transaction);
+  const selected = topLevelNodesInRange(transaction, range.from, range.to);
+  let from = range.from;
+  let to = range.to;
+
+  if (transaction.selection.empty) {
+    const selectedNode = selected.length === 1 ? selected[0].node : undefined;
+    if (!selectedNode || !isEmptyParagraphNode(selectedNode)) {
+      from = range.to;
+      to = range.to;
+    }
+  } else if (!selectionCoversTopLevelContent(transaction, range.from, range.to)) {
+    from = range.to;
+    to = range.to;
+  }
+
+  transaction = transaction.replaceWith(from, to, table);
+  const cursor = firstTextblockStartBetween(transaction.doc, from, from + table.nodeSize);
+  if (cursor !== undefined) {
+    transaction = transaction.setSelection(TextSelection.create(transaction.doc, cursor));
+  }
+  return transaction;
+}
+
 export function continueListOnEnterTransaction(
   state: EditorState,
   fallbackSelection?: EditorSelectionSnapshot
@@ -1208,6 +1260,45 @@ function nodeChildren(node: ProseMirrorNode): ProseMirrorNode[] {
   const children: ProseMirrorNode[] = [];
   node.forEach((child) => children.push(child));
   return children;
+}
+
+function createDefaultTableNode(): ProseMirrorNode | undefined {
+  const tableType = supportedSchema.nodes.table;
+  const rowType = supportedSchema.nodes.table_row;
+  const cellType = supportedSchema.nodes.table_cell;
+  const paragraphType = supportedSchema.nodes.paragraph;
+  if (!tableType || !rowType || !cellType || !paragraphType) {
+    return undefined;
+  }
+
+  const rows = Array.from({ length: 2 }, () =>
+    rowType.create(
+      null,
+      Array.from({ length: 2 }, () =>
+        cellType.create({ unsupported: false }, paragraphType.create({ style: 'body' }))
+      )
+    )
+  );
+  return tableType.create(null, rows);
+}
+
+function isEmptyParagraphNode(node: ProseMirrorNode): boolean {
+  return node.type.name === 'paragraph' && node.textContent.length === 0;
+}
+
+function firstTextblockStartBetween(doc: ProseMirrorNode, from: number, to: number): number | undefined {
+  let found: number | undefined;
+  doc.nodesBetween(from, Math.min(to, doc.content.size), (node, pos) => {
+    if (found !== undefined) {
+      return false;
+    }
+    if (node.isTextblock) {
+      found = pos + 1;
+      return false;
+    }
+    return true;
+  });
+  return found;
 }
 
 function parsePlainTextBlocks(text: string): ProseMirrorNode[] {

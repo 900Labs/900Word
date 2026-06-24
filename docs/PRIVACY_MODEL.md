@@ -16,6 +16,8 @@ TXT, HTML, and PDF export paths are user-entered in the Sprint 007 shell. Backen
 
 Sprint 011 hyperlink editing stores user-entered safe link targets inside document content. The editor validates links locally and does not fetch, preview, or open targets while editing.
 
+Sprint 012 table editing stores supported cell content in the existing local document model. Unsupported cell content keeps the editor projection read-only rather than serializing private details into UI state or logs.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
