@@ -7,6 +7,7 @@ import {
   editorDocPlainText,
   editorStateSelectionFormatting,
   editTableStructureTransaction,
+  imageScalePercentFromResizeDrag,
   insertDefaultTableTransaction,
   insertTableTransaction,
   mapSpellIssuesToEditorRanges,
@@ -548,6 +549,30 @@ describe('findEditorDocMatches', () => {
     expect(nextState.doc.firstChild?.attrs.alignment).toBe('right');
     expect(nextState.doc.firstChild?.attrs.scalePercent).toBe(125);
     expect(nextState.doc.firstChild?.attrs.caption).toBe('Chart caption');
+  });
+
+  it('bounds direct image resize drag scale metadata', () => {
+    expect(
+      imageScalePercentFromResizeDrag({
+        initialScalePercent: 100,
+        initialWidthPx: 400,
+        deltaXPx: 100
+      })
+    ).toBe(125);
+    expect(
+      imageScalePercentFromResizeDrag({
+        initialScalePercent: 100,
+        initialWidthPx: 400,
+        deltaXPx: -380
+      })
+    ).toBe(25);
+    expect(
+      imageScalePercentFromResizeDrag({
+        initialScalePercent: 150,
+        initialWidthPx: 300,
+        deltaXPx: 300
+      })
+    ).toBe(200);
   });
 
   it('clears direct inline and paragraph formatting without changing paragraph style', () => {

@@ -148,3 +148,13 @@ Status: complete.
 - Add contextual desktop controls for add row above/below, delete row, add column left/right, delete column, and delete table when the selection is inside an editable rectangular table.
 - Keep table edits inside the existing ProseMirror projection and `word-core` block sync path without changing the durable Rust table model.
 - Keep merged cells, resizing, formulas, rich table paste, and heavy table styling deferred.
+
+## Sprint 018: Image Resize UX
+
+Status: complete.
+
+- Add a direct drag handle on selected image atoms that updates durable bounded `scalePercent` image presentation metadata.
+- Keep existing toolbar image scale controls in sync with direct resize by using the same selected-image transaction path.
+- Surface generic oversized-image import guidance without exposing local paths, source filenames, usernames, or filesystem details.
+- Keep source images embedded in document assets; no external links, remote loads, or raster PDF embedding claims are added.
+- Keep crop/rotation/compression, native pixel sizing, and richer external ODT image-layout fidelity deferred.

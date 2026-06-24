@@ -13,6 +13,7 @@ use word_spell::{DictionaryInfo, SpellIssue};
 
 const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+const IMAGE_TOO_LARGE_ERROR: &str = "image file is too large";
 const MAX_RECENT_DOCUMENTS: usize = 5;
 const RECOVERY_DIR_NAME: &str = "900word-recovery";
 const USER_DICTIONARY_DIR_NAME: &str = "dictionaries";
@@ -684,13 +685,19 @@ fn read_validated_image(path: &Path) -> Result<(&'static str, &'static str, Vec<
     if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
         return Err("image file is unsupported".to_string());
     }
-    if metadata.len() == 0 || metadata.len() > MAX_IMAGE_BYTES {
+    if metadata.len() == 0 {
         return Err("image file is unsupported".to_string());
+    }
+    if metadata.len() > MAX_IMAGE_BYTES {
+        return Err(IMAGE_TOO_LARGE_ERROR.to_string());
     }
 
     let bytes = fs::read(path).map_err(safe_io_error)?;
-    if bytes.is_empty() || bytes.len() as u64 > MAX_IMAGE_BYTES {
+    if bytes.is_empty() {
         return Err("image file is unsupported".to_string());
+    }
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err(IMAGE_TOO_LARGE_ERROR.to_string());
     }
     let detected_media_type =
         detect_image_media_type(&bytes).ok_or_else(|| "image file is unsupported".to_string())?;
@@ -1188,7 +1195,8 @@ mod tests {
         std::fs::write(&image_path, bytes).expect("image should write");
 
         let err = read_validated_image(&image_path).expect_err("oversized image should fail");
-        assert_eq!(err, "image file is unsupported");
+        assert_eq!(err, IMAGE_TOO_LARGE_ERROR);
+        assert!(!err.contains("large.png"));
     }
 
     #[test]

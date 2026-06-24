@@ -1055,6 +1055,7 @@ select:focus-visible {
 }
 
 .ProseMirror figure[data-asset-id] {
+  position: relative;
   margin: 0.5rem 0 1rem;
   padding: 0.55rem;
   border: 1px solid #c8d2d0;
@@ -1091,6 +1092,25 @@ select:focus-visible {
   place-items: center;
   border: 1px dashed #aeb8bd;
   background: #ffffff;
+}
+
+.ProseMirror figure[data-asset-id] .image-resize-handle {
+  position: absolute;
+  right: -0.45rem;
+  bottom: -0.45rem;
+  display: none;
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #0f6b5f;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+  cursor: nwse-resize;
+}
+
+.ProseMirror-selectednode figure[data-asset-id] .image-resize-handle,
+.ProseMirror figure[data-asset-id].ProseMirror-selectednode .image-resize-handle {
+  display: block;
 }
 
 .ProseMirror td,

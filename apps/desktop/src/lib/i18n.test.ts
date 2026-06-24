@@ -14,6 +14,12 @@ describe('i18n', () => {
     expect(translate('en-US', 'matchCount', { current: 2, total: 5 })).toBe('2/5');
   });
 
+  it('keeps oversized image guidance generic', () => {
+    expect(translate('en-US', 'imageTooLarge')).toBe(
+      'Image is too large. Compress or resize it before inserting.'
+    );
+  });
+
   it('provides an RTL smoke locale', () => {
     expect(localeDirection('ar')).toBe('rtl');
   });

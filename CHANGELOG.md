@@ -18,3 +18,4 @@ All notable changes to 900Word are tracked here.
 - Image polish MVP with editable alt text, captions, alignment, and scale metadata preserved through `word-core`, ProseMirror text sync, ODT save/reopen, and sanitized HTML/print HTML export.
 - Bookmarks and internal links MVP with safe generated block IDs on paragraphs/headings, compact editor controls, ODT `text:bookmark` round-trip, and sanitized HTML element IDs/fragment hrefs.
 - Table structure editing MVP with bounded row/column insert sizes and contextual add/delete row, add/delete column, and delete-table controls for editable tables.
+- Image resize UX with a direct selected-image drag handle that updates durable bounded scale metadata, plus generic oversized-image import guidance that avoids path and filename disclosure.

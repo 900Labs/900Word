@@ -108,6 +108,12 @@ export interface EditorSpellIssueRange extends EditorSpellIssue {
   to: number;
 }
 
+export interface ImageResizeDragSnapshot {
+  initialScalePercent: number;
+  initialWidthPx: number;
+  deltaXPx: number;
+}
+
 interface CreateEditorOptions {
   editable: boolean;
   onInteraction?: () => void;
@@ -124,6 +130,7 @@ export const MIN_TABLE_COLUMNS = 1;
 export const MAX_TABLE_COLUMNS = 8;
 
 const spellDecorationStore = new WeakMap<EditorView, SpellDecorationHolder>();
+const REFRESH_SELECTION_FORMATTING_META = '900word-refresh-selection-formatting';
 
 export function createEditor(
   host: HTMLElement,
@@ -172,6 +179,10 @@ export function createEditor(
         options.onInteraction?.();
         return false;
       },
+      pointerdown(editorView, event) {
+        options.onInteraction?.();
+        return options.editable ? handleImageResizePointerDown(editorView, event) : false;
+      },
       keydown() {
         options.onInteraction?.();
         return false;
@@ -184,7 +195,7 @@ export function createEditor(
     dispatchTransaction(transaction) {
       const nextState = view.state.apply(transaction);
       view.updateState(nextState);
-      if (transaction.selectionSet) {
+      if (transaction.selectionSet || transaction.getMeta(REFRESH_SELECTION_FORMATTING_META) === true) {
         options.onSelectionChange?.(snapshotEditorSelection(view));
       }
       if (!transaction.docChanged) {
@@ -752,6 +763,13 @@ export function setSelectedImageAttrsTransaction(
     return undefined;
   }
   return transaction.setNodeMarkup(selected.pos, selected.node.type, nextAttrs, selected.node.marks);
+}
+
+export function imageScalePercentFromResizeDrag(snapshot: ImageResizeDragSnapshot): number {
+  const initialWidth = Math.max(1, snapshot.initialWidthPx);
+  const nextWidth = initialWidth + snapshot.deltaXPx;
+  const ratio = nextWidth / initialWidth;
+  return normalizeImageScale(snapshot.initialScalePercent * ratio);
 }
 
 export function clearEditorDirectFormatting(
@@ -1524,6 +1542,106 @@ function selectedImageNode(
     return true;
   });
   return found;
+}
+
+function handleImageResizePointerDown(view: EditorView, event: Event): boolean {
+  if (!(event instanceof PointerEvent) || event.button !== 0) {
+    return false;
+  }
+
+  const target = event.target;
+  if (!(target instanceof Element) || !target.closest('.image-resize-handle')) {
+    return false;
+  }
+
+  const figure = target.closest('figure[data-asset-id]');
+  if (!(figure instanceof HTMLElement)) {
+    return false;
+  }
+
+  let position: number;
+  try {
+    position = view.posAtDOM(figure, 0);
+  } catch {
+    return false;
+  }
+
+  const selected = imageNodeAtOrBeforePosition(view.state.doc, position);
+  if (!selected) {
+    return false;
+  }
+
+  event.preventDefault();
+  try {
+    target.setPointerCapture?.(event.pointerId);
+  } catch {
+    // The resize still works through document-level pointer listeners if capture is unavailable.
+  }
+
+  const initialX = event.clientX;
+  const initialWidth = figure.getBoundingClientRect().width;
+  const initialScale = normalizeImageScale(selected.node.attrs.scalePercent);
+
+  view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, selected.pos)));
+  view.focus();
+
+  const ownerDocument = view.dom.ownerDocument;
+  const updateScale = (pointerEvent: PointerEvent) => {
+    const scalePercent = imageScalePercentFromResizeDrag({
+      initialScalePercent: initialScale,
+      initialWidthPx: initialWidth,
+      deltaXPx: pointerEvent.clientX - initialX
+    });
+    const transaction = setSelectedImageAttrsTransaction(view.state, { scalePercent });
+    if (transaction) {
+      transaction.setMeta(REFRESH_SELECTION_FORMATTING_META, true);
+      view.dispatch(transaction);
+    }
+  };
+  const cleanupResize = () => {
+    ownerDocument.removeEventListener('pointermove', updateScale);
+    ownerDocument.removeEventListener('pointerup', finishResize);
+    ownerDocument.removeEventListener('pointercancel', cancelResize);
+    try {
+      target.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // The handle may have been redrawn after node-attribute updates.
+    }
+  };
+  const finishResize = (pointerEvent: PointerEvent) => {
+    try {
+      updateScale(pointerEvent);
+    } finally {
+      cleanupResize();
+    }
+  };
+  const cancelResize = () => {
+    cleanupResize();
+  };
+
+  ownerDocument.addEventListener('pointermove', updateScale);
+  ownerDocument.addEventListener('pointerup', finishResize, { once: true });
+  ownerDocument.addEventListener('pointercancel', cancelResize, { once: true });
+  return true;
+}
+
+function imageNodeAtOrBeforePosition(
+  doc: ProseMirrorNode,
+  position: number
+): { node: ProseMirrorNode; pos: number } | undefined {
+  const bounded = Math.min(Math.max(0, position), doc.content.size);
+  const direct = doc.nodeAt(bounded);
+  if (direct?.type.name === 'image') {
+    return { node: direct, pos: bounded };
+  }
+  if (bounded === 0) {
+    return undefined;
+  }
+  const nodeBefore = doc.resolve(bounded).nodeBefore;
+  if (nodeBefore?.type.name !== 'image') {
+    return undefined;
+  }
+  return { node: nodeBefore, pos: bounded - nodeBefore.nodeSize };
 }
 
 function selectedListContext($pos: ResolvedPos): EditorFormattingSnapshot['list'] {

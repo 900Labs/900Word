@@ -103,6 +103,7 @@ export type UiStringKey =
   | 'imageCaption'
   | 'imageControls'
   | 'imageInserted'
+  | 'imageTooLarge'
   | 'imageScale'
   | 'imageUpdated'
   | 'insertImage'
@@ -348,6 +349,7 @@ const english: UiStrings = {
   imageCaption: 'Caption',
   imageControls: 'Image controls',
   imageInserted: 'Image inserted',
+  imageTooLarge: 'Image is too large. Compress or resize it before inserting.',
   imageScale: 'Scale',
   imageUpdated: 'Image updated',
   insertImage: 'Insert image',
@@ -527,6 +529,7 @@ const spanish: Partial<UiStrings> = {
   imageCaption: 'Pie',
   imageControls: 'Controles de imagen',
   imageInserted: 'Imagen insertada',
+  imageTooLarge: 'La imagen es demasiado grande. Comprímala o cambie su tamaño antes de insertarla.',
   imageScale: 'Escala',
   imageUpdated: 'Imagen actualizada',
   insertImage: 'Insertar imagen',

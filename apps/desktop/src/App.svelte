@@ -465,13 +465,17 @@
       return;
     }
     const blockIndex = editorTopLevelInsertionIndex(view, lastEditorSelection);
-    const document = await invoke<DocumentState>('import_image', {
-      path: selected,
-      sectionIndex: 0,
-      blockIndex
-    });
-    await loadDocumentIntoEditor(document, tr('imageInserted'));
-    await refreshFileState();
+    try {
+      const document = await invoke<DocumentState>('import_image', {
+        path: selected,
+        sectionIndex: 0,
+        blockIndex
+      });
+      await loadDocumentIntoEditor(document, tr('imageInserted'));
+      await refreshFileState();
+    } catch (error) {
+      setStatusFromError(error);
+    }
   }
 
   async function recoverDocument(token: string) {
@@ -1461,7 +1465,8 @@
   }
 
   function setStatusFromError(error: unknown) {
-    status = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
+    status = message === 'image file is too large' ? tr('imageTooLarge') : message;
   }
 
   function tr(key: UiStringKey, values: Record<string, string | number> = {}) {
