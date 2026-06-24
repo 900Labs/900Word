@@ -40,3 +40,5 @@ Sprint 015 adds local editing for image alt text, captions, alignment, and scale
 Sprint 016 adds local bookmarks and internal links. Bookmark IDs are generated compact document identifiers stored on supported paragraph/heading blocks. Internal link target lists are derived from the in-memory document model and do not contact link targets, resolve local paths, store accounts, store source filenames, or add telemetry/cloud sync.
 
 Sprint 018 adds direct selected-image resizing by updating existing bounded image scale metadata. Oversized image imports surface generic compress-or-resize guidance and do not expose source paths, source filenames, usernames, or filesystem details. Image bytes remain embedded document assets; no remote loading, telemetry, accounts, cloud sync, or document-content logging is added.
+
+Sprint 019 expands the generated starter template gallery. Templates are built from placeholder-only `word-core` blocks and do not embed real user documents, local paths, source filenames, organization names, private endpoints, disk images, remote assets, telemetry, accounts, cloud sync, or document-content logging.

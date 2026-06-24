@@ -158,3 +158,12 @@ Status: complete.
 - Surface generic oversized-image import guidance without exposing local paths, source filenames, usernames, or filesystem details.
 - Keep source images embedded in document assets; no external links, remote loads, or raster PDF embedding claims are added.
 - Keep crop/rotation/compression, native pixel sizing, and richer external ODT image-layout fidelity deferred.
+
+## Sprint 019: Template Gallery
+
+Status: complete.
+
+- Expand generated starter templates beyond blank/report/letter while preserving those existing stable IDs.
+- Add project report, CV/resume, meeting minutes, memo, invoice-style, and flyer one-pagers using supported `word-core` blocks.
+- Keep templates generated in code with placeholder-only text, no local paths, no real documents, no remote assets, and no external template files.
+- Keep richer template browsing, template previews, custom user templates, and downloadable template packs deferred.
