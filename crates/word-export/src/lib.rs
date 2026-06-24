@@ -318,18 +318,77 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
             output.push_str("</table>");
         }
         Block::Image(image) => {
+            let alt_text = image.alt_text.as_deref().unwrap_or("Image");
             output.push_str("<figure data-asset=\"");
             output.push_str(&escape_html(&image.asset_id));
             output.push_str("\">");
-            if let Some(alt_text) = &image.alt_text {
-                output.push_str("<figcaption>");
+            if let Some(data_url) = image_data_url(document, &image.asset_id) {
+                output.push_str("<img src=\"");
+                output.push_str(&data_url);
+                output.push_str("\" alt=\"");
                 output.push_str(&escape_html(alt_text));
-                output.push_str("</figcaption>");
+                output.push_str("\">");
             }
+            output.push_str("<figcaption>");
+            output.push_str(&escape_html(alt_text));
+            output.push_str("</figcaption>");
             output.push_str("</figure>");
         }
         Block::PageBreak => output.push_str("<hr data-page-break=\"true\">"),
     }
+}
+
+fn image_data_url(document: &Document, asset_id: &str) -> Option<String> {
+    let asset = document.assets.get(asset_id)?;
+    let detected = detect_image_media_type(&asset.bytes)?;
+    if asset.byte_len != asset.bytes.len() || asset.media_type != detected {
+        return None;
+    }
+    Some(format!(
+        "data:{};base64,{}",
+        detected,
+        base64_encode(&asset.bytes)
+    ))
+}
+
+fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = *chunk.get(1).unwrap_or(&0);
+        let third = *chunk.get(2).unwrap_or(&0);
+        let value = ((first as u32) << 16) | ((second as u32) << 8) | third as u32;
+        output.push(ALPHABET[((value >> 18) & 0x3f) as usize] as char);
+        output.push(ALPHABET[((value >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(ALPHABET[((value >> 6) & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(value & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
 }
 
 fn push_inlines_html(inlines: &[Inline], document: &Document, output: &mut String) {
@@ -902,6 +961,56 @@ mod tests {
         assert!(!html.contains(" src=\"http"));
         assert!(!html.contains("<img"));
         assert!(!html.contains("<script"));
+    }
+
+    #[test]
+    fn html_export_embeds_allowlisted_image_asset_as_data_url() {
+        let mut document = Document::new_untitled();
+        document.assets.insert(
+            "image-1.png".to_string(),
+            word_core::AssetRef {
+                id: "image-1.png".to_string(),
+                media_type: "image/png".to_string(),
+                byte_len: 8,
+                bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+                original_name: None,
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "image-1.png".to_string(),
+            alt_text: Some("Image".to_string()),
+        })];
+
+        let html = export_html(&document).expect("html export should succeed");
+
+        assert!(html.contains("<img src=\"data:image/png;base64,iVBORw0KGgo=\" alt=\"Image\">"));
+        assert!(!html.contains("file://"));
+        assert!(!html.contains("private"));
+    }
+
+    #[test]
+    fn html_export_does_not_embed_mislabeled_image_asset() {
+        let mut document = Document::new_untitled();
+        document.assets.insert(
+            "image-1.png".to_string(),
+            word_core::AssetRef {
+                id: "image-1.png".to_string(),
+                media_type: "image/png".to_string(),
+                byte_len: 4,
+                bytes: b"HTML".to_vec(),
+                original_name: None,
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "image-1.png".to_string(),
+            alt_text: Some("Image".to_string()),
+        })];
+
+        let html = export_html(&document).expect("html export should succeed");
+
+        assert!(html.contains("<figure data-asset=\"image-1.png\">"));
+        assert!(!html.contains("<img"));
+        assert!(!html.contains("data:image/"));
     }
 
     #[test]

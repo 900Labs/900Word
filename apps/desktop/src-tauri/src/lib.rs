@@ -6,12 +6,13 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use word_core::{
-    Block, Document, DocumentCommand, DocumentError, DocumentStats, Heading, Inline, Paragraph,
-    StyleId, UndoStack,
+    AssetRef, Block, Document, DocumentCommand, DocumentError, DocumentStats, Heading, ImageBlock,
+    Inline, Paragraph, StyleId, UndoStack,
 };
 use word_spell::{DictionaryInfo, SpellIssue};
 
 const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_RECENT_DOCUMENTS: usize = 5;
 const RECOVERY_DIR_NAME: &str = "900word-recovery";
 const USER_DICTIONARY_DIR_NAME: &str = "dictionaries";
@@ -143,6 +144,7 @@ pub fn run() {
             discard_recovery,
             get_document_state,
             apply_document_command,
+            import_image,
             undo,
             redo,
             get_document_stats,
@@ -310,6 +312,18 @@ fn apply_document_command(
     session.document = document;
     session.dirty = true;
     Ok(session.document.clone())
+}
+
+#[tauri::command]
+fn import_image(
+    path: String,
+    section_index: Option<usize>,
+    block_index: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Document, String> {
+    let path = validate_image_path(&path)?;
+    let mut session = lock_session(&state)?;
+    import_image_into_session(&mut session, &path, section_index, block_index)
 }
 
 #[tauri::command]
@@ -569,6 +583,161 @@ fn heading_block(level: u8, text: &str) -> Block {
         level,
         inlines: vec![Inline::text(text)],
     })
+}
+
+fn import_image_into_session(
+    session: &mut DocumentSession,
+    path: &Path,
+    section_index: Option<usize>,
+    block_index: Option<usize>,
+) -> Result<Document, String> {
+    let (extension, media_type, bytes) = read_validated_image(path)?;
+    let asset_id = unique_image_asset_id(&session.document, extension);
+    let block = Block::Image(ImageBlock {
+        asset_id: asset_id.clone(),
+        alt_text: Some("Image".to_string()),
+    });
+
+    let mut document = session.document.clone();
+    session
+        .undo
+        .apply_mutation(&mut document, move |document| {
+            let target_section = section_index.unwrap_or(0);
+            let section_len = document
+                .sections
+                .get(target_section)
+                .map(|section| section.blocks.len())
+                .or_else(|| {
+                    document
+                        .sections
+                        .first()
+                        .map(|section| section.blocks.len())
+                })
+                .ok_or(DocumentError::SectionOutOfBounds { section_index: 0 })?;
+            let target_section = if document.sections.get(target_section).is_some() {
+                target_section
+            } else {
+                0
+            };
+            let target_block = block_index.unwrap_or(section_len).min(section_len);
+
+            document.assets.insert(
+                asset_id.clone(),
+                AssetRef {
+                    id: asset_id,
+                    media_type: media_type.to_string(),
+                    byte_len: bytes.len(),
+                    bytes,
+                    original_name: None,
+                },
+            );
+            document.apply_command(DocumentCommand::InsertBlock {
+                section_index: target_section,
+                block_index: target_block,
+                block,
+            })
+        })
+        .map_err(|_| "image could not be inserted".to_string())?;
+    session.document = document;
+    session.dirty = true;
+    Ok(session.document.clone())
+}
+
+fn unique_image_asset_id(document: &Document, extension: &'static str) -> String {
+    loop {
+        let id = format!("image-{}.{}", uuid::Uuid::new_v4(), extension);
+        if !document.assets.contains_key(&id) {
+            return id;
+        }
+    }
+}
+
+fn validate_image_path(path: &str) -> Result<PathBuf, String> {
+    if path.trim().is_empty() {
+        return Err("image file is unsupported".to_string());
+    }
+
+    let path = PathBuf::from(path);
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        return Err("image file is unsupported".to_string());
+    }
+
+    let extension = image_extension(&path)?;
+    if image_media_type_for_extension(extension).is_none() {
+        return Err("image file is unsupported".to_string());
+    }
+
+    Ok(path)
+}
+
+fn read_validated_image(path: &Path) -> Result<(&'static str, &'static str, Vec<u8>), String> {
+    let extension = image_extension(path)?;
+    let expected_media_type = image_media_type_for_extension(extension)
+        .ok_or_else(|| "image file is unsupported".to_string())?;
+    let metadata = fs::symlink_metadata(path).map_err(safe_io_error)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err("image file is unsupported".to_string());
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_IMAGE_BYTES {
+        return Err("image file is unsupported".to_string());
+    }
+
+    let bytes = fs::read(path).map_err(safe_io_error)?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err("image file is unsupported".to_string());
+    }
+    let detected_media_type =
+        detect_image_media_type(&bytes).ok_or_else(|| "image file is unsupported".to_string())?;
+    if detected_media_type != expected_media_type {
+        return Err("image file is unsupported".to_string());
+    }
+
+    Ok((extension, detected_media_type, bytes))
+}
+
+fn image_extension(path: &Path) -> Result<&'static str, String> {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Ok("png"),
+        "jpg" | "jpeg" => Ok("jpg"),
+        "gif" => Ok("gif"),
+        "webp" => Ok("webp"),
+        _ => Err("image file is unsupported".to_string()),
+    }
+}
+
+fn image_media_type_for_extension(extension: &str) -> Option<&'static str> {
+    match extension {
+        "png" => Some("image/png"),
+        "jpg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
 }
 
 fn write_document_to_path(document: &Document, path: &Path) -> Result<(), String> {
@@ -914,6 +1083,112 @@ mod tests {
     }
 
     #[test]
+    fn image_import_embeds_asset_without_path_or_filename() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("private-client-logo.png");
+        std::fs::write(&image_path, tiny_png()).expect("image should write");
+        let mut session = DocumentSession::default();
+
+        let document = import_image_into_session(&mut session, &image_path, Some(0), Some(1))
+            .expect("image import should succeed");
+
+        assert!(session.dirty);
+        assert_eq!(document.sections[0].blocks.len(), 2);
+        let Block::Image(image) = &document.sections[0].blocks[1] else {
+            panic!("inserted block should be an image");
+        };
+        assert!(image.asset_id.starts_with("image-"));
+        assert!(image.asset_id.ends_with(".png"));
+        let asset = document
+            .assets
+            .get(&image.asset_id)
+            .expect("asset should be embedded");
+        assert_eq!(asset.media_type, "image/png");
+        assert_eq!(asset.byte_len, tiny_png().len());
+        assert_eq!(asset.bytes, tiny_png());
+        assert_eq!(asset.original_name, None);
+
+        let serialized = serde_json::to_string(&document).expect("document should serialize");
+        assert!(!serialized.contains("private-client-logo"));
+        assert!(!serialized.contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn image_import_undo_removes_block_and_embedded_asset() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("logo.png");
+        std::fs::write(&image_path, tiny_png()).expect("image should write");
+        let mut session = DocumentSession::default();
+
+        import_image_into_session(&mut session, &image_path, Some(0), Some(1))
+            .expect("image import should succeed");
+
+        let mut document = session.document.clone();
+        session
+            .undo
+            .undo(&mut document)
+            .expect("image import should undo as one change");
+
+        assert!(document.assets.is_empty());
+        assert_eq!(document.sections[0].blocks.len(), 1);
+        assert!(!matches!(document.sections[0].blocks[0], Block::Image(_)));
+    }
+
+    #[test]
+    fn image_import_appends_when_requested_index_is_out_of_range() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("local.png");
+        std::fs::write(&image_path, tiny_png()).expect("image should write");
+        let mut session = DocumentSession::default();
+
+        let document = import_image_into_session(&mut session, &image_path, Some(0), Some(99))
+            .expect("image import should succeed");
+
+        assert!(matches!(
+            document.sections[0].blocks.last(),
+            Some(Block::Image(_))
+        ));
+    }
+
+    #[test]
+    fn image_import_rejects_wrong_extension_without_filename_leak() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("private-client-logo.txt");
+        std::fs::write(&image_path, tiny_png()).expect("image should write");
+
+        let err = read_validated_image(&image_path).expect_err("wrong extension should fail");
+
+        assert_eq!(err, "image file is unsupported");
+        assert!(!err.contains("private-client-logo"));
+    }
+
+    #[test]
+    fn image_import_rejects_magic_extension_mismatch() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("logo.jpg");
+        std::fs::write(&image_path, tiny_png()).expect("image should write");
+
+        let err = read_validated_image(&image_path).expect_err("mismatch should fail");
+
+        assert_eq!(err, "image file is unsupported");
+    }
+
+    #[test]
+    fn image_import_rejects_traversal_and_oversized_inputs() {
+        let err = validate_image_path("../private-logo.png").expect_err("traversal should fail");
+        assert_eq!(err, "image file is unsupported");
+
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("large.png");
+        let mut bytes = tiny_png();
+        bytes.resize(MAX_IMAGE_BYTES as usize + 1, 0);
+        std::fs::write(&image_path, bytes).expect("image should write");
+
+        let err = read_validated_image(&image_path).expect_err("oversized image should fail");
+        assert_eq!(err, "image file is unsupported");
+    }
+
+    #[test]
     fn export_write_validates_extension_without_leaking_path() {
         let dir = tempfile::tempdir().expect("temp dir should be created");
         let target = dir.path().join("private-client-name.txt");
@@ -1252,5 +1527,13 @@ mod tests {
         assert!(!capability.contains("shell"));
         assert!(!capability.contains("http:"));
         assert!(!capability.contains("https:"));
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        vec![
+            0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0x00, 0x00, 0x00, 0x0d, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1f, 0x15, 0xc4, 0x89,
+        ]
     }
 }

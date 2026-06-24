@@ -202,6 +202,64 @@ const nodes: Record<string, NodeSpec> = {
       return ['td', tableCellDomAttrs(node.attrs), 0];
     }
   },
+  image: {
+    attrs: {
+      assetId: {
+        validate(value: unknown) {
+          if (typeof value !== 'string' || !safeAssetId(value)) {
+            throw new RangeError('unsupported image asset');
+          }
+        }
+      },
+      altText: {
+        default: 'Image',
+        validate(value: unknown) {
+          if (value !== null && value !== undefined && typeof value !== 'string') {
+            throw new RangeError('unsupported image alt text');
+          }
+        }
+      },
+      src: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && (typeof value !== 'string' || !safeImageSrc(value))) {
+            throw new RangeError('unsupported image source');
+          }
+        }
+      }
+    },
+    atom: true,
+    draggable: false,
+    group: 'block',
+    isolating: true,
+    parseDOM: [
+      {
+        tag: 'figure[data-asset-id]',
+        getAttrs(node) {
+          const assetId = node.getAttribute('data-asset-id') ?? '';
+          return safeAssetId(assetId)
+            ? {
+                assetId,
+                altText: node.getAttribute('data-alt-text') || 'Image',
+                src: safeImageSrc(node.querySelector('img')?.getAttribute('src') ?? '')
+                  ? node.querySelector('img')?.getAttribute('src')
+                  : null
+              }
+            : false;
+        }
+      }
+    ],
+    toDOM(node) {
+      const attrs = imageDomAttrs(node.attrs);
+      const altText = typeof node.attrs.altText === 'string' && node.attrs.altText.trim().length > 0
+        ? node.attrs.altText
+        : 'Image';
+      const image = safeImageSrc(String(node.attrs.src ?? ''))
+        ? ['img', { src: node.attrs.src, alt: altText }]
+        : ['span', { class: 'image-placeholder-text' }, altText];
+      return ['figure', attrs, image, ['figcaption', altText]];
+    }
+  },
   text: {
     group: 'inline'
   }
@@ -347,6 +405,7 @@ export const supportedSchema = new Schema({
 export const supportedBlockTypes = ['paragraph', 'heading'] as const;
 export const supportedListNodeTypes = ['bullet_list', 'ordered_list', 'list_item'] as const;
 export const supportedTableNodeTypes = ['table', 'table_row', 'table_cell'] as const;
+export const supportedImageNodeTypes = ['image'] as const;
 export const supportedMarkTypes = [
   'bold',
   'italic',
@@ -417,6 +476,15 @@ function tableCellDomAttrs(attrs: Record<string, unknown>): Record<string, strin
   return domAttrs;
 }
 
+function imageDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
+  const domAttrs: Record<string, string> = {
+    'data-asset-id': String(attrs.assetId),
+    'data-alt-text': typeof attrs.altText === 'string' ? attrs.altText : 'Image',
+    contenteditable: 'false'
+  };
+  return domAttrs;
+}
+
 function textStyleDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
   const domAttrs: Record<string, string> = { 'data-text-style': 'true' };
   setStringAttr(domAttrs, 'data-font-family', attrs.fontFamily);
@@ -457,6 +525,14 @@ function setNumberAttr(output: Record<string, string>, name: string, value: unkn
 
 function safeColor(value: string): boolean {
   return /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+function safeAssetId(value: string): boolean {
+  return /^[A-Za-z0-9._@-]+$/.test(value) && !value.includes('..') && !value.includes('/') && !value.includes('\\');
+}
+
+function safeImageSrc(value: string): boolean {
+  return /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/.test(value);
 }
 
 function safeTextStyleValue(value: string): boolean {

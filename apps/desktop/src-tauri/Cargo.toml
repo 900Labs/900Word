@@ -21,6 +21,7 @@ serde_json.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 word-core = { path = "../../../crates/word-core" }
 word-export = { path = "../../../crates/word-export" }
 word-odf = { path = "../../../crates/word-odf" }

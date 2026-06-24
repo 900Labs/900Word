@@ -4,6 +4,7 @@
   import { onMount, tick } from 'svelte';
   import {
     createEditor,
+    editorTopLevelInsertionIndex,
     findEditorTextMatches,
     replaceAllEditorText,
     replaceEditorTextRange,
@@ -133,6 +134,7 @@
   type ViewId = 'editor' | 'settings' | 'about';
   const viewOrder: ViewId[] = ['editor', 'settings', 'about'];
   const odtFileFilters = [{ name: 'OpenDocument Text', extensions: ['odt'] }];
+  const imageFileFilters = [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }];
   const pageFormats: PageFormat[] = [
     { id: 'a4', label: 'A4 (210 x 297 mm)', width_mm: 210, height_mm: 297 },
     { id: 'a3', label: 'A3 (297 x 420 mm)', width_mm: 297, height_mm: 420 },
@@ -415,6 +417,33 @@
     await invoke<RecoveryDocumentSummary>('autosave_document');
     await refreshFileState();
     status = tr('autosaveUpdated');
+  }
+
+  async function insertImageWithDialog() {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    const selected = await openDialog({
+      multiple: false,
+      filters: imageFileFilters
+    });
+    if (typeof selected !== 'string') {
+      return;
+    }
+    await waitForEditorSync();
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    const blockIndex = editorTopLevelInsertionIndex(view, lastEditorSelection);
+    const document = await invoke<DocumentState>('import_image', {
+      path: selected,
+      sectionIndex: 0,
+      blockIndex
+    });
+    await loadDocumentIntoEditor(document, tr('imageInserted'));
+    await refreshFileState();
   }
 
   async function recoverDocument(token: string) {
@@ -1423,6 +1452,18 @@
             <span class="menu-glyph glyph-autosave" aria-hidden="true"></span>
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('autosave')}</span>
+            </span>
+          </button>
+
+          <button
+            class="menu-command"
+            disabled={!editorEditable}
+            type="button"
+            onclick={() => runFileMenuAction(insertImageWithDialog)}
+          >
+            <span class="menu-glyph glyph-image" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('insertImage')}</span>
             </span>
           </button>
 

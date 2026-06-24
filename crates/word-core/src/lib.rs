@@ -732,8 +732,19 @@ impl UndoStack {
         document: &mut Document,
         command: DocumentCommand,
     ) -> Result<(), DocumentError> {
+        self.apply_mutation(document, |document| document.apply_command(command))
+    }
+
+    pub fn apply_mutation<F>(
+        &mut self,
+        document: &mut Document,
+        mutation: F,
+    ) -> Result<(), DocumentError>
+    where
+        F: FnOnce(&mut Document) -> Result<(), DocumentError>,
+    {
         let before = document.clone();
-        document.apply_command(command)?;
+        mutation(document)?;
         self.past.push(before);
         self.future.clear();
         Ok(())

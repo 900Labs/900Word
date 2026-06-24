@@ -91,8 +91,24 @@ export interface TableBlock {
   };
 }
 
+export interface ImageBlock {
+  type: 'Image';
+  value: {
+    asset_id: string;
+    alt_text?: string | null;
+  };
+}
+
+export interface AssetRef {
+  id: string;
+  media_type: string;
+  byte_len: number;
+  bytes: number[];
+  original_name?: string | null;
+}
+
 export type TableCellEditableBlock = ParagraphBlock | HeadingBlock | ListBlock;
-export type EditableBlock = ParagraphBlock | HeadingBlock | ListBlock | TableBlock;
+export type EditableBlock = ParagraphBlock | HeadingBlock | ListBlock | TableBlock | ImageBlock;
 export type Block = EditableBlock | { type: string; value?: unknown };
 
 export interface PageRegionParagraphBlock {
@@ -134,6 +150,7 @@ export interface DocumentState {
   };
   styles?: Record<string, DocumentStyle>;
   lists?: Record<string, ListDefinition>;
+  assets?: Record<string, AssetRef>;
   sections: Array<{
     blocks: Block[];
     page?: PageSetup;
@@ -202,6 +219,15 @@ export interface EditorTableNode {
   content: EditorTableRowNode[];
 }
 
+export interface EditorImageNode {
+  type: 'image';
+  attrs: {
+    assetId: string;
+    altText?: string | null;
+    src?: string | null;
+  };
+}
+
 export interface EditorParagraphAttrs {
   style?: string;
   align?: 'left' | 'center' | 'right' | 'justify' | null;
@@ -213,7 +239,12 @@ export interface EditorParagraphAttrs {
   firstLineIndent?: number | null;
 }
 
-export type EditorBlockNode = EditorParagraphNode | EditorHeadingNode | EditorListNode | EditorTableNode;
+export type EditorBlockNode =
+  | EditorParagraphNode
+  | EditorHeadingNode
+  | EditorListNode
+  | EditorTableNode
+  | EditorImageNode;
 
 export interface EditorDoc {
   type: 'doc';
@@ -330,6 +361,9 @@ export function documentProjectionWarnings(document: DocumentState): string[] {
         }
         continue;
       }
+      if (isImageBlock(block)) {
+        continue;
+      }
       if (!hasInlineContent(block) && !isEditableListBlock(block)) {
         warnings.push(`${block.type} blocks are preserved but read-only in the editor projection.`);
       }
@@ -372,7 +406,7 @@ export function documentToEditorDoc(document: DocumentState): EditorDoc {
   const content: EditorBlockNode[] = [];
   for (const section of document.sections) {
     for (const block of section.blocks) {
-      const node = blockToEditorNode(block, document.lists, document.styles);
+      const node = blockToEditorNode(block, document.lists, document.styles, document.assets);
       content.push(node);
     }
   }
@@ -454,6 +488,9 @@ function blockToText(block: Block): string {
       .filter(Boolean)
       .join('\n');
   }
+  if (isImageBlock(block)) {
+    return imageToText(block);
+  }
   return '';
 }
 
@@ -510,11 +547,25 @@ function isTableBlock(block: Block): block is TableBlock {
   );
 }
 
+function isImageBlock(block: Block): block is ImageBlock {
+  return (
+    block.type === 'Image' &&
+    typeof block.value === 'object' &&
+    block.value !== null &&
+    typeof (block.value as { asset_id?: unknown }).asset_id === 'string'
+  );
+}
+
 function blockToEditorNode(
   block: Block,
   lists?: Record<string, ListDefinition>,
-  styles?: Record<string, DocumentStyle>
+  styles?: Record<string, DocumentStyle>,
+  assets?: Record<string, AssetRef>
 ): EditorBlockNode {
+  if (isImageBlock(block)) {
+    return wordCoreImageToEditorNode(block, assets);
+  }
+
   if (isTableBlock(block)) {
     return wordCoreTableToEditorNode(block, lists, styles);
   }
@@ -560,6 +611,14 @@ function readOnlyPlaceholderNode(blockType: string): EditorParagraphNode {
 
 function editorBlockToWordCoreBlock(block: EditorBlockNode, styles?: Record<string, DocumentStyle>): EditableBlock {
   switch (block.type) {
+    case 'image':
+      return {
+        type: 'Image',
+        value: {
+          asset_id: String(block.attrs.assetId),
+          alt_text: block.attrs.altText ?? 'Image'
+        }
+      };
     case 'table':
       return editorTableToWordCoreBlock(block, styles);
     case 'bullet_list':
@@ -588,6 +647,48 @@ function editorBlockToWordCoreBlock(block: EditorBlockNode, styles?: Record<stri
       };
     }
   }
+}
+
+function wordCoreImageToEditorNode(block: ImageBlock, assets?: Record<string, AssetRef>): EditorImageNode {
+  return {
+    type: 'image',
+    attrs: {
+      assetId: block.value.asset_id,
+      altText: block.value.alt_text ?? 'Image',
+      src: imageDataUrl(assets?.[block.value.asset_id])
+    }
+  };
+}
+
+function imageToText(block: ImageBlock): string {
+  return block.value.alt_text?.trim() ?? '';
+}
+
+function imageDataUrl(asset: AssetRef | undefined): string | null {
+  if (!asset || !allowlistedImageMediaType(asset.media_type) || asset.byte_len !== asset.bytes.length) {
+    return null;
+  }
+  return `data:${asset.media_type};base64,${base64FromBytes(asset.bytes)}`;
+}
+
+function allowlistedImageMediaType(mediaType: string): boolean {
+  return ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mediaType);
+}
+
+function base64FromBytes(bytes: number[]): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let output = '';
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index] ?? 0;
+    const second = bytes[index + 1] ?? 0;
+    const third = bytes[index + 2] ?? 0;
+    const value = (first << 16) | (second << 8) | third;
+    output += alphabet[(value >> 18) & 63];
+    output += alphabet[(value >> 12) & 63];
+    output += index + 1 < bytes.length ? alphabet[(value >> 6) & 63] : '=';
+    output += index + 2 < bytes.length ? alphabet[value & 63] : '=';
+  }
+  return output;
 }
 
 function editorTextToInline(textNode: EditorTextNode): Inline {

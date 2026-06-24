@@ -1024,6 +1024,32 @@ export function selectEditorTopLevelBlock(view: EditorView | undefined, blockInd
   return true;
 }
 
+export function editorTopLevelInsertionIndex(
+  view: EditorView | undefined,
+  fallbackSelection?: EditorSelectionSnapshot
+): number | undefined {
+  if (!view) {
+    return undefined;
+  }
+  let transaction = transactionWithFallbackSelection(view.state, fallbackSelection);
+  const range = selectedTopLevelRange(transaction);
+  let index = 0;
+  let insertionIndex: number | undefined;
+  transaction.doc.nodesBetween(0, transaction.doc.content.size, (node, pos, parent) => {
+    if (parent !== transaction.doc) {
+      return true;
+    }
+    const end = pos + node.nodeSize;
+    if (range.to <= end && insertionIndex === undefined) {
+      insertionIndex = index + 1;
+      return false;
+    }
+    index += 1;
+    return false;
+  });
+  return insertionIndex ?? transaction.doc.childCount;
+}
+
 export function replaceEditorTextRange(
   view: EditorView | undefined,
   from: number,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { sanitizeEditorHref } from './editorSecurity';
 import {
   supportedBlockTypes,
+  supportedImageNodeTypes,
   supportedListNodeTypes,
   supportedMarkTypes,
   supportedSchema,
@@ -14,6 +15,7 @@ describe('supportedSchema', () => {
       'bullet_list',
       'doc',
       'heading',
+      'image',
       'list_item',
       'ordered_list',
       'paragraph',
@@ -25,6 +27,7 @@ describe('supportedSchema', () => {
     expect(supportedBlockTypes).toEqual(['paragraph', 'heading']);
     expect(supportedListNodeTypes).toEqual(['bullet_list', 'ordered_list', 'list_item']);
     expect(supportedTableNodeTypes).toEqual(['table', 'table_row', 'table_cell']);
+    expect(supportedImageNodeTypes).toEqual(['image']);
   });
 
   it('contains only word-core inline mark projections', () => {
@@ -91,6 +94,39 @@ describe('supportedSchema', () => {
 
     expect(doc.firstChild?.type.name).toBe('bullet_list');
     expect(doc.firstChild?.firstChild?.attrs.level).toBe(2);
+  });
+
+  it('accepts only embedded data URLs for image nodes', () => {
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'image',
+            attrs: {
+              assetId: 'image-1.png',
+              altText: 'Image',
+              src: 'https://example.invalid/image.png'
+            }
+          }
+        ]
+      })
+    ).toThrow('unsupported image source');
+
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'image',
+          attrs: {
+            assetId: 'image-1.png',
+            altText: 'Image',
+            src: 'data:image/png;base64,iVBORw0KGgo='
+          }
+        }
+      ]
+    });
+    expect(doc.child(0).type.name).toBe('image');
   });
 
   it('preserves table nodes with editable paragraph cell content', () => {

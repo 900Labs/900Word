@@ -86,6 +86,8 @@ export type UiStringKey =
   | 'html'
   | 'history'
   | 'increaseIndent'
+  | 'imageInserted'
+  | 'insertImage'
   | 'insertTable'
   | 'ignoreAll'
   | 'ignoreOnce'
@@ -302,6 +304,8 @@ const english: UiStrings = {
   html: 'HTML',
   history: 'History',
   increaseIndent: 'Increase indent',
+  imageInserted: 'Image inserted',
+  insertImage: 'Insert image',
   insertTable: 'Insert table',
   ignoreAll: 'Ignore all',
   ignoreOnce: 'Ignore once',
@@ -464,6 +468,8 @@ const spanish: Partial<UiStrings> = {
   height: 'Alto',
   highContrast: 'Alto contraste',
   html: 'HTML',
+  imageInserted: 'Imagen insertada',
+  insertImage: 'Insertar imagen',
   italic: 'Cursiva',
   language: 'Idioma',
   left: 'Izquierda',
