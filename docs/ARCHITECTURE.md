@@ -24,7 +24,7 @@ Rust workspace crates
 
 `word-core` owns durable document truth. ProseMirror is an editing projection, and ODT is the persisted package format.
 
-The editor schema accepts only nodes and marks with matching `word-core` semantics. Sprint 009 adds editable ordered/unordered list nodes, paragraph direct-format attributes, and inline text-style attributes on top of the original paragraph, heading, text, and inline mark projection. Sprint 010 adds selection-derived toolbar state, list-aware Enter/paste behavior, and a durable update-style-from-selection command for selected paragraph style properties. Sprint 011 adds a live Heading 1/2/3 navigator derived from projected `word-core` blocks and exposes insert/edit/remove hyperlink UI for the existing safe link mark. Sprint 012 adds an editable table projection for table cells containing paragraphs, headings, or lists, plus a default 2x2 insert-table toolbar command. Broader ProseMirror nodes remain unavailable until `word-core` has matching durable semantics and import/export tests. Documents that contain modeled-but-unprojected blocks, such as images or unsupported nested table-cell content, open in a read-only editor projection with warnings until those blocks have complete projection support.
+The editor schema accepts only nodes and marks with matching `word-core` semantics. Sprint 009 adds editable ordered/unordered list nodes, paragraph direct-format attributes, and inline text-style attributes on top of the original paragraph, heading, text, and inline mark projection. Sprint 010 adds selection-derived toolbar state, list-aware Enter/paste behavior, and a durable update-style-from-selection command for selected paragraph style properties. Sprint 011 adds a live Heading 1/2/3 navigator derived from projected `word-core` blocks and exposes insert/edit/remove hyperlink UI for the existing safe link mark. Sprint 012 adds an editable table projection for table cells containing paragraphs, headings, or lists, plus a default 2x2 insert-table toolbar command. Sprint 013 adds section-level header/footer page regions and typed page fields in `word-core`, while the desktop editor keeps them in Settings as a simple text-backed surface rather than projecting them into the ProseMirror body editor. Broader ProseMirror nodes remain unavailable until `word-core` has matching durable semantics and import/export tests. Documents that contain modeled-but-unprojected blocks, such as images or unsupported nested table-cell content, open in a read-only editor projection with warnings until those blocks have complete projection support.
 
 Import flow:
 
@@ -55,10 +55,11 @@ Current ODT support covers:
 - Ordered and unordered lists with 900Word-authored list item levels.
 - Tables with paragraph content inside cells.
 - Page breaks as explicit `word-core` blocks.
+- 900Word-authored headers, footers, optional first-page header/footer regions, and page-number/page-count/date fields.
 - Metadata title read/write.
 - Embedded PNG, JPEG, GIF, and WebP payloads through `AssetRef` bytes and `ImageBlock` references.
 
-Package preflight enforces raw package size, entry count, entry size, expanded size, path depth, XML depth, image size, safe archive paths, symlink rejection, encrypted entry rejection, executable/script entry rejection, first-entry stored ODT mimetype validation, image magic-byte validation, and XML entity/doctype rejection. Unsupported ODT elements are imported with warnings. Unsafe text links are stripped with warnings. Remote or path-traversing image references are ignored with warnings.
+Package preflight enforces raw package size, entry count, entry size, expanded size, path depth, XML depth, image size, safe archive paths, symlink rejection, encrypted entry rejection, executable/script entry rejection, first-entry stored ODT mimetype validation, image magic-byte validation, and XML entity/doctype rejection. Unsupported ODT elements are imported with warnings. Unsafe text links are stripped with warnings. Remote or path-traversing image references are ignored with warnings. Unsupported external header/footer complexity imports with warnings and read-only page-region state so save operations refuse to silently flatten it.
 
 ## Fixtures
 

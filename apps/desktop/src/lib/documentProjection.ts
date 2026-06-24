@@ -5,7 +5,10 @@ export interface Inline {
   marks?: string[];
   link?: string | null;
   style?: InlineStyle;
+  field?: PageField | null;
 }
+
+export type PageField = 'page_number' | 'page_count' | 'date';
 
 export interface InlineStyle {
   font_family?: string | null;
@@ -92,6 +95,30 @@ export type TableCellEditableBlock = ParagraphBlock | HeadingBlock | ListBlock;
 export type EditableBlock = ParagraphBlock | HeadingBlock | ListBlock | TableBlock;
 export type Block = EditableBlock | { type: string; value?: unknown };
 
+export interface PageRegionParagraphBlock {
+  type: 'Paragraph';
+  value: {
+    inlines: Inline[];
+  };
+}
+
+export type PageRegionBlock = PageRegionParagraphBlock;
+
+export interface PageRegion {
+  blocks: PageRegionBlock[];
+  read_only?: boolean;
+}
+
+export interface PageRegions {
+  header?: PageRegion;
+  footer?: PageRegion;
+  first_header?: PageRegion;
+  first_footer?: PageRegion;
+  different_first_page?: boolean;
+}
+
+export type PageRegionKind = 'header' | 'footer' | 'first_header' | 'first_footer';
+
 export interface PageSetup {
   width_mm: number;
   height_mm: number;
@@ -110,6 +137,7 @@ export interface DocumentState {
   sections: Array<{
     blocks: Block[];
     page?: PageSetup;
+    page_regions?: PageRegions;
   }>;
   warnings?: Array<{
     code: string;
@@ -229,9 +257,26 @@ export type DocumentCommand =
       page: PageSetup;
     }
   | {
+      type: 'update_page_region';
+      section_index: number;
+      region: PageRegionKind;
+      blocks: PageRegionBlock[];
+    }
+  | {
+      type: 'set_different_first_page';
+      section_index: number;
+      enabled: boolean;
+    }
+  | {
       type: 'update_style';
       style: DocumentStyle;
     };
+
+export const pageFieldTokens: Record<PageField, string> = {
+  page_number: '{{page_number}}',
+  page_count: '{{page_count}}',
+  date: '{{date}}'
+};
 
 export function documentToText(document: DocumentState): string {
   const blocks: Block[] = [];
@@ -268,7 +313,17 @@ export function documentProjectionWarnings(document: DocumentState): string[] {
     warnings.push('Multiple sections are preserved but read-only in the current editor projection.');
   }
   for (const section of document.sections) {
+    for (const region of Object.values(section.page_regions ?? {})) {
+      if (typeof region === 'object' && region !== null && 'read_only' in region && region.read_only) {
+        warnings.push('Header/footer content with unsupported ODT structure is preserved read-only.');
+        break;
+      }
+    }
     for (const block of section.blocks) {
+      if (blockHasPageField(block)) {
+        warnings.push('Page fields in the document body are preserved but read-only in the editor projection.');
+        continue;
+      }
       if (isTableBlock(block)) {
         if (!isEditableTableBlock(block)) {
           warnings.push('Tables with unsupported or structurally empty content are preserved but read-only in the editor projection.');
@@ -296,7 +351,7 @@ function outlineEntryFromBlock(
   if (level < 1 || level > 3) {
     return undefined;
   }
-  const text = block.value.inlines.map((inline) => inline.text).join('').trim();
+  const text = block.value.inlines.map(inlineToPlainText).join('').trim();
   if (text.length === 0) {
     return undefined;
   }
@@ -380,7 +435,7 @@ function blocksEqual(left: Block, right: EditableBlock): boolean {
 
 function blockToText(block: Block): string {
   if (hasInlineContent(block)) {
-    return block.value.inlines.map((inline) => inline.text).join('');
+    return block.value.inlines.map(inlineToPlainText).join('');
   }
   if (isListBlock(block)) {
     return block.value.items
@@ -400,6 +455,21 @@ function blockToText(block: Block): string {
       .join('\n');
   }
   return '';
+}
+
+function blockHasPageField(block: Block): boolean {
+  if (hasInlineContent(block)) {
+    return block.value.inlines.some((inline) => inline.field !== undefined && inline.field !== null);
+  }
+  if (isListBlock(block)) {
+    return block.value.items.some((item) => item.blocks.some(blockHasPageField));
+  }
+  if (isTableBlock(block)) {
+    return block.value.rows.some((row) =>
+      row.cells.some((cell) => cell.blocks.some(blockHasPageField))
+    );
+  }
+  return false;
 }
 
 function hasInlineContent(block: Block): block is ParagraphBlock | HeadingBlock {
@@ -587,9 +657,72 @@ function inlineToEditorText(inline: Inline): EditorTextNode {
 
   return {
     type: 'text',
-    text: inline.text,
+    text: inlineToPlainText(inline),
     ...(marks.length > 0 ? { marks } : {})
   };
+}
+
+export function pageRegionToText(region: PageRegion | undefined): string {
+  return (region?.blocks ?? [])
+    .map((block) => block.value.inlines.map(inlineToTokenText).join(''))
+    .join('\n');
+}
+
+export function pageRegionTextToBlocks(text: string): PageRegionBlock[] {
+  if (text.trim().length === 0) {
+    return [];
+  }
+  return text.split(/\r?\n/).map((line) => ({
+    type: 'Paragraph',
+    value: {
+      inlines: parsePageFieldTokens(line)
+    }
+  }));
+}
+
+export function pageRegionIsReadOnly(region: PageRegion | undefined): boolean {
+  return Boolean(region?.read_only);
+}
+
+function inlineToPlainText(inline: Inline): string {
+  if (inline.field === 'page_number' || inline.field === 'page_count') {
+    return '1';
+  }
+  if (inline.field === 'date') {
+    return pageFieldTokens.date;
+  }
+  return inline.text;
+}
+
+function inlineToTokenText(inline: Inline): string {
+  return inline.field ? pageFieldTokens[inline.field] : inline.text;
+}
+
+function parsePageFieldTokens(text: string): Inline[] {
+  const tokenPattern = /(\{\{page_number\}\}|\{\{page_count\}\}|\{\{date\}\})/g;
+  const inlines: Inline[] = [];
+  let offset = 0;
+  for (const match of text.matchAll(tokenPattern)) {
+    if (match.index === undefined) {
+      continue;
+    }
+    if (match.index > offset) {
+      inlines.push({ text: text.slice(offset, match.index), marks: [], link: null });
+    }
+    const field = pageFieldFromToken(match[0]);
+    if (field) {
+      inlines.push({ text: field === 'date' ? '1970-01-01' : '1', marks: [], link: null, field });
+    }
+    offset = match.index + match[0].length;
+  }
+  if (offset < text.length) {
+    inlines.push({ text: text.slice(offset), marks: [], link: null });
+  }
+  return inlines;
+}
+
+function pageFieldFromToken(token: string): PageField | undefined {
+  return Object.entries(pageFieldTokens).find(([, value]) => value === token)?.[0] as PageField | undefined;
 }
 
 function isEditableTableBlock(block: TableBlock): boolean {

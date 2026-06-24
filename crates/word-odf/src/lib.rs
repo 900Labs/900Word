@@ -6,7 +6,8 @@ use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
     AssetRef, Block, Document, DocumentWarning, Heading, ImageBlock, Inline, InlineMark,
-    InlineStyle, ListBlock, ListDefinition, ListItem, PageSetup, Paragraph, ParagraphAlignment,
+    InlineStyle, ListBlock, ListDefinition, ListItem, PageField, PageRegion, PageRegionBlock,
+    PageRegionKind, PageRegionParagraph, PageRegions, PageSetup, Paragraph, ParagraphAlignment,
     ParagraphFormat, Section, Style, StyleId, StyleKind, Table, TableCell, TableRow,
 };
 use zip::write::SimpleFileOptions;
@@ -19,6 +20,7 @@ const ORDERED_LIST_STYLE: &str = "900w-ordered";
 const UNORDERED_LIST_STYLE: &str = "900w-unordered";
 const IMAGE_PARAGRAPH_STYLE: &str = "900w-image";
 const PAGE_LAYOUT_STYLE: &str = "900w-page-layout";
+const MASTER_PAGE_STYLE: &str = "900w-master-page";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageLimits {
@@ -81,6 +83,8 @@ pub enum OdtError {
     MissingAsset { asset_id: String },
     #[error("unsafe image asset name: {asset_id}")]
     UnsafeAssetName { asset_id: String },
+    #[error("document contains imported read-only header or footer content")]
+    ReadOnlyPageRegion,
     #[error("xml error in {name}: {message}")]
     Xml { name: String, message: String },
     #[error("xml depth exceeds limit in {name}")]
@@ -98,6 +102,14 @@ struct AssetPayload {
 }
 
 pub fn write_odt_bytes(document: &Document) -> Result<Vec<u8>, OdtError> {
+    if document
+        .sections
+        .iter()
+        .any(|section| section.page_regions.has_read_only_content())
+    {
+        return Err(OdtError::ReadOnlyPageRegion);
+    }
+
     let cursor = Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);
 
@@ -113,6 +125,9 @@ pub fn write_odt_bytes(document: &Document) -> Result<Vec<u8>, OdtError> {
 
     writer.start_file("meta.xml", compressed)?;
     writer.write_all(render_meta_xml(document).as_bytes())?;
+
+    writer.start_file("styles.xml", compressed)?;
+    writer.write_all(render_styles_xml(document).as_bytes())?;
 
     writer.start_file("META-INF/manifest.xml", compressed)?;
     writer.write_all(render_manifest_xml(document)?.as_bytes())?;
@@ -142,6 +157,7 @@ pub fn read_odt_bytes_with_limits(
     let mut archive = ZipArchive::new(cursor)?;
     let mut content = String::new();
     let mut meta = String::new();
+    let mut styles = String::new();
     let mut asset_payloads = BTreeMap::new();
 
     for index in 0..archive.len() {
@@ -156,6 +172,9 @@ pub fn read_odt_bytes_with_limits(
             }
             "meta.xml" => {
                 file.read_to_string(&mut meta)?;
+            }
+            "styles.xml" => {
+                file.read_to_string(&mut styles)?;
             }
             _ if name.starts_with("Pictures/") => {
                 let mut bytes = Vec::new();
@@ -191,6 +210,13 @@ pub fn read_odt_bytes_with_limits(
         if let Some(title) = extract_meta_title(&meta)? {
             document.meta.title = title;
         }
+    }
+    if !styles.is_empty() {
+        let parsed_regions = parse_page_regions_xml(&styles)?;
+        if let Some(section) = document.sections.first_mut() {
+            section.page_regions = parsed_regions.regions;
+        }
+        document.warnings.extend(parsed_regions.warnings);
     }
     Ok(document)
 }
@@ -670,6 +696,10 @@ fn render_image(
 
 fn render_inlines(inlines: &[Inline], output: &mut String) {
     for inline in inlines {
+        if let Some(field) = inline.field {
+            output.push_str(&render_page_field(field, &inline.text));
+            continue;
+        }
         let mut rendered = escape_xml(&inline.text);
         if let Some(style_name) = text_style_name(&inline.marks, &inline.style) {
             rendered = format!(
@@ -687,6 +717,21 @@ fn render_inlines(inlines: &[Inline], output: &mut String) {
     }
 }
 
+fn render_page_field(field: PageField, fallback: &str) -> String {
+    let text = if fallback.is_empty() {
+        field.fallback_text()
+    } else {
+        fallback
+    };
+    match field {
+        PageField::PageNumber => {
+            format!("<text:page-number>{}</text:page-number>", escape_xml(text))
+        }
+        PageField::PageCount => format!("<text:page-count>{}</text:page-count>", escape_xml(text)),
+        PageField::Date => format!("<text:date>{}</text:date>", escape_xml(text)),
+    }
+}
+
 fn render_meta_xml(document: &Document) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
@@ -699,13 +744,87 @@ fn render_meta_xml(document: &Document) -> String {
     )
 }
 
+fn render_styles_xml(document: &Document) -> String {
+    let default_page = PageSetup::default();
+    let page = document
+        .sections
+        .first()
+        .map(|section| &section.page)
+        .unwrap_or(&default_page);
+    let mut output = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+         <office:document-styles \
+         xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" \
+         xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" \
+         xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" \
+         xmlns:fo=\"urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0\" \
+         xmlns:word900=\"urn:900labs:900word:metadata\" \
+         office:version=\"1.3\">\
+         <office:automatic-styles>{}</office:automatic-styles>",
+        render_page_layout_style(page)
+    );
+
+    output.push_str(&format!(
+        "<office:master-styles><style:master-page style:name=\"{MASTER_PAGE_STYLE}\" style:page-layout-name=\"{PAGE_LAYOUT_STYLE}\" word900:different-first-page=\"{}\">",
+        document
+            .sections
+            .first()
+            .map(|section| section.page_regions.different_first_page)
+            .unwrap_or(false)
+    ));
+
+    if let Some(section) = document.sections.first() {
+        render_page_region("style:header", &section.page_regions.header, &mut output);
+        render_page_region("style:footer", &section.page_regions.footer, &mut output);
+        render_page_region(
+            "style:header-first",
+            &section.page_regions.first_header,
+            &mut output,
+        );
+        render_page_region(
+            "style:footer-first",
+            &section.page_regions.first_footer,
+            &mut output,
+        );
+    }
+
+    output.push_str("</style:master-page></office:master-styles></office:document-styles>");
+    output
+}
+
+fn render_page_region(tag: &str, region: &PageRegion, output: &mut String) {
+    if region.blocks.is_empty() {
+        return;
+    }
+    output.push('<');
+    output.push_str(tag);
+    output.push('>');
+    for block in &region.blocks {
+        render_page_region_block(block, output);
+    }
+    output.push_str("</");
+    output.push_str(tag);
+    output.push('>');
+}
+
+fn render_page_region_block(block: &PageRegionBlock, output: &mut String) {
+    match block {
+        PageRegionBlock::Paragraph(paragraph) => {
+            output.push_str("<text:p>");
+            render_inlines(&paragraph.inlines, output);
+            output.push_str("</text:p>");
+        }
+    }
+}
+
 fn render_manifest_xml(document: &Document) -> Result<String, OdtError> {
     let mut output = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
          <manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.3\">\
          <manifest:file-entry manifest:full-path=\"/\" manifest:media-type=\"{ODT_MIME_TYPE}\"/>\
          <manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\"/>\
-         <manifest:file-entry manifest:full-path=\"meta.xml\" manifest:media-type=\"text/xml\"/>"
+         <manifest:file-entry manifest:full-path=\"meta.xml\" manifest:media-type=\"text/xml\"/>\
+         <manifest:file-entry manifest:full-path=\"styles.xml\" manifest:media-type=\"text/xml\"/>"
     );
 
     for asset in image_assets_in_document(document)? {
@@ -929,6 +1048,269 @@ fn parse_content_xml(
     Ok(state.into_document())
 }
 
+#[derive(Debug, Default)]
+struct ParsedPageRegions {
+    regions: PageRegions,
+    warnings: Vec<DocumentWarning>,
+}
+
+fn parse_page_regions_xml(styles: &str) -> Result<ParsedPageRegions, OdtError> {
+    let mut reader = Reader::from_str(styles);
+    reader.config_mut().trim_text(false);
+
+    let mut state = PageRegionParseState::default();
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error("styles.xml", err))?
+        {
+            Event::Start(start) => state.start(&start)?,
+            Event::Empty(start) => state.empty(&start)?,
+            Event::End(end) => state.end(end.name().as_ref()),
+            Event::Text(text) => {
+                if state.unsupported_depth == 0 {
+                    if let Some(active) = state.active_text.as_mut() {
+                        active.text.push_str(
+                            &text
+                                .xml10_content()
+                                .map_err(|err| xml_error("styles.xml", err))?,
+                        );
+                    }
+                }
+            }
+            Event::CData(text) => {
+                if state.unsupported_depth == 0 {
+                    if let Some(active) = state.active_text.as_mut() {
+                        active.text.push_str(
+                            &text
+                                .xml10_content()
+                                .map_err(|err| xml_error("styles.xml", err))?,
+                        );
+                    }
+                }
+            }
+            Event::DocType(_) => {
+                return Err(OdtError::XmlEntityDeclaration {
+                    name: "styles.xml".to_string(),
+                })
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    Ok(ParsedPageRegions {
+        regions: state.regions,
+        warnings: state.warnings,
+    })
+}
+
+#[derive(Debug, Default)]
+struct PageRegionParseState {
+    regions: PageRegions,
+    warnings: Vec<DocumentWarning>,
+    active_region: Option<PageRegionKind>,
+    active_text: Option<ActiveText>,
+    unsupported_depth: usize,
+    warned_regions: BTreeSet<&'static str>,
+}
+
+impl PageRegionParseState {
+    fn start(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.unsupported_depth > 0 {
+            self.unsupported_depth += 1;
+            return Ok(());
+        }
+
+        match local_name(start.name().as_ref()) {
+            b"master-page" => {
+                if attr_value(start, b"different-first-page")?.as_deref() == Some("true") {
+                    self.regions.different_first_page = true;
+                }
+            }
+            b"header" => self.active_region = Some(PageRegionKind::Header),
+            b"footer" => self.active_region = Some(PageRegionKind::Footer),
+            b"header-first" => self.active_region = Some(PageRegionKind::FirstHeader),
+            b"footer-first" => self.active_region = Some(PageRegionKind::FirstFooter),
+            b"p" if self.active_region.is_some() => {
+                self.active_text = Some(ActiveText::paragraph(
+                    StyleId::from("body"),
+                    ParagraphFormat::default(),
+                ));
+            }
+            b"span" if self.active_text.is_some() => {
+                if let Some(active) = self.active_text.as_mut() {
+                    active.flush();
+                    let style_name = attr_value(start, b"style-name")?;
+                    if let Some(style_name) = style_name.as_deref() {
+                        if !is_supported_generated_text_style(style_name) {
+                            self.mark_active_region_read_only();
+                            self.unsupported_depth = 1;
+                            return Ok(());
+                        }
+                    }
+                    let marks = style_name
+                        .as_deref()
+                        .map(marks_from_text_style)
+                        .unwrap_or_default();
+                    let inline_style = style_name
+                        .as_deref()
+                        .map(inline_style_from_text_style)
+                        .unwrap_or_default();
+                    active.mark_stack.push(marks);
+                    active.style_stack.push(inline_style);
+                }
+            }
+            b"a" if self.active_text.is_some() => {
+                let href = attr_value(start, b"href")?;
+                let sanitized = href.as_deref().and_then(sanitize_text_href);
+                if href.is_some() && sanitized.is_none() {
+                    self.warn(
+                        "odt_header_footer_unsafe_link",
+                        "Unsafe header/footer link was stripped during import",
+                    );
+                }
+                if let Some(active) = self.active_text.as_mut() {
+                    active.flush();
+                    active.link_stack.push(sanitized);
+                }
+            }
+            b"page-number" => self.start_page_field(PageField::PageNumber),
+            b"page-count" => self.start_page_field(PageField::PageCount),
+            b"date" => self.start_page_field(PageField::Date),
+            b"document-styles"
+            | b"automatic-styles"
+            | b"master-styles"
+            | b"style"
+            | b"page-layout"
+            | b"page-layout-properties" => {}
+            _ if self.active_region.is_some() => {
+                self.mark_active_region_read_only();
+                self.unsupported_depth = 1;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn empty(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.unsupported_depth > 0 {
+            return Ok(());
+        }
+
+        match local_name(start.name().as_ref()) {
+            b"s" => {
+                if let Some(active) = self.active_text.as_mut() {
+                    let count = attr_value(start, b"c")?
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(1);
+                    active.text.push_str(&" ".repeat(count.min(1000)));
+                }
+            }
+            b"line-break" => {
+                if let Some(active) = self.active_text.as_mut() {
+                    active.text.push('\n');
+                }
+            }
+            b"page-number" => self.push_page_field(PageField::PageNumber),
+            b"page-count" => self.push_page_field(PageField::PageCount),
+            b"date" => self.push_page_field(PageField::Date),
+            b"header" | b"footer" | b"header-first" | b"footer-first" => {}
+            b"document-styles"
+            | b"automatic-styles"
+            | b"master-styles"
+            | b"style"
+            | b"page-layout"
+            | b"page-layout-properties" => {}
+            _ if self.active_region.is_some() => self.mark_active_region_read_only(),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn end(&mut self, name: &[u8]) {
+        if self.unsupported_depth > 0 {
+            self.unsupported_depth -= 1;
+            return;
+        }
+
+        match local_name(name) {
+            b"p" => self.finish_paragraph(),
+            b"span" => {
+                if let Some(active) = self.active_text.as_mut() {
+                    active.flush();
+                    active.mark_stack.pop();
+                    active.style_stack.pop();
+                }
+            }
+            b"a" => {
+                if let Some(active) = self.active_text.as_mut() {
+                    active.flush();
+                    active.link_stack.pop();
+                }
+            }
+            b"header" | b"footer" | b"header-first" | b"footer-first" => {
+                self.active_region = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn start_page_field(&mut self, field: PageField) {
+        self.push_page_field(field);
+        self.unsupported_depth = 1;
+    }
+
+    fn push_page_field(&mut self, field: PageField) {
+        if let Some(active) = self.active_text.as_mut() {
+            active.push_field(field);
+        }
+    }
+
+    fn finish_paragraph(&mut self) {
+        let (Some(region), Some(mut active)) = (self.active_region, self.active_text.take()) else {
+            return;
+        };
+        active.flush();
+        self.regions
+            .region_mut(region)
+            .blocks
+            .push(PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: active.inlines,
+            }));
+    }
+
+    fn mark_active_region_read_only(&mut self) {
+        let Some(region) = self.active_region else {
+            return;
+        };
+        self.regions.region_mut(region).read_only = true;
+        let label = page_region_label(region);
+        if self.warned_regions.insert(label) {
+            self.warn(
+                "odt_header_footer_unsupported",
+                "Unsupported header/footer content was imported as read-only",
+            );
+        }
+    }
+
+    fn warn(&mut self, code: &str, message: &str) {
+        self.warnings.push(DocumentWarning {
+            code: code.to_string(),
+            message: message.to_string(),
+        });
+    }
+}
+
+fn page_region_label(region: PageRegionKind) -> &'static str {
+    match region {
+        PageRegionKind::Header => "header",
+        PageRegionKind::Footer => "footer",
+        PageRegionKind::FirstHeader => "first_header",
+        PageRegionKind::FirstFooter => "first_footer",
+    }
+}
+
 #[derive(Debug)]
 struct ParseState<'a> {
     blocks: Vec<Block>,
@@ -979,6 +1361,9 @@ impl<'a> ParseState<'a> {
             b"h" => self.start_heading(start)?,
             b"span" => self.start_span(start)?,
             b"a" => self.start_link(start)?,
+            b"page-number" => self.start_page_field(PageField::PageNumber),
+            b"page-count" => self.start_page_field(PageField::PageCount),
+            b"date" => self.start_page_field(PageField::Date),
             b"list" => self.start_list(start)?,
             b"list-item" => {
                 let level = attr_value(start, b"level")?
@@ -1044,6 +1429,9 @@ impl<'a> ParseState<'a> {
                     );
                 }
             }
+            b"page-number" => self.push_page_field(PageField::PageNumber),
+            b"page-count" => self.push_page_field(PageField::PageCount),
+            b"date" => self.push_page_field(PageField::Date),
             b"image" => self.start_image(start)?,
             b"frame" => {
                 self.start_frame(start)?;
@@ -1300,6 +1688,17 @@ impl<'a> ParseState<'a> {
             active.link_stack.push(sanitized);
         }
         Ok(())
+    }
+
+    fn start_page_field(&mut self, field: PageField) {
+        self.push_page_field(field);
+        self.unsupported_depth = 1;
+    }
+
+    fn push_page_field(&mut self, field: PageField) {
+        if let Some(active) = self.active_text.as_mut() {
+            active.push_field(field);
+        }
     }
 
     fn start_list(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
@@ -1647,6 +2046,18 @@ impl ActiveText {
             marks: self.active_marks(),
             link: self.active_link(),
             style: self.active_style(),
+            field: None,
+        });
+    }
+
+    fn push_field(&mut self, field: PageField) {
+        self.flush();
+        self.inlines.push(Inline {
+            text: field.fallback_text().to_string(),
+            marks: self.active_marks(),
+            link: self.active_link(),
+            style: self.active_style(),
+            field: Some(field),
         });
     }
 
@@ -1883,6 +2294,47 @@ fn marks_from_text_style(style_name: &str) -> Vec<InlineMark> {
         }
     }
     marks.into_iter().map(mark_from_order).collect()
+}
+
+fn is_supported_generated_text_style(style_name: &str) -> bool {
+    let Some(tokens) = style_name.strip_prefix(&format!("{TEXT_STYLE_PREFIX}-")) else {
+        return false;
+    };
+    if tokens.is_empty() {
+        return false;
+    }
+
+    let parts: Vec<&str> = tokens.split('-').collect();
+    let mut index = 0;
+    while index < parts.len() {
+        match parts[index] {
+            "b" | "i" | "u" | "strike" | "super" | "sub" => index += 1,
+            "ff" => {
+                if index + 1 >= parts.len() || parts[index + 1].is_empty() {
+                    return false;
+                }
+                index += 2;
+            }
+            "fs" => {
+                if index + 1 >= parts.len() || parts[index + 1].parse::<u16>().is_err() {
+                    return false;
+                }
+                index += 2;
+            }
+            "tc" | "hc" => {
+                if index + 1 >= parts.len() {
+                    return false;
+                }
+                let color = parts[index + 1];
+                if color.len() != 6 || !color.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                    return false;
+                }
+                index += 2;
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn inline_style_from_text_style(style_name: &str) -> InlineStyle {
@@ -2272,6 +2724,114 @@ mod tests {
     }
 
     #[test]
+    fn page_regions_and_fields_round_trip_through_styles_xml() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page_regions.different_first_page = true;
+        document.sections[0].page_regions.header.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![
+                    Inline::text("Page "),
+                    Inline::field(PageField::PageNumber),
+                    Inline::text(" of "),
+                    Inline::field(PageField::PageCount),
+                ],
+            })];
+        document.sections[0].page_regions.footer.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![Inline::text("Updated "), Inline::field(PageField::Date)],
+            })];
+
+        let parsed =
+            read_odt_bytes(&write_odt_bytes(&document).expect("write should succeed")).unwrap();
+
+        assert!(parsed.sections[0].page_regions.different_first_page);
+        let PageRegionBlock::Paragraph(header) = &parsed.sections[0].page_regions.header.blocks[0];
+        assert_eq!(header.inlines[1].field, Some(PageField::PageNumber));
+        assert_eq!(header.inlines[3].field, Some(PageField::PageCount));
+        let PageRegionBlock::Paragraph(footer) = &parsed.sections[0].page_regions.footer.blocks[0];
+        assert_eq!(footer.inlines[1].field, Some(PageField::Date));
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
+
+    #[test]
+    fn unsupported_external_header_imports_read_only_and_refuses_rewrite() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              office:version="1.3">
+              <office:body><office:text><text:p>Body</text:p></office:text></office:body>
+            </office:document-content>"#;
+        let styles = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-styles
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+              xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+              office:version="1.3">
+              <office:master-styles>
+                <style:master-page>
+                  <style:header>
+                    <text:p>Visible header</text:p>
+                    <table:table><table:table-row><table:table-cell><text:p>Complex</text:p></table:table-cell></table:table-row></table:table>
+                  </style:header>
+                </style:master-page>
+              </office:master-styles>
+            </office:document-styles>"#;
+
+        let parsed =
+            read_odt_bytes(&test_package_with_content_and_styles(content, styles)).unwrap();
+
+        assert!(parsed.sections[0].page_regions.header.read_only);
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_header_footer_unsupported"));
+        assert!(matches!(
+            write_odt_bytes(&parsed),
+            Err(OdtError::ReadOnlyPageRegion)
+        ));
+    }
+
+    #[test]
+    fn externally_styled_header_span_imports_read_only_and_refuses_rewrite() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              office:version="1.3">
+              <office:body><office:text><text:p>Body</text:p></office:text></office:body>
+            </office:document-content>"#;
+        let styles = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-styles
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+              office:version="1.3">
+              <office:master-styles>
+                <style:master-page>
+                  <style:header>
+                    <text:p><text:span text:style-name="ExternalHeaderStyle">Styled header</text:span></text:p>
+                  </style:header>
+                </style:master-page>
+              </office:master-styles>
+            </office:document-styles>"#;
+
+        let parsed =
+            read_odt_bytes(&test_package_with_content_and_styles(content, styles)).unwrap();
+
+        assert!(parsed.sections[0].page_regions.header.read_only);
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_header_footer_unsupported"));
+        assert!(matches!(
+            write_odt_bytes(&parsed),
+            Err(OdtError::ReadOnlyPageRegion)
+        ));
+    }
+
+    #[test]
     fn paragraph_style_properties_round_trip_through_odt_styles() {
         let mut document = Document::new_untitled();
         document
@@ -2341,6 +2901,7 @@ mod tests {
                         text_color: Some("#1f2937".to_string()),
                         highlight_color: Some("#fff3bf".to_string()),
                     },
+                    field: None,
                 }],
             }),
             Block::List(ListBlock {
@@ -2497,12 +3058,14 @@ mod tests {
                         marks: vec![InlineMark::Bold],
                         link: None,
                         style: Default::default(),
+                        field: None,
                     },
                     Inline {
                         text: "linked text".to_string(),
                         marks: vec![InlineMark::Italic, InlineMark::Underline],
                         link: Some("https://example.invalid/reference".to_string()),
                         style: Default::default(),
+                        field: None,
                     },
                 ],
             }),
@@ -2583,6 +3146,33 @@ mod tests {
             )
             .unwrap();
         writer.write_all(content.as_bytes()).unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn test_package_with_content_and_styles(content: &str, styles: &str) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        writer
+            .start_file(
+                "mimetype",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(ODT_MIME_TYPE.as_bytes()).unwrap();
+        writer
+            .start_file(
+                "content.xml",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(content.as_bytes()).unwrap();
+        writer
+            .start_file(
+                "styles.xml",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(styles.as_bytes()).unwrap();
         writer.finish().unwrap().into_inner()
     }
 

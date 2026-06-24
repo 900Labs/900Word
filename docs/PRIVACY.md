@@ -30,3 +30,5 @@ Sprint 010 adds explicit Hunspell-backed red underlines, bounded local suggestio
 Sprint 011 adds a heading navigator and hyperlink editor. The navigator is derived from the in-memory document model. The link editor validates `http`, `https`, and `mailto` targets locally and does not open, prefetch, or contact link targets during editing.
 
 Sprint 012 adds editable table projection for supported local document content. Table editing does not add telemetry, cloud sync, remote resource fetching, or document-content logging.
+
+Sprint 013 adds local header/footer editing and typed page fields. Page field values are generated from the document model and exporter context only; they do not read usernames, hostnames, absolute paths, accounts, network state, or external services.

@@ -433,6 +433,7 @@ select:focus-visible {
 .tool-group select,
 .tool-group input,
 .page-setup input,
+.form-surface textarea,
 .form-surface select {
   min-height: 34px;
   border: 1px solid #b9c0c6;
@@ -837,6 +838,31 @@ select:focus-visible {
 
 .page-setup button {
   grid-column: 1 / -1;
+}
+
+.page-regions-grid {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.page-regions-grid textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+}
+
+.field-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.field-button-row button {
+  min-width: fit-content;
+  min-height: 32px;
+  padding: 0.34rem 0.52rem;
+  font-size: 0.84rem;
+  font-weight: 760;
 }
 
 .editor-panel,
