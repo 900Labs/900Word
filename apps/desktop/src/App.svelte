@@ -7,11 +7,14 @@
     findEditorTextMatches,
     replaceAllEditorText,
     replaceEditorTextRange,
+    removeEditorLink,
     restoreEditorSelection,
+    selectEditorTopLevelBlock,
     selectEditorTextRange,
     adjustSelectedListLevel,
     clearEditorDirectFormatting,
     setEditorBlockType,
+    setEditorLink,
     setEditorParagraphFormat,
     setEditorSpellIssues,
     setEditorTextStyle,
@@ -32,11 +35,14 @@
   import {
     buildEditorSyncCommands,
     canEditProjectedDocument,
+    documentOutline,
+    documentOutlineFromEditableBlocks,
     documentProjectionWarnings,
     documentToText,
     type DocumentStyle,
     type DocumentState,
     type EditorProjectedChange,
+    type DocumentOutlineEntry,
     type ListBlock,
     type PageSetup
   } from './lib/documentProjection';
@@ -194,8 +200,11 @@
   let findRanges = $state<EditorFindMatch[]>([]);
   let activeFindIndex = $state(-1);
   let findPanelOpen = $state(false);
+  let linkPanelOpen = $state(false);
+  let linkHrefInput = $state('');
   let fileMenuOpen = $state(false);
   let exportMenuOpen = $state(false);
+  let navigatorHeadings = $state<DocumentOutlineEntry[]>([]);
   let dictionaries = $state<DictionaryInfo[]>([]);
   let settings = $state<Settings>({
     telemetry_enabled: false,
@@ -211,6 +220,7 @@
   let paragraphCount = $derived(countProjectedParagraphs(documentState));
   let readingMinutes = $derived(stats.word_count === 0 ? 0 : Math.max(1, Math.ceil(stats.word_count / 200)));
   let showWorkspaceSidebar = $derived(
+    navigatorHeadings.length > 0 ||
     fileState.recent_documents.length > 0 ||
       fileState.recovery_documents.length > 0 ||
       projectionWarnings.length > 0
@@ -223,7 +233,9 @@
   let editorHost: HTMLDivElement;
   let printFrame: HTMLIFrameElement;
   let findInput = $state<HTMLInputElement | undefined>();
+  let linkInput = $state<HTMLInputElement | undefined>();
   let fileMenuRoot = $state<HTMLDivElement | undefined>();
+  let linkToolsRoot = $state<HTMLDivElement | undefined>();
   let view: ReturnType<typeof createEditor> | undefined;
 
   async function newDocument() {
@@ -247,6 +259,7 @@
     documentState = document;
     title = document.meta.title;
     plainText = documentToText(document);
+    navigatorHeadings = documentOutline(document);
     editorIsEmpty = plainText.trim().length === 0;
     editorHasStarted = !editorIsEmpty;
     pageSetup = document.sections[0]?.page ?? defaultPageSetup();
@@ -272,6 +285,7 @@
 
   function handleEditorChange(change: EditorProjectedChange) {
     plainText = change.text;
+    navigatorHeadings = documentOutlineFromEditableBlocks(change.blocks);
     editorHasStarted = true;
     editorIsEmpty = change.text.trim().length === 0;
     refreshFindState();
@@ -306,6 +320,7 @@
       });
     }
     documentState = nextDocument;
+    navigatorHeadings = documentOutline(nextDocument);
     projectionWarnings = collectDocumentWarnings(nextDocument);
     fileState = { ...fileState, dirty: true };
     stats = await invoke<DocumentStats>('get_document_stats');
@@ -641,6 +656,7 @@
         superscript: false,
         subscript: false
       },
+      linkHref: null,
       list: null,
       selectionWordCount: 0
     };
@@ -805,6 +821,54 @@
       : tr('paragraphUnchanged');
   }
 
+  async function openLinkPanel() {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    captureToolbarSelection(true);
+    restoreEditorSelection(view, lastEditorSelection);
+    refreshSelectionFormatting();
+    linkHrefInput = activeFormatting.linkHref ?? '';
+    linkPanelOpen = true;
+    await tick();
+    linkInput?.focus();
+    linkInput?.select();
+  }
+
+  function applyLinkFromPanel() {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    const changed = setEditorLink(view, linkHrefInput, lastEditorSelection);
+    if (changed) {
+      linkPanelOpen = false;
+      refreshSelectionFormatting();
+      status = tr('linkApplied');
+    } else {
+      status = tr('linkInvalid');
+    }
+  }
+
+  function removeLinkFromSelection() {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    const changed = removeEditorLink(view, lastEditorSelection);
+    linkPanelOpen = false;
+    refreshSelectionFormatting();
+    status = changed ? tr('linkRemoved') : tr('linkUnchanged');
+  }
+
+  function jumpToHeading(entry: DocumentOutlineEntry) {
+    activeView = 'editor';
+    status = selectEditorTopLevelBlock(view, entry.editorBlockIndex)
+      ? tr('headingJumped', { heading: entry.text })
+      : tr('noMatches');
+  }
+
   function setSpacingField(field: 'spacingBefore' | 'spacingAfter' | 'firstLineIndent', value: number) {
     if (!Number.isFinite(value)) {
       return;
@@ -918,6 +982,9 @@
     }
     if (fileMenuOpen && !fileMenuRoot?.contains(target)) {
       closeFileMenu();
+    }
+    if (linkPanelOpen && !linkToolsRoot?.contains(target)) {
+      linkPanelOpen = false;
     }
     if (spellPopover && target instanceof Element && !target.closest('.spell-popover')) {
       spellPopover = null;
@@ -1046,6 +1113,13 @@
   }
 
   function handleGlobalKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && linkPanelOpen) {
+      event.preventDefault();
+      linkPanelOpen = false;
+      view?.focus();
+      return;
+    }
+
     if (event.key === 'Escape' && fileMenuOpen) {
       event.preventDefault();
       closeFileMenu();
@@ -1088,6 +1162,9 @@
     } else if (key === '[') {
       event.preventDefault();
       adjustListLevel(-1);
+    } else if (key === 'k') {
+      event.preventDefault();
+      void openLinkPanel();
     } else if (key === 'f') {
       event.preventDefault();
       activeView = 'editor';
@@ -1450,6 +1527,54 @@
       </button>
     </div>
 
+    <div bind:this={linkToolsRoot} class="tool-group link-tools" role="group" aria-label={tr('linkTools')}>
+      <button
+        aria-expanded={linkPanelOpen}
+        aria-label={tr('openLinkPanel')}
+        aria-pressed={Boolean(activeFormatting.linkHref)}
+        class:active-format={Boolean(activeFormatting.linkHref)}
+        disabled={!editorEditable}
+        title={`${tr('link')} (Cmd+K)`}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => void openLinkPanel())}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => void openLinkPanel())}
+      >
+        {tr('link')}
+      </button>
+      <button
+        disabled={!editorEditable || !activeFormatting.linkHref}
+        title={tr('removeLink')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, removeLinkFromSelection)}
+        onclick={(event) => runToolbarKeyboardCommand(event, removeLinkFromSelection)}
+      >
+        {tr('unlink')}
+      </button>
+      {#if linkPanelOpen}
+        <div class="link-popover" role="dialog" aria-label={tr('linkTools')}>
+          <input
+            aria-label={tr('linkHref')}
+            bind:this={linkInput}
+            bind:value={linkHrefInput}
+            onkeydown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                applyLinkFromPanel();
+              }
+            }}
+            placeholder="https://example.invalid"
+            type="url"
+          />
+          <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={applyLinkFromPanel}>
+            {tr('apply')}
+          </button>
+          <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={removeLinkFromSelection}>
+            {tr('removeLink')}
+          </button>
+        </div>
+      {/if}
+    </div>
+
     <div class="tool-group font-tools" role="group" aria-label={tr('fontControls')}>
       <select
         aria-label={tr('fontFamily')}
@@ -1722,6 +1847,20 @@
   >
     {#if showWorkspaceSidebar}
       <aside class="sidebar" aria-label={tr('documentStatistics')}>
+        {#if navigatorHeadings.length > 0}
+          <h2>{tr('navigator')}</h2>
+          <ul class="navigator-list">
+            {#each navigatorHeadings as heading}
+              <li class={`navigator-level-${heading.level}`}>
+                <button type="button" onclick={() => jumpToHeading(heading)}>
+                  <span class="navigator-marker">H{heading.level}</span>
+                  <span>{heading.text}</span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+
         {#if fileState.recent_documents.length > 0}
           <h2>{tr('recent')}</h2>
           <ul class="action-list">

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildEditorSyncCommands,
+  documentOutline,
+  documentOutlineFromEditableBlocks,
   documentProjectionWarnings,
   documentToEditorDoc,
   documentToText,
@@ -73,6 +75,37 @@ describe('documentToText', () => {
     expect(documentProjectionWarnings(document)).toEqual([
       'PageBreak blocks are preserved but read-only in the editor projection.'
     ]);
+  });
+
+  it('builds a navigator outline from non-empty Heading 1-3 blocks', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            { type: 'Heading', value: { level: 1, inlines: [{ text: 'Overview' }] } },
+            { type: 'Paragraph', value: { inlines: [{ text: 'Body' }] } },
+            { type: 'Heading', value: { level: 3, inlines: [{ text: 'Details' }] } },
+            { type: 'Heading', value: { level: 4, inlines: [{ text: 'Too deep' }] } },
+            { type: 'Heading', value: { level: 2, inlines: [{ text: '   ' }] } }
+          ]
+        }
+      ]
+    };
+
+    expect(documentOutline(document)).toEqual([
+      { sectionIndex: 0, blockIndex: 0, editorBlockIndex: 0, level: 1, text: 'Overview' },
+      { sectionIndex: 0, blockIndex: 2, editorBlockIndex: 2, level: 3, text: 'Details' }
+    ]);
+  });
+
+  it('builds a live navigator outline from editable projection blocks', () => {
+    expect(
+      documentOutlineFromEditableBlocks([
+        { type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'Intro' }] } },
+        { type: 'Heading', value: { level: 2, inlines: [{ text: 'Live heading', marks: [], link: null }] } }
+      ])
+    ).toEqual([{ sectionIndex: 0, blockIndex: 1, editorBlockIndex: 1, level: 2, text: 'Live heading' }]);
   });
 
   it('drops unsafe link schemes from editor projection', () => {

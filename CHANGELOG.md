@@ -11,3 +11,4 @@ All notable changes to 900Word are tracked here.
 - TXT, sanitized HTML, basic PDF export-to-path workflows, and sanitized WebView print preparation.
 - Release hardening scripts for bundle budgets, package artifact scans, runtime offline source/capability checks, SBOM generation, and performance smoke.
 - Public-release privacy scanning for source files.
+- Heading navigator sidebar and safe hyperlink insert/edit/remove workflows.

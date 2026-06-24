@@ -1,4 +1,4 @@
-import { Fragment, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model';
+import { Fragment, type MarkType, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model';
 import { EditorState, type Transaction } from 'prosemirror-state';
 import { TextSelection } from 'prosemirror-state';
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view';
@@ -12,6 +12,7 @@ import {
 } from './documentProjection';
 import { findTextRanges, type FindRange } from './findReplace';
 import { supportedSchema } from './editorSchema';
+import { sanitizeEditorHref } from './editorSecurity';
 
 export type SupportedMarkName =
   | 'bold'
@@ -58,6 +59,7 @@ export interface EditorFormattingSnapshot {
   paragraphFormat: SupportedParagraphAttrs;
   textStyle: SupportedTextStyleAttrs;
   marks: Record<SupportedMarkName, boolean>;
+  linkHref: string | null;
   list: {
     type: SupportedListName;
     level: number;
@@ -222,6 +224,7 @@ export function editorStateSelectionFormatting(
       superscript: markActive(transaction, 'superscript'),
       subscript: markActive(transaction, 'subscript')
     },
+    linkHref: linkHrefNearSelection(transaction),
     list,
     selectionWordCount: countSelectionWords(transaction)
   };
@@ -331,6 +334,101 @@ export function toggleEditorMarkTransaction(
   }
 
   return transaction;
+}
+
+export function setEditorLink(
+  view: EditorView | undefined,
+  href: string,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = setEditorLinkTransaction(view.state, href, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function setEditorLinkTransaction(
+  state: EditorState,
+  href: string,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const markType = supportedSchema.marks.link;
+  const safeHref = sanitizeEditorHref(href);
+  if (!markType || !safeHref) {
+    return undefined;
+  }
+
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { empty, from, to } = transaction.selection;
+  const linkMark = markType.create({ href: safeHref });
+  if (empty) {
+    const activeRange = markRangeAroundPosition(transaction.doc, from, markType);
+    if (activeRange) {
+      return transaction
+        .removeMark(activeRange.from, activeRange.to, markType)
+        .addMark(activeRange.from, activeRange.to, linkMark);
+    }
+
+    const current = markType.isInSet(transaction.storedMarks ?? transaction.selection.$from.marks());
+    if (current) {
+      transaction = transaction.removeStoredMark(markType);
+    }
+    return transaction.addStoredMark(linkMark);
+  }
+
+  return transaction.removeMark(from, to, markType).addMark(from, to, linkMark);
+}
+
+export function removeEditorLink(
+  view: EditorView | undefined,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = removeEditorLinkTransaction(view.state, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function removeEditorLinkTransaction(
+  state: EditorState,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const markType = supportedSchema.marks.link;
+  if (!markType) {
+    return undefined;
+  }
+
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { empty, from, to } = transaction.selection;
+  if (!empty) {
+    return transaction.doc.rangeHasMark(from, to, markType)
+      ? transaction.removeMark(from, to, markType)
+      : undefined;
+  }
+
+  const activeRange = markRangeAroundPosition(transaction.doc, from, markType);
+  if (activeRange) {
+    return transaction.removeMark(activeRange.from, activeRange.to, markType);
+  }
+
+  const stored = markType.isInSet(transaction.storedMarks ?? transaction.selection.$from.marks());
+  return stored ? transaction.removeStoredMark(markType) : undefined;
 }
 
 export function setEditorBlockType(
@@ -854,6 +952,26 @@ export function selectEditorTextRange(view: EditorView | undefined, from: number
   return true;
 }
 
+export function selectEditorTopLevelBlock(view: EditorView | undefined, blockIndex: number): boolean {
+  if (!view || !Number.isInteger(blockIndex) || blockIndex < 0 || blockIndex >= view.state.doc.childCount) {
+    return false;
+  }
+
+  let position = 0;
+  for (let index = 0; index < blockIndex; index += 1) {
+    position += view.state.doc.child(index).nodeSize;
+  }
+  const block = view.state.doc.child(blockIndex);
+  const cursor = Math.min(position + 1, position + block.nodeSize - 1);
+  if (!isValidDocumentRange(view.state.doc, cursor, cursor)) {
+    return false;
+  }
+
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, cursor)).scrollIntoView());
+  view.focus();
+  return true;
+}
+
 export function replaceEditorTextRange(
   view: EditorView | undefined,
   from: number,
@@ -1161,6 +1279,7 @@ function emptyEditorFormattingSnapshot(): EditorFormattingSnapshot {
       superscript: false,
       subscript: false
     },
+    linkHref: null,
     list: null,
     selectionWordCount: 0
   };
@@ -1176,6 +1295,94 @@ function markActive(transaction: Transaction, markName: SupportedMarkName): bool
     return Boolean(markType.isInSet(transaction.storedMarks ?? transaction.selection.$from.marks()));
   }
   return transaction.doc.rangeHasMark(transaction.selection.from, transaction.selection.to, markType);
+}
+
+function linkHrefNearSelection(transaction: Transaction): string | null {
+  const markType = supportedSchema.marks.link;
+  if (!markType) {
+    return null;
+  }
+
+  if (!transaction.selection.empty) {
+    let href: string | null = null;
+    transaction.doc.nodesBetween(transaction.selection.from, transaction.selection.to, (node) => {
+      if (!node.isText) {
+        return true;
+      }
+      const mark = markType.isInSet(node.marks);
+      if (typeof mark?.attrs.href === 'string') {
+        href = mark.attrs.href;
+        return false;
+      }
+      return true;
+    });
+    return href;
+  }
+
+  const stored = markType.isInSet(transaction.storedMarks ?? transaction.selection.$from.marks());
+  if (typeof stored?.attrs.href === 'string') {
+    return stored.attrs.href;
+  }
+
+  const activeRange = markRangeAroundPosition(transaction.doc, transaction.selection.from, markType);
+  if (activeRange) {
+    return activeRange.href;
+  }
+  return null;
+}
+
+function markRangeAroundPosition(
+  doc: ProseMirrorNode,
+  position: number,
+  markType: MarkType
+): { from: number; to: number; href: string } | undefined {
+  const activeMark = markType.isInSet(doc.resolve(position).marks());
+  if (typeof activeMark?.attrs.href !== 'string') {
+    return undefined;
+  }
+
+  const activeHref = activeMark.attrs.href;
+  let range: { from: number; to: number; href: string } | undefined;
+  const from = Math.max(0, position - 1);
+  const to = Math.min(doc.content.size, position + 1);
+  doc.nodesBetween(from, to, (node, pos, parent, index) => {
+    if (range || !node.isText || !parent || index === undefined) {
+      return !range;
+    }
+
+    const mark = markType.isInSet(node.marks);
+    if (mark?.attrs.href !== activeHref) {
+      return true;
+    }
+
+    let start = pos;
+    let previousOffset = pos;
+    for (let previous = index - 1; previous >= 0; previous -= 1) {
+      const sibling = parent.child(previous);
+      previousOffset -= sibling.nodeSize;
+      const siblingMark = markType.isInSet(sibling.marks);
+      if (siblingMark?.attrs.href !== activeHref) {
+        break;
+      }
+      start = previousOffset;
+    }
+
+    let end = pos + node.nodeSize;
+    let nextOffset = end;
+    for (let next = index + 1; next < parent.childCount; next += 1) {
+      const sibling = parent.child(next);
+      const siblingMark = markType.isInSet(sibling.marks);
+      if (siblingMark?.attrs.href !== activeHref) {
+        break;
+      }
+      end = nextOffset + sibling.nodeSize;
+      nextOffset = end;
+    }
+
+    range = { from: start, to: end, href: activeHref };
+    return false;
+  });
+  return range;
 }
 
 function countSelectionWords(transaction: Transaction): number {
