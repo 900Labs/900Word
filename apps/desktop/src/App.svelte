@@ -18,6 +18,7 @@
     setEditorParagraphFormat,
     setEditorSpellIssues,
     setEditorTextStyle,
+    insertDefaultTable,
     snapshotEditorFormatting,
     snapshotEditorDomSelection,
     snapshotEditorSelection,
@@ -819,6 +820,14 @@
     status = adjustSelectedListLevel(view, delta, lastEditorSelection)
       ? tr('listLevelChanged')
       : tr('paragraphUnchanged');
+  }
+
+  function insertTable() {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    status = insertDefaultTable(view, lastEditorSelection) ? tr('tableInserted') : tr('paragraphUnchanged');
   }
 
   async function openLinkPanel() {
@@ -1792,6 +1801,18 @@
         onclick={(event) => runToolbarKeyboardCommand(event, () => adjustListLevel(1))}
       >
         &gt;
+      </button>
+    </div>
+
+    <div class="tool-group table-tools" role="group" aria-label={tr('tables')}>
+      <button
+        disabled={!editorEditable}
+        title={tr('insertTable')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, insertTable)}
+        onclick={(event) => runToolbarKeyboardCommand(event, insertTable)}
+      >
+        {tr('insertTable')}
       </button>
     </div>
 

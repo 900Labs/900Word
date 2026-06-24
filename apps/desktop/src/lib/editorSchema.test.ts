@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeEditorHref } from './editorSecurity';
-import { supportedBlockTypes, supportedListNodeTypes, supportedMarkTypes, supportedSchema } from './editorSchema';
+import {
+  supportedBlockTypes,
+  supportedListNodeTypes,
+  supportedMarkTypes,
+  supportedSchema,
+  supportedTableNodeTypes
+} from './editorSchema';
 
 describe('supportedSchema', () => {
   it('contains only word-core projected block nodes plus doc and text', () => {
@@ -11,10 +17,14 @@ describe('supportedSchema', () => {
       'list_item',
       'ordered_list',
       'paragraph',
+      'table',
+      'table_cell',
+      'table_row',
       'text'
     ]);
     expect(supportedBlockTypes).toEqual(['paragraph', 'heading']);
     expect(supportedListNodeTypes).toEqual(['bullet_list', 'ordered_list', 'list_item']);
+    expect(supportedTableNodeTypes).toEqual(['table', 'table_row', 'table_cell']);
   });
 
   it('contains only word-core inline mark projections', () => {
@@ -81,6 +91,75 @@ describe('supportedSchema', () => {
 
     expect(doc.firstChild?.type.name).toBe('bullet_list');
     expect(doc.firstChild?.firstChild?.attrs.level).toBe(2);
+  });
+
+  it('preserves table nodes with editable paragraph cell content', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          content: [
+            {
+              type: 'table_row',
+              content: [
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [
+                    {
+                      type: 'paragraph',
+                      attrs: { style: 'body' },
+                      content: [{ type: 'text', text: 'Cell' }]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(doc.firstChild?.type.name).toBe('table');
+    expect(doc.firstChild?.firstChild?.firstChild?.attrs.unsupported).toBe(false);
+    expect(doc.firstChild?.firstChild?.firstChild?.attrs.sourceEmpty).toBe(false);
+  });
+
+  it('rejects table nodes nested inside list items', () => {
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'bullet_list',
+            content: [
+              {
+                type: 'list_item',
+                content: [
+                  { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'Item' }] },
+                  {
+                    type: 'table',
+                    content: [
+                      {
+                        type: 'table_row',
+                        content: [
+                          {
+                            type: 'table_cell',
+                            attrs: { unsupported: false },
+                            content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }).check()
+    ).toThrow();
   });
 
   it('rejects unsupported ProseMirror nodes', () => {

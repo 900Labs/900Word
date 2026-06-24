@@ -454,7 +454,8 @@ select:focus-visible {
 
 .font-tools,
 .paragraph-tools,
-.list-tools {
+.list-tools,
+.table-tools {
   gap: 0.2rem;
 }
 
@@ -489,6 +490,11 @@ select:focus-visible {
   min-width: 34px;
   height: 34px;
   padding: 0;
+  font-weight: 800;
+}
+
+.table-tools button {
+  min-width: 4.5rem;
   font-weight: 800;
 }
 
@@ -959,6 +965,33 @@ select:focus-visible {
 .ProseMirror li[data-level="7"],
 .ProseMirror li[data-level="8"] {
   margin-left: 3rem;
+}
+
+.ProseMirror table {
+  width: 100%;
+  margin: 0.45rem 0 1rem;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.ProseMirror td,
+.ProseMirror th {
+  min-width: 5rem;
+  min-height: 2.4rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #aeb8bd;
+  vertical-align: top;
+}
+
+.ProseMirror td p,
+.ProseMirror th p {
+  margin-bottom: 0.25rem;
+}
+
+.ProseMirror td[data-unsupported="true"],
+.ProseMirror th[data-unsupported="true"] {
+  background: #f4f6f5;
+  color: #68727c;
 }
 
 .ProseMirror sup,

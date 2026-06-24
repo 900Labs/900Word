@@ -12,3 +12,4 @@ All notable changes to 900Word are tracked here.
 - Release hardening scripts for bundle budgets, package artifact scans, runtime offline source/capability checks, SBOM generation, and performance smoke.
 - Public-release privacy scanning for source files.
 - Heading navigator sidebar and safe hyperlink insert/edit/remove workflows.
+- Editable table projection for supported table cells and a default 2x2 insert-table command.

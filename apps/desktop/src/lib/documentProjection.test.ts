@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildEditorSyncCommands,
+  canEditProjectedDocument,
   documentOutline,
   documentOutlineFromEditableBlocks,
   documentProjectionWarnings,
@@ -405,6 +406,482 @@ describe('documentToText', () => {
     expect(documentToEditorDoc(document).content[0].type).toBe('bullet_list');
   });
 
+  it('keeps structurally empty lists read-only', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [{ blocks: [{ type: 'List', value: { definition_id: '900w-unordered', items: [] } }] }]
+    };
+
+    expect(documentProjectionWarnings(document)).toEqual([
+      'List blocks are preserved but read-only in the editor projection.'
+    ]);
+    expect(documentToEditorDoc(document)).toEqual({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          content: [{ type: 'text', text: '[List block preserved read-only]' }]
+        }
+      ]
+    });
+    expect(canEditProjectedDocument(document)).toBe(false);
+    expect(buildEditorSyncCommands(document, [])).toEqual([]);
+  });
+
+  it('projects word-core tables to editable table nodes and back', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Table',
+              value: {
+                rows: [
+                  {
+                    cells: [
+                      {
+                        blocks: [
+                          { type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'A1', marks: [], link: null }] } }
+                        ]
+                      },
+                      {
+                        blocks: [
+                          { type: 'Heading', value: { level: 2, inlines: [{ text: 'B1', marks: [], link: null }] } }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    cells: [
+                      {
+                        blocks: [
+                          {
+                            type: 'List',
+                            value: {
+                              definition_id: '900w-unordered',
+                              items: [
+                                {
+                                  level: 1,
+                                  blocks: [
+                                    {
+                                      type: 'Paragraph',
+                                      value: { style: 'body', inlines: [{ text: 'A2', marks: [], link: null }] }
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      },
+                      { blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [] } }] }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+
+    expect(editorDoc).toEqual({
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          content: [
+            {
+              type: 'table_row',
+              content: [
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [
+                    {
+                      type: 'paragraph',
+                      attrs: { style: 'body' },
+                      content: [{ type: 'text', text: 'A1' }]
+                    }
+                  ]
+                },
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [
+                    {
+                      type: 'heading',
+                      attrs: { level: 2 },
+                      content: [{ type: 'text', text: 'B1' }]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              type: 'table_row',
+              content: [
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [
+                    {
+                      type: 'bullet_list',
+                      attrs: { definitionId: '900w-unordered' },
+                      content: [
+                        {
+                          type: 'list_item',
+                          attrs: { level: 1 },
+                          content: [
+                            {
+                              type: 'paragraph',
+                              attrs: { style: 'body' },
+                              content: [{ type: 'text', text: 'A2' }]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    expect(editorDocToWordCoreBlocks(editorDoc)).toEqual(document.sections[0].blocks);
+    expect(documentProjectionWarnings(document)).toEqual([]);
+    expect(canEditProjectedDocument(document)).toBe(true);
+  });
+
+  it('syncs edited table cell text back to word-core table blocks', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Table',
+              value: {
+                rows: [
+                  {
+                    cells: [
+                      {
+                        blocks: [
+                          { type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'Old', marks: [], link: null }] } }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+    const editorDoc = documentToEditorDoc(document);
+    const table = editorDoc.content[0];
+    if (table.type !== 'table') {
+      throw new Error('Expected table projection');
+    }
+    const paragraph = table.content[0].content[0].content[0];
+    if (paragraph.type !== 'paragraph') {
+      throw new Error('Expected paragraph cell content');
+    }
+    paragraph.content = [{ type: 'text', text: 'New' }];
+    const nextBlocks = editorDocToWordCoreBlocks(editorDoc);
+
+    expect(nextBlocks).toEqual([
+      {
+        type: 'Table',
+        value: {
+          rows: [
+            {
+              cells: [
+                {
+                  blocks: [
+                    {
+                      type: 'Paragraph',
+                      value: { style: 'body', inlines: [{ text: 'New', marks: [], link: null }] }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]);
+    expect(buildEditorSyncCommands(document, nextBlocks)).toEqual([
+      {
+        type: 'replace_block',
+        section_index: 0,
+        block_index: 0,
+        block: nextBlocks[0]
+      }
+    ]);
+  });
+
+  it('round-trips formatting, links, and text style inside table cells', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Table',
+              value: {
+                rows: [
+                  {
+                    cells: [
+                      {
+                        blocks: [
+                          {
+                            type: 'Paragraph',
+                            value: {
+                              style: 'quote',
+                              format: { alignment: 'center', spacing_after_mm: 4 },
+                              inlines: [
+                                {
+                                  text: 'Linked bold',
+                                  marks: ['Bold'],
+                                  link: 'https://example.invalid',
+                                  style: {
+                                    font_family: 'serif',
+                                    font_size_pt: 14,
+                                    text_color: '#1f2937',
+                                    highlight_color: '#fff3bf'
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+    expect(editorDocToWordCoreBlocks(editorDoc)).toEqual(document.sections[0].blocks);
+  });
+
+  it('preserves untouched source-empty table cells during sync command building', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Table',
+              value: {
+                rows: [
+                  {
+                    cells: [{ blocks: [] }]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+    const table = editorDoc.content[0];
+    if (table.type !== 'table') {
+      throw new Error('Expected table projection');
+    }
+    expect(table.content[0].content[0].attrs?.sourceEmpty).toBe(true);
+
+    const nextBlocks = editorDocToWordCoreBlocks(editorDoc);
+
+    expect(nextBlocks).toEqual(document.sections[0].blocks);
+    expect(buildEditorSyncCommands(document, nextBlocks)).toEqual([]);
+  });
+
+  it('keeps newly inserted empty table paragraphs as cell content', () => {
+    expect(
+      editorDocToWordCoreBlocks({
+        type: 'doc',
+        content: [
+          {
+            type: 'table',
+            content: [
+              {
+                type: 'table_row',
+                content: [
+                  {
+                    type: 'table_cell',
+                    attrs: { unsupported: false },
+                    content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      })
+    ).toEqual([
+      {
+        type: 'Table',
+        value: {
+          rows: [
+            {
+              cells: [
+                {
+                  blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [] } }]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]);
+  });
+
+  it('marks unsupported table-cell content read-only instead of enabling sync', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Table',
+              value: {
+                rows: [
+                  {
+                    cells: [
+                      {
+                        blocks: [{ type: 'Image', value: { asset_id: 'asset-1', alt_text: 'Diagram' } }]
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(documentToEditorDoc(document).content[0]).toEqual({
+      type: 'table',
+      content: [
+        {
+          type: 'table_row',
+          content: [
+            {
+              type: 'table_cell',
+              attrs: { unsupported: true },
+              content: [
+                {
+                  type: 'paragraph',
+                  attrs: { style: 'body' },
+                  content: [{ type: 'text', text: '[Unsupported table cell content preserved read-only]' }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    expect(documentProjectionWarnings(document)).toEqual([
+      'Tables with unsupported or structurally empty content are preserved but read-only in the editor projection.'
+    ]);
+    expect(canEditProjectedDocument(document)).toBe(false);
+    expect(buildEditorSyncCommands(document, [])).toEqual([]);
+  });
+
+  it('keeps structurally empty table-cell lists read-only', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Table',
+              value: {
+                rows: [
+                  {
+                    cells: [
+                      {
+                        blocks: [{ type: 'List', value: { definition_id: '900w-unordered', items: [] } }]
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(documentProjectionWarnings(document)).toEqual([
+      'Tables with unsupported or structurally empty content are preserved but read-only in the editor projection.'
+    ]);
+    expect(canEditProjectedDocument(document)).toBe(false);
+    expect(documentToEditorDoc(document).content[0]).toEqual({
+      type: 'table',
+      content: [
+        {
+          type: 'table_row',
+          content: [
+            {
+              type: 'table_cell',
+              attrs: { unsupported: true },
+              content: [
+                {
+                  type: 'paragraph',
+                  attrs: { style: 'body' },
+                  content: [{ type: 'text', text: '[Unsupported table cell content preserved read-only]' }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+  });
+
+  it('keeps structurally empty source tables read-only', () => {
+    const emptyTable: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [{ blocks: [{ type: 'Table', value: { rows: [] } }] }]
+    };
+    const emptyRow: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [{ blocks: [{ type: 'Table', value: { rows: [{ cells: [] }] } }] }]
+    };
+
+    expect(documentProjectionWarnings(emptyTable)).toEqual([
+      'Tables with unsupported or structurally empty content are preserved but read-only in the editor projection.'
+    ]);
+    expect(documentProjectionWarnings(emptyRow)).toEqual([
+      'Tables with unsupported or structurally empty content are preserved but read-only in the editor projection.'
+    ]);
+    expect(canEditProjectedDocument(emptyTable)).toBe(false);
+    expect(canEditProjectedDocument(emptyRow)).toBe(false);
+    expect(buildEditorSyncCommands(emptyTable, editorDocToWordCoreBlocks(documentToEditorDoc(emptyTable)))).toEqual([]);
+  });
+
   it('builds document commands for editable projection changes', () => {
     const document: DocumentState = {
       meta: { title: 'Generated test' },
@@ -458,7 +935,7 @@ describe('documentToText', () => {
       meta: { title: 'Generated test' },
       sections: [
         {
-          blocks: [{ type: 'Table', value: { rows: [] } }]
+          blocks: [{ type: 'PageBreak' }]
         }
       ]
     };

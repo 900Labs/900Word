@@ -74,6 +74,7 @@ export type UiStringKey =
   | 'html'
   | 'history'
   | 'increaseIndent'
+  | 'insertTable'
   | 'ignoreAll'
   | 'ignoreOnce'
   | 'italic'
@@ -166,6 +167,8 @@ export type UiStringKey =
   | 'subscript'
   | 'superscript'
   | 'telemetry'
+  | 'tableInserted'
+  | 'tables'
   | 'templateLoaded'
   | 'templates'
   | 'textFormatting'
@@ -271,6 +274,7 @@ const english: UiStrings = {
   html: 'HTML',
   history: 'History',
   increaseIndent: 'Increase indent',
+  insertTable: 'Insert table',
   ignoreAll: 'Ignore all',
   ignoreOnce: 'Ignore once',
   italic: 'Italic',
@@ -363,6 +367,8 @@ const english: UiStrings = {
   subscript: 'Sub',
   superscript: 'Sup',
   telemetry: 'Telemetry',
+  tableInserted: 'Table inserted',
+  tables: 'Tables',
   templateLoaded: 'Template loaded',
   templates: 'Templates',
   textFormatting: 'Text formatting',

@@ -6,6 +6,7 @@ import {
   continueListOnEnterTransaction,
   editorDocPlainText,
   editorStateSelectionFormatting,
+  insertDefaultTableTransaction,
   mapSpellIssuesToEditorRanges,
   pastePlainTextAsBlocksTransaction,
   removeEditorLinkTransaction,
@@ -672,6 +673,50 @@ describe('findEditorDocMatches', () => {
     expect(nextState.doc.child(1).textContent).toBe('Two');
   });
 
+  it('inserts a default 2x2 table at the toolbar selection', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Intro' }]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = insertDefaultTableTransaction(state, { from: 1, to: 1, empty: true });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.childCount).toBe(2);
+    expect(nextState.doc.child(0).textContent).toBe('Intro');
+    const table = nextState.doc.child(1);
+    expect(table.type.name).toBe('table');
+    expect(table.childCount).toBe(2);
+    expect(table.child(0).childCount).toBe(2);
+    expect(nextState.selection.from).toBeGreaterThan(doc.child(0).nodeSize);
+    expect(selectionAncestorNames(nextState)).toContain('table_cell');
+    expect(nextState.selection.$from.parent.type.name).toBe('paragraph');
+  });
+
+  it('replaces an empty paragraph with the default table', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = insertDefaultTableTransaction(state, { from: 1, to: 1, empty: true });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.childCount).toBe(1);
+    expect(nextState.doc.child(0).type.name).toBe('table');
+    expect(selectionAncestorNames(nextState)).toContain('table_cell');
+  });
+
   it('lets the native paste path handle multiline text inside non-empty paragraphs', () => {
     const doc = supportedSchema.nodeFromJSON({
       type: 'doc',
@@ -801,4 +846,12 @@ function firstTextblockStart(doc: ReturnType<typeof supportedSchema.nodeFromJSON
     throw new Error('Textblock not found');
   }
   return found;
+}
+
+function selectionAncestorNames(state: EditorState) {
+  const names: string[] = [];
+  for (let depth = 0; depth <= state.selection.$from.depth; depth += 1) {
+    names.push(state.selection.$from.node(depth).type.name);
+  }
+  return names;
 }

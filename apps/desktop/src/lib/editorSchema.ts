@@ -127,7 +127,7 @@ const nodes: Record<string, NodeSpec> = {
         }
       }
     },
-    content: 'paragraph block*',
+    content: 'paragraph (paragraph | heading)*',
     defining: true,
     parseDOM: [
       {
@@ -139,6 +139,67 @@ const nodes: Record<string, NodeSpec> = {
     ],
     toDOM(node) {
       return ['li', { 'data-level': node.attrs.level }, 0];
+    }
+  },
+  table: {
+    content: 'table_row+',
+    group: 'block',
+    isolating: true,
+    parseDOM: [{ tag: 'table' }],
+    toDOM() {
+      return ['table', ['tbody', 0]];
+    }
+  },
+  table_row: {
+    content: 'table_cell+',
+    parseDOM: [{ tag: 'tr' }],
+    toDOM() {
+      return ['tr', 0];
+    }
+  },
+  table_cell: {
+    attrs: {
+      unsupported: {
+        default: false,
+        validate(value: unknown) {
+          if (typeof value !== 'boolean') {
+            throw new RangeError('unsupported table cell state');
+          }
+        }
+      },
+      sourceEmpty: {
+        default: false,
+        validate(value: unknown) {
+          if (typeof value !== 'boolean') {
+            throw new RangeError('unsupported table cell source state');
+          }
+        }
+      }
+    },
+    content: '(paragraph | heading | bullet_list | ordered_list)+',
+    isolating: true,
+    parseDOM: [
+      {
+        tag: 'td',
+        getAttrs(node) {
+          return {
+            unsupported: node.getAttribute('data-unsupported') === 'true',
+            sourceEmpty: node.getAttribute('data-source-empty') === 'true'
+          };
+        }
+      },
+      {
+        tag: 'th',
+        getAttrs(node) {
+          return {
+            unsupported: node.getAttribute('data-unsupported') === 'true',
+            sourceEmpty: node.getAttribute('data-source-empty') === 'true'
+          };
+        }
+      }
+    ],
+    toDOM(node) {
+      return ['td', tableCellDomAttrs(node.attrs), 0];
     }
   },
   text: {
@@ -285,6 +346,7 @@ export const supportedSchema = new Schema({
 
 export const supportedBlockTypes = ['paragraph', 'heading'] as const;
 export const supportedListNodeTypes = ['bullet_list', 'ordered_list', 'list_item'] as const;
+export const supportedTableNodeTypes = ['table', 'table_row', 'table_cell'] as const;
 export const supportedMarkTypes = [
   'bold',
   'italic',
@@ -339,6 +401,18 @@ function paragraphDomAttrs(attrs: Record<string, unknown>): Record<string, strin
   }
   if (css.length > 0) {
     domAttrs.style = css.join('; ');
+  }
+  return domAttrs;
+}
+
+function tableCellDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
+  const domAttrs: Record<string, string> = {};
+  if (attrs.unsupported === true) {
+    domAttrs['data-unsupported'] = 'true';
+    domAttrs.contenteditable = 'false';
+  }
+  if (attrs.sourceEmpty === true) {
+    domAttrs['data-source-empty'] = 'true';
   }
   return domAttrs;
 }

@@ -88,4 +88,13 @@ Status: complete.
 
 - Add a live Heading 1/2/3 navigator sidebar with click-to-jump behavior.
 - Add insert/edit/remove hyperlink UI backed by the existing safe link model and ODT/export path.
-- Keep bookmarks, table editing projection, headers/footers/fields, and image insertion workflows deferred.
+- Keep bookmarks, headers/footers/fields, and image insertion workflows deferred.
+
+## Sprint 012: Editable Tables MVP
+
+Status: complete.
+
+- Project `word-core` table blocks into editable desktop table nodes when cells contain paragraphs, headings, or lists.
+- Sync edited table cell text and supported cell blocks back through the existing document command path.
+- Add a default 2x2 insert-table toolbar control.
+- Keep row/column structural editing, delete-table controls, merged cells, table styling, and unsupported nested cell content deferred.

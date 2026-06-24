@@ -73,7 +73,23 @@ export interface ListBlock {
   };
 }
 
-export type EditableBlock = ParagraphBlock | HeadingBlock | ListBlock;
+export interface TableCell {
+  blocks: Block[];
+}
+
+export interface TableRow {
+  cells: TableCell[];
+}
+
+export interface TableBlock {
+  type: 'Table';
+  value: {
+    rows: TableRow[];
+  };
+}
+
+export type TableCellEditableBlock = ParagraphBlock | HeadingBlock | ListBlock;
+export type EditableBlock = ParagraphBlock | HeadingBlock | ListBlock | TableBlock;
 export type Block = EditableBlock | { type: string; value?: unknown };
 
 export interface PageSetup {
@@ -137,6 +153,27 @@ export interface EditorListNode {
   content: EditorListItemNode[];
 }
 
+export type EditorTableCellBlockNode = EditorParagraphNode | EditorHeadingNode | EditorListNode;
+
+export interface EditorTableCellNode {
+  type: 'table_cell';
+  attrs?: {
+    unsupported?: boolean;
+    sourceEmpty?: boolean;
+  };
+  content: EditorTableCellBlockNode[];
+}
+
+export interface EditorTableRowNode {
+  type: 'table_row';
+  content: EditorTableCellNode[];
+}
+
+export interface EditorTableNode {
+  type: 'table';
+  content: EditorTableRowNode[];
+}
+
 export interface EditorParagraphAttrs {
   style?: string;
   align?: 'left' | 'center' | 'right' | 'justify' | null;
@@ -148,7 +185,7 @@ export interface EditorParagraphAttrs {
   firstLineIndent?: number | null;
 }
 
-export type EditorBlockNode = EditorParagraphNode | EditorHeadingNode | EditorListNode;
+export type EditorBlockNode = EditorParagraphNode | EditorHeadingNode | EditorListNode | EditorTableNode;
 
 export interface EditorDoc {
   type: 'doc';
@@ -232,7 +269,13 @@ export function documentProjectionWarnings(document: DocumentState): string[] {
   }
   for (const section of document.sections) {
     for (const block of section.blocks) {
-      if (!hasInlineContent(block) && !isListBlock(block)) {
+      if (isTableBlock(block)) {
+        if (!isEditableTableBlock(block)) {
+          warnings.push('Tables with unsupported or structurally empty content are preserved but read-only in the editor projection.');
+        }
+        continue;
+      }
+      if (!hasInlineContent(block) && !isEditableListBlock(block)) {
         warnings.push(`${block.type} blocks are preserved but read-only in the editor projection.`);
       }
     }
@@ -289,35 +332,7 @@ export function editorDocToWordCoreBlocks(
   editorDoc: EditorDoc,
   styles?: Record<string, DocumentStyle>
 ): EditableBlock[] {
-  return editorDoc.content.map((block) => {
-    if (block.type === 'bullet_list' || block.type === 'ordered_list') {
-      return editorListToWordCoreBlock(block, styles);
-    }
-    if (block.type === 'heading') {
-      const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
-      return {
-        type: 'Heading',
-        value: {
-          level: clampHeadingLevel(block.attrs?.level ?? 1),
-          inlines
-        }
-      };
-    }
-
-    if (block.type !== 'paragraph') {
-      return { type: 'Paragraph', value: { style: 'body', inlines: [] } };
-    }
-    const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
-    const format = editorParagraphAttrsToFormat(block.attrs, styles);
-    return {
-      type: 'Paragraph',
-      value: {
-        style: block.attrs?.style || 'body',
-        ...(format ? { format } : {}),
-        inlines
-      }
-    };
-  });
+  return editorDoc.content.map((block) => editorBlockToWordCoreBlock(block, styles));
 }
 
 export function buildEditorSyncCommands(
@@ -373,6 +388,17 @@ function blockToText(block: Block): string {
       .filter(Boolean)
       .join('\n');
   }
+  if (isTableBlock(block)) {
+    return block.value.rows
+      .map((row) =>
+        row.cells
+          .map((cell) => cell.blocks.map(blockToText).filter(Boolean).join(' '))
+          .filter(Boolean)
+          .join('\t')
+      )
+      .filter(Boolean)
+      .join('\n');
+  }
   return '';
 }
 
@@ -384,25 +410,54 @@ function isListBlock(block: Block): block is ListBlock {
   return block.type === 'List' && typeof block.value === 'object' && block.value !== null && 'items' in block.value;
 }
 
+function isEditableListBlock(block: Block): block is ListBlock {
+  return (
+    isListBlock(block) &&
+    block.value.items.length > 0 &&
+    block.value.items.every((item) => item.blocks.length > 0 && item.blocks.every((child) => hasInlineContent(child)))
+  );
+}
+
+function isTableBlock(block: Block): block is TableBlock {
+  if (block.type !== 'Table' || typeof block.value !== 'object' || block.value === null) {
+    return false;
+  }
+  const rows = (block.value as { rows?: unknown }).rows;
+  return (
+    Array.isArray(rows) &&
+    rows.every(
+      (row) =>
+        typeof row === 'object' &&
+        row !== null &&
+        Array.isArray((row as { cells?: unknown }).cells) &&
+        (row as { cells: unknown[] }).cells.every(
+          (cell) =>
+            typeof cell === 'object' &&
+            cell !== null &&
+            Array.isArray((cell as { blocks?: unknown }).blocks)
+        )
+    )
+  );
+}
+
 function blockToEditorNode(
   block: Block,
   lists?: Record<string, ListDefinition>,
   styles?: Record<string, DocumentStyle>
 ): EditorBlockNode {
+  if (isTableBlock(block)) {
+    return wordCoreTableToEditorNode(block, lists, styles);
+  }
+
   if (isListBlock(block)) {
+    if (!isEditableListBlock(block)) {
+      return readOnlyPlaceholderNode('List');
+    }
     return wordCoreListToEditorNode(block, lists, styles);
   }
 
   if (!hasInlineContent(block)) {
-    return {
-      type: 'paragraph',
-      content: [
-        {
-          type: 'text',
-          text: `[${block.type} block preserved read-only]`
-        }
-      ]
-    };
+    return readOnlyPlaceholderNode(block.type);
   }
 
   const content = block.value.inlines.map(inlineToEditorText).filter((inline) => inline.text.length > 0);
@@ -419,6 +474,50 @@ function blockToEditorNode(
     attrs: paragraphAttrsFromFormat(block.value.style || 'body', block.value.format, styles),
     content
   };
+}
+
+function readOnlyPlaceholderNode(blockType: string): EditorParagraphNode {
+  return {
+    type: 'paragraph',
+    content: [
+      {
+        type: 'text',
+        text: `[${blockType} block preserved read-only]`
+      }
+    ]
+  };
+}
+
+function editorBlockToWordCoreBlock(block: EditorBlockNode, styles?: Record<string, DocumentStyle>): EditableBlock {
+  switch (block.type) {
+    case 'table':
+      return editorTableToWordCoreBlock(block, styles);
+    case 'bullet_list':
+    case 'ordered_list':
+      return editorListToWordCoreBlock(block, styles);
+    case 'heading': {
+      const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
+      return {
+        type: 'Heading',
+        value: {
+          level: clampHeadingLevel(block.attrs?.level ?? 1),
+          inlines
+        }
+      };
+    }
+    case 'paragraph': {
+      const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
+      const format = editorParagraphAttrsToFormat(block.attrs, styles);
+      return {
+        type: 'Paragraph',
+        value: {
+          style: block.attrs?.style || 'body',
+          ...(format ? { format } : {}),
+          inlines
+        }
+      };
+    }
+  }
 }
 
 function editorTextToInline(textNode: EditorTextNode): Inline {
@@ -491,6 +590,112 @@ function inlineToEditorText(inline: Inline): EditorTextNode {
     text: inline.text,
     ...(marks.length > 0 ? { marks } : {})
   };
+}
+
+function isEditableTableBlock(block: TableBlock): boolean {
+  return (
+    block.value.rows.length > 0 &&
+    block.value.rows.every((row) =>
+      row.cells.length > 0 && row.cells.every((cell) => cell.blocks.every((child) => isSupportedTableCellBlock(child)))
+    )
+  );
+}
+
+function isSupportedTableCellBlock(block: Block): block is TableCellEditableBlock {
+  return hasInlineContent(block) || isEditableListBlock(block);
+}
+
+function wordCoreTableToEditorNode(
+  block: TableBlock,
+  lists?: Record<string, ListDefinition>,
+  styles?: Record<string, DocumentStyle>
+): EditorTableNode {
+  const rows = block.value.rows.length > 0 ? block.value.rows : [{ cells: [{ blocks: [] }] }];
+  return {
+    type: 'table',
+    content: rows.map((row): EditorTableRowNode => {
+      const cells = row.cells.length > 0 ? row.cells : [{ blocks: [] }];
+      return {
+        type: 'table_row',
+        content: cells.map((cell): EditorTableCellNode => {
+          if (cell.blocks.some((child) => !isSupportedTableCellBlock(child))) {
+            return unsupportedTableCellNode();
+          }
+          return {
+            type: 'table_cell',
+            attrs: { unsupported: false, sourceEmpty: cell.blocks.length === 0 },
+            content:
+              cell.blocks.length > 0
+                ? cell.blocks.map((child) => blockToEditorNode(child, lists, styles) as EditorTableCellBlockNode)
+                : [emptyEditorParagraphNode()]
+          };
+        })
+      };
+    })
+  };
+}
+
+function unsupportedTableCellNode(): EditorTableCellNode {
+  return {
+    type: 'table_cell',
+    attrs: { unsupported: true },
+    content: [
+      {
+        type: 'paragraph',
+        attrs: { style: 'body' },
+        content: [{ type: 'text', text: '[Unsupported table cell content preserved read-only]' }]
+      }
+    ]
+  };
+}
+
+function emptyEditorParagraphNode(): EditorParagraphNode {
+  return { type: 'paragraph', attrs: { style: 'body' }, content: [] };
+}
+
+function editorTableToWordCoreBlock(block: EditorTableNode, styles?: Record<string, DocumentStyle>): TableBlock {
+  return {
+    type: 'Table',
+    value: {
+      rows: block.content.map((row) => ({
+        cells: row.content.map((cell) => ({
+          blocks: editorTableCellToWordCoreBlocks(cell, styles)
+        }))
+      }))
+    }
+  };
+}
+
+function editorTableCellToWordCoreBlocks(
+  cell: EditorTableCellNode,
+  styles?: Record<string, DocumentStyle>
+): TableCellEditableBlock[] {
+  if (cell.attrs?.unsupported) {
+    return [{ type: 'Paragraph', value: { style: 'body', inlines: [] } }];
+  }
+  if (cell.attrs?.sourceEmpty && cell.content.length === 1 && isEmptyEditorCellParagraph(cell.content[0])) {
+    return [];
+  }
+  const blocks = (cell.content ?? []).map((child) => editorTableCellBlockToWordCore(child, styles));
+  return blocks.length > 0 ? blocks : [{ type: 'Paragraph', value: { style: 'body', inlines: [] } }];
+}
+
+function isEmptyEditorCellParagraph(block: EditorTableCellBlockNode): block is EditorParagraphNode {
+  return block.type === 'paragraph' && (block.attrs?.style ?? 'body') === 'body' && (block.content ?? []).length === 0;
+}
+
+function editorTableCellBlockToWordCore(
+  block: EditorTableCellBlockNode,
+  styles?: Record<string, DocumentStyle>
+): TableCellEditableBlock {
+  switch (block.type) {
+    case 'bullet_list':
+    case 'ordered_list':
+      return editorListToWordCoreBlock(block, styles);
+    case 'paragraph':
+    case 'heading':
+      return editorChildBlockToWordCore(block, styles) ?? { type: 'Paragraph', value: { style: 'body', inlines: [] } };
+  }
 }
 
 function mapEditorMark(mark: string): string | undefined {
