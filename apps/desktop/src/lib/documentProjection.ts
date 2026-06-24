@@ -95,8 +95,15 @@ export interface ImageBlock {
   type: 'Image';
   value: {
     asset_id: string;
+    presentation?: ImagePresentation | null;
     alt_text?: string | null;
   };
+}
+
+export interface ImagePresentation {
+  alignment?: 'inline' | 'left' | 'center' | 'right' | null;
+  scale_percent?: number | null;
+  caption?: string | null;
 }
 
 export interface AssetRef {
@@ -224,6 +231,9 @@ export interface EditorImageNode {
   attrs: {
     assetId: string;
     altText?: string | null;
+    alignment?: 'inline' | 'left' | 'center' | 'right' | null;
+    scalePercent?: number | null;
+    caption?: string | null;
     src?: string | null;
   };
 }
@@ -616,7 +626,12 @@ function editorBlockToWordCoreBlock(block: EditorBlockNode, styles?: Record<stri
         type: 'Image',
         value: {
           asset_id: String(block.attrs.assetId),
-          alt_text: block.attrs.altText ?? 'Image'
+          presentation: {
+            alignment: normalizeImageAlignment(block.attrs.alignment),
+            scale_percent: normalizeImageScale(block.attrs.scalePercent),
+            caption: normalizeOptionalString(block.attrs.caption)
+          },
+          alt_text: normalizeOptionalString(block.attrs.altText) ?? 'Image'
         }
       };
     case 'table':
@@ -654,14 +669,42 @@ function wordCoreImageToEditorNode(block: ImageBlock, assets?: Record<string, As
     type: 'image',
     attrs: {
       assetId: block.value.asset_id,
-      altText: block.value.alt_text ?? 'Image',
+      altText: normalizeOptionalString(block.value.alt_text) ?? 'Image',
+      alignment: normalizeImageAlignment(block.value.presentation?.alignment),
+      scalePercent: normalizeImageScale(block.value.presentation?.scale_percent),
+      caption: normalizeOptionalString(block.value.presentation?.caption),
       src: imageDataUrl(assets?.[block.value.asset_id])
     }
   };
 }
 
 function imageToText(block: ImageBlock): string {
-  return block.value.alt_text?.trim() ?? '';
+  return [block.value.alt_text, block.value.presentation?.caption]
+    .map((value) => value?.trim() ?? '')
+    .filter(Boolean)
+    .join('\n');
+}
+
+function normalizeImageAlignment(value: unknown): 'inline' | 'left' | 'center' | 'right' {
+  return value === 'left' || value === 'center' || value === 'right' || value === 'inline'
+    ? value
+    : 'inline';
+}
+
+function normalizeImageScale(value: unknown): number {
+  const scale = Number(value);
+  if (!Number.isFinite(scale)) {
+    return 100;
+  }
+  return Math.min(200, Math.max(25, Math.round(scale)));
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function imageDataUrl(asset: AssetRef | undefined): string | null {

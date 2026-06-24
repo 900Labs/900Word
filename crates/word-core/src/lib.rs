@@ -428,6 +428,18 @@ impl Block {
                 if let Some(alt_text) = &image.alt_text {
                     output.push_str(alt_text);
                 }
+                if let Some(caption) = image.presentation.caption.as_deref() {
+                    if !caption.trim().is_empty() {
+                        if image
+                            .alt_text
+                            .as_deref()
+                            .is_some_and(|alt| !alt.trim().is_empty())
+                        {
+                            output.push('\n');
+                        }
+                        output.push_str(caption);
+                    }
+                }
             }
             Block::PageBreak => {}
         }
@@ -620,7 +632,49 @@ pub struct TableCell {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageBlock {
     pub asset_id: String,
+    #[serde(default, skip_serializing_if = "ImagePresentation::is_default")]
+    pub presentation: ImagePresentation,
     pub alt_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImagePresentation {
+    #[serde(default)]
+    pub alignment: ImageAlignment,
+    #[serde(default = "default_image_scale_percent")]
+    pub scale_percent: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+}
+
+impl Default for ImagePresentation {
+    fn default() -> Self {
+        Self {
+            alignment: ImageAlignment::Inline,
+            scale_percent: default_image_scale_percent(),
+            caption: None,
+        }
+    }
+}
+
+impl ImagePresentation {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageAlignment {
+    #[default]
+    Inline,
+    Left,
+    Center,
+    Right,
+}
+
+fn default_image_scale_percent() -> u16 {
+    100
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1038,6 +1092,25 @@ mod tests {
             .expect_err("blank title should fail");
 
         assert_eq!(err, DocumentError::EmptyField { field: "title" });
+    }
+
+    #[test]
+    fn image_caption_and_alt_contribute_to_document_text_stats() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "image-1.png".to_string(),
+            presentation: ImagePresentation {
+                alignment: ImageAlignment::Center,
+                scale_percent: 80,
+                caption: Some("Visible caption".to_string()),
+            },
+            alt_text: Some("Chart alt".to_string()),
+        })];
+
+        let stats = document.stats();
+
+        assert_eq!(stats.word_count, 4);
+        assert_eq!(stats.character_count, "Chart altVisible caption".len());
     }
 
     #[test]

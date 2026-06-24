@@ -17,6 +17,7 @@
     setEditorBlockType,
     setEditorLink,
     setEditorParagraphFormat,
+    setSelectedImageAttrs,
     setEditorSpellIssues,
     setEditorTextStyle,
     insertDefaultTable,
@@ -29,6 +30,7 @@
     type EditorFormattingSnapshot,
     type EditorSelectionSnapshot,
     type EditorSpellIssueRange,
+    type SupportedImageAttrs,
     type SupportedListName,
     type SupportedMarkName,
     type SupportedParagraphAttrs,
@@ -167,6 +169,12 @@
     { id: 1500, label: '1.5' },
     { id: 2000, label: '2.0' }
   ];
+  const imageAlignments: Array<{ id: NonNullable<SupportedImageAttrs['alignment']>; label: string }> = [
+    { id: 'inline', label: 'Inline' },
+    { id: 'left', label: 'Left' },
+    { id: 'center', label: 'Center' },
+    { id: 'right', label: 'Right' }
+  ];
 
   let title = $state('900Word');
   let status = $state(translate('en-US', 'starting'));
@@ -194,6 +202,10 @@
   let spacingAfter = $state(3);
   let firstLineIndent = $state(0);
   let activeFormatting = $state<EditorFormattingSnapshot>(emptyFormattingSnapshot());
+  let imageAltText = $state('Image');
+  let imageCaption = $state('');
+  let imageAlignment = $state<NonNullable<SupportedImageAttrs['alignment']>>('inline');
+  let imageScalePercent = $state(100);
   let spellIssueRanges = $state<EditorSpellIssueRange[]>([]);
   let spellPopover = $state<{
     issue: EditorSpellIssueRange;
@@ -688,6 +700,10 @@
     spacingBefore = activeFormatting.paragraphFormat.spacingBefore ?? 0;
     spacingAfter = activeFormatting.paragraphFormat.spacingAfter ?? 3;
     firstLineIndent = activeFormatting.paragraphFormat.firstLineIndent ?? 0;
+    imageAltText = activeFormatting.image?.altText ?? 'Image';
+    imageCaption = activeFormatting.image?.caption ?? '';
+    imageAlignment = activeFormatting.image?.alignment ?? 'inline';
+    imageScalePercent = activeFormatting.image?.scalePercent ?? 100;
   }
 
   function emptyFormattingSnapshot(): EditorFormattingSnapshot {
@@ -706,8 +722,31 @@
       },
       linkHref: null,
       list: null,
+      image: null,
       selectionWordCount: 0
     };
+  }
+
+  function applyImageAttrs(attrs: SupportedImageAttrs) {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    const changed = setSelectedImageAttrs(view, attrs, lastEditorSelection);
+    refreshSelectionFormatting();
+    status = changed ? tr('imageUpdated') : tr('paragraphUnchanged');
+  }
+
+  function setImageScale(value: number) {
+    imageScalePercent = Math.min(200, Math.max(25, Math.round(value)));
+    applyImageAttrs({ scalePercent: imageScalePercent });
+  }
+
+  function setImageAlignment(value: string) {
+    if (value === 'inline' || value === 'left' || value === 'center' || value === 'right') {
+      imageAlignment = value;
+      applyImageAttrs({ alignment: value });
+    }
   }
 
   function markEditorStarted() {
@@ -1952,6 +1991,65 @@
         {tr('insertTable')}
       </button>
     </div>
+
+    {#if activeFormatting.image}
+      <div class="tool-group image-tools" role="group" aria-label={tr('imageControls')}>
+        <label class="image-text-field">
+          {tr('imageAltText')}
+          <input
+            disabled={!editorEditable}
+            bind:value={imageAltText}
+            onpointerdown={() => captureToolbarSelection(true)}
+            onchange={() => applyImageAttrs({ altText: imageAltText })}
+            type="text"
+          />
+        </label>
+        <label class="image-text-field">
+          {tr('imageCaption')}
+          <input
+            disabled={!editorEditable}
+            bind:value={imageCaption}
+            onpointerdown={() => captureToolbarSelection(true)}
+            onchange={() => applyImageAttrs({ caption: imageCaption })}
+            type="text"
+          />
+        </label>
+        <select
+          aria-label={tr('imageAlignment')}
+          disabled={!editorEditable}
+          bind:value={imageAlignment}
+          onpointerdown={() => captureToolbarSelection(true)}
+          onchange={(event) => setImageAlignment(event.currentTarget.value)}
+          title={tr('imageAlignment')}
+        >
+          {#each imageAlignments as alignment}
+            <option value={alignment.id}>{alignment.label}</option>
+          {/each}
+        </select>
+        <label class="compact-number image-scale" title={tr('imageScale')}>
+          {tr('imageScale')}
+          <input
+            disabled={!editorEditable}
+            min="25"
+            max="200"
+            step="5"
+            type="range"
+            bind:value={imageScalePercent}
+            onpointerdown={() => captureToolbarSelection(true)}
+            onchange={(event) => setImageScale(Number(event.currentTarget.value))}
+          />
+          <input
+            disabled={!editorEditable}
+            min="25"
+            max="200"
+            type="number"
+            value={imageScalePercent}
+            onpointerdown={() => captureToolbarSelection(true)}
+            onchange={(event) => setImageScale(event.currentTarget.valueAsNumber)}
+          />
+        </label>
+      </div>
+    {/if}
 
     <div class="tool-group template-tools" role="group" aria-label={tr('templates')}>
       <select aria-label={tr('templates')} bind:value={selectedTemplateId}>

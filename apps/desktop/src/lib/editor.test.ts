@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EditorState, TextSelection, type Transaction } from 'prosemirror-state';
+import { EditorState, NodeSelection, TextSelection, type Transaction } from 'prosemirror-state';
 import {
   findEditorDocMatches,
   clearEditorDirectFormattingTransaction,
@@ -11,6 +11,7 @@ import {
   pastePlainTextAsBlocksTransaction,
   removeEditorLinkTransaction,
   setEditorParagraphFormatTransaction,
+  setSelectedImageAttrsTransaction,
   restoreEditorSelection,
   selectEditorTopLevelBlock,
   setEditorBlockType,
@@ -466,6 +467,44 @@ describe('findEditorDocMatches', () => {
     expect(nextState.doc.firstChild?.attrs.align).toBe('center');
     expect(nextState.doc.firstChild?.attrs.lineSpacing).toBe(1500);
     expect(nextState.doc.firstChild?.attrs.spacingAfter).toBe(4);
+  });
+
+  it('updates selected image atom metadata', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'image',
+          attrs: {
+            assetId: 'image-1.png',
+            altText: 'Image',
+            alignment: 'inline',
+            scalePercent: 100,
+            caption: null,
+            src: 'data:image/png;base64,iVBORw0KGgo='
+          }
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+    const selectedState = state.apply(state.tr.setSelection(NodeSelection.create(doc, 0)));
+
+    const snapshot = editorStateSelectionFormatting(selectedState);
+    expect(snapshot.image?.alignment).toBe('inline');
+
+    const transaction = setSelectedImageAttrsTransaction(selectedState, {
+      altText: 'Chart alt',
+      alignment: 'right',
+      scalePercent: 125,
+      caption: 'Chart caption'
+    });
+
+    expect(transaction).toBeDefined();
+    const nextState = selectedState.apply(transaction!);
+    expect(nextState.doc.firstChild?.attrs.altText).toBe('Chart alt');
+    expect(nextState.doc.firstChild?.attrs.alignment).toBe('right');
+    expect(nextState.doc.firstChild?.attrs.scalePercent).toBe(125);
+    expect(nextState.doc.firstChild?.attrs.caption).toBe('Chart caption');
   });
 
   it('clears direct inline and paragraph formatting without changing paragraph style', () => {

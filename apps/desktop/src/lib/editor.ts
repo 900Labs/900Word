@@ -1,5 +1,5 @@
 import { Fragment, type MarkType, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model';
-import { EditorState, type Transaction } from 'prosemirror-state';
+import { EditorState, NodeSelection, type Transaction } from 'prosemirror-state';
 import { TextSelection } from 'prosemirror-state';
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view';
 import 'prosemirror-view/style/prosemirror.css';
@@ -42,6 +42,13 @@ export interface SupportedParagraphAttrs {
   firstLineIndent?: number | null;
 }
 
+export interface SupportedImageAttrs {
+  altText?: string | null;
+  alignment?: 'inline' | 'left' | 'center' | 'right' | null;
+  scalePercent?: number | null;
+  caption?: string | null;
+}
+
 export interface EditorFindMatch extends FindRange {
   from: number;
   to: number;
@@ -64,6 +71,7 @@ export interface EditorFormattingSnapshot {
     type: SupportedListName;
     level: number;
   } | null;
+  image: SupportedImageAttrs | null;
   selectionWordCount: number;
 }
 
@@ -193,6 +201,7 @@ export function editorStateSelectionFormatting(
   const transaction = transactionWithFallbackSelection(state, fallbackSelection);
   const selection = transaction.selection;
   const textblock = selectedTextblock(transaction);
+  const image = selectedImageAttrs(transaction, fallbackSelection);
   const list = selectedListContext(selection.$from);
   const textStyle = compactTextStyleAttrs(
     textStyleAttrsNearSelection(transaction, supportedSchema.marks.textStyle)
@@ -226,6 +235,7 @@ export function editorStateSelectionFormatting(
     },
     linkHref: linkHrefNearSelection(transaction),
     list,
+    image,
     selectionWordCount: countSelectionWords(transaction)
   };
 }
@@ -580,6 +590,45 @@ export function setEditorParagraphFormatTransaction(
   });
 
   return changed ? transaction : undefined;
+}
+
+export function setSelectedImageAttrs(
+  view: EditorView | undefined,
+  attrs: SupportedImageAttrs,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  const transaction = setSelectedImageAttrsTransaction(view.state, attrs, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function setSelectedImageAttrsTransaction(
+  state: EditorState,
+  attrs: SupportedImageAttrs,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = state.tr;
+  const selected = selectedImageNode(transaction, fallbackSelection);
+  if (!selected) {
+    return undefined;
+  }
+
+  const nextAttrs = {
+    ...selected.node.attrs,
+    ...compactImageAttrs(attrs)
+  };
+  if (JSON.stringify(selected.node.attrs) === JSON.stringify(nextAttrs)) {
+    return undefined;
+  }
+  return transaction.setNodeMarkup(selected.pos, selected.node.type, nextAttrs, selected.node.marks);
 }
 
 export function clearEditorDirectFormatting(
@@ -1175,6 +1224,43 @@ function selectedTextblock(
   return undefined;
 }
 
+function selectedImageAttrs(
+  transaction: Transaction,
+  fallbackSelection?: EditorSelectionSnapshot
+): SupportedImageAttrs | null {
+  const selected = selectedImageNode(transaction, fallbackSelection);
+  if (!selected) {
+    return null;
+  }
+  return {
+    altText: typeof selected.node.attrs.altText === 'string' ? selected.node.attrs.altText : 'Image',
+    alignment: normalizeImageAlignment(selected.node.attrs.alignment),
+    scalePercent: normalizeImageScale(selected.node.attrs.scalePercent),
+    caption: typeof selected.node.attrs.caption === 'string' ? selected.node.attrs.caption : null
+  };
+}
+
+function selectedImageNode(
+  transaction: Transaction,
+  fallbackSelection?: EditorSelectionSnapshot
+): { node: ProseMirrorNode; pos: number } | undefined {
+  if (transaction.selection instanceof NodeSelection && transaction.selection.node.type.name === 'image') {
+    return { node: transaction.selection.node, pos: transaction.selection.from };
+  }
+
+  const from = fallbackSelection?.from ?? transaction.selection.from;
+  const to = fallbackSelection?.to ?? transaction.selection.to;
+  let found: { node: ProseMirrorNode; pos: number } | undefined;
+  transaction.doc.nodesBetween(Math.max(0, from), Math.min(transaction.doc.content.size, to), (node, pos, parent) => {
+    if (parent === transaction.doc && node.type.name === 'image') {
+      found = { node, pos };
+      return false;
+    }
+    return true;
+  });
+  return found;
+}
+
 function selectedListContext($pos: ResolvedPos): EditorFormattingSnapshot['list'] {
   const context = selectedListPositionContext($pos);
   if (!context) {
@@ -1398,8 +1484,40 @@ function emptyEditorFormattingSnapshot(): EditorFormattingSnapshot {
     },
     linkHref: null,
     list: null,
+    image: null,
     selectionWordCount: 0
   };
+}
+
+function compactImageAttrs(attrs: SupportedImageAttrs): SupportedImageAttrs {
+  const compact: SupportedImageAttrs = {};
+  if (typeof attrs.altText === 'string') {
+    compact.altText = attrs.altText.trim().length > 0 ? attrs.altText : 'Image';
+  }
+  if (attrs.alignment !== undefined && attrs.alignment !== null) {
+    compact.alignment = normalizeImageAlignment(attrs.alignment);
+  }
+  if (attrs.scalePercent !== undefined && attrs.scalePercent !== null) {
+    compact.scalePercent = normalizeImageScale(attrs.scalePercent);
+  }
+  if (typeof attrs.caption === 'string') {
+    compact.caption = attrs.caption.trim().length > 0 ? attrs.caption : null;
+  }
+  return compact;
+}
+
+function normalizeImageAlignment(value: unknown): 'inline' | 'left' | 'center' | 'right' {
+  return value === 'left' || value === 'center' || value === 'right' || value === 'inline'
+    ? value
+    : 'inline';
+}
+
+function normalizeImageScale(value: unknown): number {
+  const scale = Number(value);
+  if (!Number.isFinite(scale)) {
+    return 100;
+  }
+  return Math.min(200, Math.max(25, Math.round(scale)));
 }
 
 function markActive(transaction: Transaction, markName: SupportedMarkName): boolean {

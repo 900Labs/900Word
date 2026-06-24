@@ -163,7 +163,18 @@ describe('documentToText', () => {
         {
           blocks: [
             { type: 'Paragraph', value: { inlines: [{ text: 'Before' }] } },
-            { type: 'Image', value: { asset_id: 'image-1.png', alt_text: 'Image' } },
+            {
+              type: 'Image',
+              value: {
+                asset_id: 'image-1.png',
+                presentation: {
+                  alignment: 'center',
+                  scale_percent: 80,
+                  caption: 'Diagram caption'
+                },
+                alt_text: 'Diagram alt'
+              }
+            },
             { type: 'Paragraph', value: { inlines: [{ text: 'After' }] } }
           ]
         }
@@ -176,7 +187,10 @@ describe('documentToText', () => {
       type: 'image',
       attrs: {
         assetId: 'image-1.png',
-        altText: 'Image',
+        altText: 'Diagram alt',
+        alignment: 'center',
+        scalePercent: 80,
+        caption: 'Diagram caption',
         src: 'data:image/png;base64,iVBORw0KGgo='
       }
     });
@@ -192,6 +206,9 @@ describe('documentToText', () => {
             attrs: {
               assetId: 'image-1.png',
               altText: 'Image',
+              alignment: 'right',
+              scalePercent: 125,
+              caption: 'Visible caption',
               src: 'data:image/png;base64,iVBORw0KGgo='
             }
           }
@@ -202,6 +219,11 @@ describe('documentToText', () => {
         type: 'Image',
         value: {
           asset_id: 'image-1.png',
+          presentation: {
+            alignment: 'right',
+            scale_percent: 125,
+            caption: 'Visible caption'
+          },
           alt_text: 'Image'
         }
       }

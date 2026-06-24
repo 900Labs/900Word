@@ -219,6 +219,31 @@ const nodes: Record<string, NodeSpec> = {
           }
         }
       },
+      alignment: {
+        default: 'inline',
+        validate(value: unknown) {
+          if (!['inline', 'left', 'center', 'right'].includes(String(value))) {
+            throw new RangeError('unsupported image alignment');
+          }
+        }
+      },
+      scalePercent: {
+        default: 100,
+        validate(value: unknown) {
+          const scale = Number(value);
+          if (!Number.isInteger(scale) || scale < 25 || scale > 200) {
+            throw new RangeError('unsupported image scale');
+          }
+        }
+      },
+      caption: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && value !== undefined && typeof value !== 'string') {
+            throw new RangeError('unsupported image caption');
+          }
+        }
+      },
       src: {
         default: null,
         validate(value: unknown) {
@@ -241,6 +266,9 @@ const nodes: Record<string, NodeSpec> = {
             ? {
                 assetId,
                 altText: node.getAttribute('data-alt-text') || 'Image',
+                alignment: imageAlignmentAttr(node.getAttribute('data-align')),
+                scalePercent: imageScaleAttr(node.getAttribute('data-scale')),
+                caption: node.getAttribute('data-caption'),
                 src: safeImageSrc(node.querySelector('img')?.getAttribute('src') ?? '')
                   ? node.querySelector('img')?.getAttribute('src')
                   : null
@@ -254,10 +282,13 @@ const nodes: Record<string, NodeSpec> = {
       const altText = typeof node.attrs.altText === 'string' && node.attrs.altText.trim().length > 0
         ? node.attrs.altText
         : 'Image';
+      const caption = typeof node.attrs.caption === 'string' && node.attrs.caption.trim().length > 0
+        ? node.attrs.caption
+        : altText;
       const image = safeImageSrc(String(node.attrs.src ?? ''))
         ? ['img', { src: node.attrs.src, alt: altText }]
         : ['span', { class: 'image-placeholder-text' }, altText];
-      return ['figure', attrs, image, ['figcaption', altText]];
+      return ['figure', attrs, image, ['figcaption', caption]];
     }
   },
   text: {
@@ -477,12 +508,41 @@ function tableCellDomAttrs(attrs: Record<string, unknown>): Record<string, strin
 }
 
 function imageDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
+  const alignment = imageAlignmentAttr(attrs.alignment);
+  const scale = imageScaleAttr(attrs.scalePercent);
   const domAttrs: Record<string, string> = {
     'data-asset-id': String(attrs.assetId),
     'data-alt-text': typeof attrs.altText === 'string' ? attrs.altText : 'Image',
+    'data-align': alignment,
+    'data-scale': String(scale),
     contenteditable: 'false'
   };
+  if (typeof attrs.caption === 'string' && attrs.caption.trim().length > 0) {
+    domAttrs['data-caption'] = attrs.caption;
+  }
+  const css = [`max-width: ${scale}%`];
+  if (alignment === 'inline') {
+    css.push('display: inline-block');
+  } else if (alignment === 'left') {
+    css.push('margin-left: 0', 'margin-right: auto');
+  } else if (alignment === 'center') {
+    css.push('margin-left: auto', 'margin-right: auto');
+  } else if (alignment === 'right') {
+    css.push('margin-left: auto', 'margin-right: 0');
+  }
+  domAttrs.style = css.join('; ');
   return domAttrs;
+}
+
+function imageAlignmentAttr(value: unknown): 'inline' | 'left' | 'center' | 'right' {
+  return value === 'left' || value === 'center' || value === 'right' || value === 'inline'
+    ? value
+    : 'inline';
+}
+
+function imageScaleAttr(value: unknown): number {
+  const scale = Number(value);
+  return Number.isInteger(scale) && scale >= 25 && scale <= 200 ? scale : 100;
 }
 
 function textStyleDomAttrs(attrs: Record<string, unknown>): Record<string, string> {

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 use word_core::{
-    Block, Document, Heading, Inline, InlineMark, PageField, PageRegion, PageRegionBlock,
-    PageSetup, Paragraph, ParagraphFormat, Section, Style, StyleKind,
+    Block, Document, Heading, ImageBlock, Inline, InlineMark, PageField, PageRegion,
+    PageRegionBlock, PageSetup, Paragraph, ParagraphFormat, Section, Style, StyleKind,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -185,8 +185,27 @@ fn push_block_text(block: &Block, document: &Document, output: &mut String) {
             }
         }
         Block::Image(image) => {
-            if let Some(alt_text) = &image.alt_text {
+            if let Some(alt_text) = image
+                .alt_text
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
                 output.push_str(alt_text);
+            }
+            if let Some(caption) = image
+                .presentation
+                .caption
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                if image
+                    .alt_text
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+                {
+                    output.push('\n');
+                }
+                output.push_str(caption);
             }
         }
         Block::PageBreak => output.push_str("\n--- page break ---\n"),
@@ -319,8 +338,16 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
         }
         Block::Image(image) => {
             let alt_text = image.alt_text.as_deref().unwrap_or("Image");
+            let caption = image
+                .presentation
+                .caption
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(alt_text);
             output.push_str("<figure data-asset=\"");
             output.push_str(&escape_html(&image.asset_id));
+            output.push('"');
+            output.push_str(&image_html_attrs(image));
             output.push_str("\">");
             if let Some(data_url) = image_data_url(document, &image.asset_id) {
                 output.push_str("<img src=\"");
@@ -330,12 +357,49 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
                 output.push_str("\">");
             }
             output.push_str("<figcaption>");
-            output.push_str(&escape_html(alt_text));
+            output.push_str(&escape_html(caption));
             output.push_str("</figcaption>");
             output.push_str("</figure>");
         }
         Block::PageBreak => output.push_str("<hr data-page-break=\"true\">"),
     }
+}
+
+fn image_html_attrs(image: &ImageBlock) -> String {
+    let mut attrs = String::new();
+    let alignment = match image.presentation.alignment {
+        word_core::ImageAlignment::Inline => "inline",
+        word_core::ImageAlignment::Left => "left",
+        word_core::ImageAlignment::Center => "center",
+        word_core::ImageAlignment::Right => "right",
+    };
+    attrs.push_str(" data-align=\"");
+    attrs.push_str(alignment);
+    attrs.push('"');
+
+    let scale = image.presentation.scale_percent.clamp(25, 200);
+    attrs.push_str(" data-scale=\"");
+    attrs.push_str(&scale.to_string());
+    attrs.push('"');
+    attrs.push_str(" style=\"");
+    match image.presentation.alignment {
+        word_core::ImageAlignment::Inline => {
+            attrs.push_str("display:inline-block;");
+        }
+        word_core::ImageAlignment::Left => {
+            attrs.push_str("margin-left:0;margin-right:auto;");
+        }
+        word_core::ImageAlignment::Center => {
+            attrs.push_str("margin-left:auto;margin-right:auto;");
+        }
+        word_core::ImageAlignment::Right => {
+            attrs.push_str("margin-left:auto;margin-right:0;");
+        }
+    }
+    attrs.push_str("max-width:");
+    attrs.push_str(&scale.to_string());
+    attrs.push_str("%;\"");
+    attrs
 }
 
 fn image_data_url(document: &Document, asset_id: &str) -> Option<String> {
@@ -729,8 +793,8 @@ fn escape_html(input: &str) -> String {
 mod tests {
     use super::*;
     use word_core::{
-        ImageBlock, ListBlock, ListDefinition, ListItem, PageRegionParagraph, Table, TableCell,
-        TableRow,
+        ImageAlignment, ImageBlock, ImagePresentation, ListBlock, ListDefinition, ListItem,
+        PageRegionParagraph, Table, TableCell, TableRow,
     };
 
     #[test]
@@ -951,6 +1015,7 @@ mod tests {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Image(ImageBlock {
             asset_id: "asset-1".to_string(),
+            presentation: ImagePresentation::default(),
             alt_text: Some("<img src=x onerror=alert(1)>".to_string()),
         })];
 
@@ -978,12 +1043,21 @@ mod tests {
         );
         document.sections[0].blocks = vec![Block::Image(ImageBlock {
             asset_id: "image-1.png".to_string(),
+            presentation: ImagePresentation {
+                alignment: ImageAlignment::Center,
+                scale_percent: 75,
+                caption: Some("Centered caption".to_string()),
+            },
             alt_text: Some("Image".to_string()),
         })];
 
         let html = export_html(&document).expect("html export should succeed");
 
         assert!(html.contains("<img src=\"data:image/png;base64,iVBORw0KGgo=\" alt=\"Image\">"));
+        assert!(html.contains("data-align=\"center\""));
+        assert!(html.contains("data-scale=\"75\""));
+        assert!(html.contains("max-width:75%"));
+        assert!(html.contains("<figcaption>Centered caption</figcaption>"));
         assert!(!html.contains("file://"));
         assert!(!html.contains("private"));
     }
@@ -1003,12 +1077,13 @@ mod tests {
         );
         document.sections[0].blocks = vec![Block::Image(ImageBlock {
             asset_id: "image-1.png".to_string(),
+            presentation: ImagePresentation::default(),
             alt_text: Some("Image".to_string()),
         })];
 
         let html = export_html(&document).expect("html export should succeed");
 
-        assert!(html.contains("<figure data-asset=\"image-1.png\">"));
+        assert!(html.contains("<figure data-asset=\"image-1.png\""));
         assert!(!html.contains("<img"));
         assert!(!html.contains("data:image/"));
     }

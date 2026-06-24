@@ -118,3 +118,13 @@ Status: complete.
 - Project images as non-editable ProseMirror image atoms so text editing does not silently drop image blocks.
 - Persist inserted images through ODT save/reopen and include allowlisted embedded image assets in offline HTML export as data URLs.
 - Keep dedicated alt text editing, image resizing/cropping, and raster PDF embedding deferred.
+
+## Sprint 015: Image Polish MVP
+
+Status: complete.
+
+- Add durable image presentation metadata to `word-core`: editable alt text, caption text, alignment, and bounded scale percentage.
+- Add compact contextual desktop controls for the selected image atom without introducing a custom image editor framework.
+- Preserve image metadata through ProseMirror projection/text sync and 900Word-authored ODT save/reopen using the existing `word900` metadata namespace.
+- Reflect image alt/caption/alignment/scale in sanitized HTML and print HTML export.
+- Keep cropping, drag resize handles, richer external ODT image-layout fidelity, and raster PDF image embedding deferred.

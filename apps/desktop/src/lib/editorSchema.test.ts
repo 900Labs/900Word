@@ -121,12 +121,50 @@ describe('supportedSchema', () => {
           attrs: {
             assetId: 'image-1.png',
             altText: 'Image',
+            alignment: 'center',
+            scalePercent: 90,
+            caption: 'Caption',
             src: 'data:image/png;base64,iVBORw0KGgo='
           }
         }
       ]
     });
     expect(doc.child(0).type.name).toBe('image');
+    expect(doc.child(0).attrs.alignment).toBe('center');
+    expect(doc.child(0).attrs.scalePercent).toBe(90);
+    expect(doc.child(0).attrs.caption).toBe('Caption');
+
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'image',
+            attrs: {
+              assetId: 'image-1.png',
+              alignment: 'float',
+              scalePercent: 90
+            }
+          }
+        ]
+      })
+    ).toThrow('unsupported image alignment');
+
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'image',
+            attrs: {
+              assetId: 'image-1.png',
+              alignment: 'inline',
+              scalePercent: 300
+            }
+          }
+        ]
+      })
+    ).toThrow('unsupported image scale');
   });
 
   it('preserves table nodes with editable paragraph cell content', () => {
