@@ -7,7 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use word_core::{
     AssetRef, Block, Document, DocumentCommand, DocumentError, DocumentStats, Heading, ImageBlock,
-    ImagePresentation, Inline, Paragraph, StyleId, UndoStack,
+    ImagePresentation, Inline, ListBlock, ListItem, Paragraph, StyleId, Table, TableCell, TableRow,
+    UndoStack,
 };
 use word_spell::{DictionaryInfo, SpellIssue};
 
@@ -529,13 +530,43 @@ fn template_summaries() -> Vec<TemplateSummary> {
         },
         TemplateSummary {
             id: "report".to_string(),
-            name: "Report".to_string(),
-            description: "Heading and section starter for a short report".to_string(),
+            name: "School Report".to_string(),
+            description: "Class report outline with sections and bullet prompts".to_string(),
         },
         TemplateSummary {
             id: "letter".to_string(),
-            name: "Letter".to_string(),
-            description: "Generic letter structure with placeholder text".to_string(),
+            name: "Formal Letter".to_string(),
+            description: "Formal correspondence with generic placeholders".to_string(),
+        },
+        TemplateSummary {
+            id: "project-report".to_string(),
+            name: "Project Report".to_string(),
+            description: "NGO or project update with milestone table".to_string(),
+        },
+        TemplateSummary {
+            id: "resume".to_string(),
+            name: "CV / Resume".to_string(),
+            description: "Simple resume structure with placeholder sections".to_string(),
+        },
+        TemplateSummary {
+            id: "meeting-minutes".to_string(),
+            name: "Meeting Minutes".to_string(),
+            description: "Agenda, decisions, and action-item tracker".to_string(),
+        },
+        TemplateSummary {
+            id: "memo".to_string(),
+            name: "Memo".to_string(),
+            description: "Short internal memo with purpose and next steps".to_string(),
+        },
+        TemplateSummary {
+            id: "invoice".to_string(),
+            name: "Invoice".to_string(),
+            description: "Invoice-style table layout with generic line items".to_string(),
+        },
+        TemplateSummary {
+            id: "flyer".to_string(),
+            name: "Flyer One-Pager".to_string(),
+            description: "One-page announcement starter without embedded assets".to_string(),
         },
     ]
 }
@@ -543,32 +574,175 @@ fn template_summaries() -> Vec<TemplateSummary> {
 fn build_template_document(template_id: &str) -> Result<Document, String> {
     match template_id {
         "blank" => Ok(Document::new_untitled()),
-        "report" => {
-            let mut document = Document::new_untitled();
-            document.meta.title = "Untitled Report".to_string();
-            document.sections[0].blocks = vec![
-                heading_block(1, "Untitled Report"),
-                paragraph_block("Summary"),
-                heading_block(2, "Findings"),
-                paragraph_block("Add findings here."),
+        "report" => Ok(template_document(
+            "Untitled School Report",
+            vec![
+                heading_block(1, "School Report"),
+                paragraph_block("Topic"),
+                paragraph_block("Student name"),
+                paragraph_block("Course or class"),
+                heading_block(2, "Introduction"),
+                paragraph_block("Add a short introduction here."),
+                heading_block(2, "Key Points"),
+                unordered_list_block(&[
+                    "Add the first key point here.",
+                    "Add supporting evidence here.",
+                    "Add a final observation here.",
+                ]),
+                heading_block(2, "Conclusion"),
+                paragraph_block("Add a short conclusion here."),
+            ],
+        )),
+        "letter" => Ok(template_document(
+            "Untitled Formal Letter",
+            vec![
+                paragraph_block("Date"),
+                paragraph_block("Recipient name"),
+                paragraph_block("Recipient role"),
+                paragraph_block("Subject: Purpose of the letter"),
+                paragraph_block("Dear recipient,"),
+                paragraph_block("Add the opening paragraph here."),
+                paragraph_block("Add supporting details here."),
+                paragraph_block("Add the closing paragraph here."),
+                paragraph_block("Sincerely,"),
+                paragraph_block("Sender name"),
+            ],
+        )),
+        "project-report" => Ok(template_document(
+            "Untitled Project Report",
+            vec![
+                heading_block(1, "Project Report"),
+                paragraph_block("Project title"),
+                paragraph_block("Reporting period"),
+                heading_block(2, "Overview"),
+                paragraph_block("Summarize the project purpose and current status here."),
+                heading_block(2, "Milestones"),
+                table_block(vec![
+                    vec!["Milestone", "Status", "Notes"],
+                    vec!["Milestone one", "Not started", "Add notes."],
+                    vec!["Milestone two", "In progress", "Add notes."],
+                    vec!["Milestone three", "Planned", "Add notes."],
+                ]),
+                heading_block(2, "Risks"),
+                unordered_list_block(&[
+                    "Add an important risk here.",
+                    "Add a mitigation step here.",
+                ]),
                 heading_block(2, "Next Steps"),
                 paragraph_block("Add next steps here."),
-            ];
-            Ok(document)
-        }
-        "letter" => {
-            let mut document = Document::new_untitled();
-            document.meta.title = "Untitled Letter".to_string();
-            document.sections[0].blocks = vec![
-                paragraph_block("Recipient"),
-                paragraph_block("Subject"),
-                paragraph_block("Body text starts here."),
-                paragraph_block("Closing"),
-            ];
-            Ok(document)
-        }
+            ],
+        )),
+        "resume" => Ok(template_document(
+            "Untitled Resume",
+            vec![
+                heading_block(1, "Resume"),
+                paragraph_block("Candidate name"),
+                paragraph_block("Email | Phone | Location"),
+                heading_block(2, "Summary"),
+                paragraph_block("Add a short professional summary here."),
+                heading_block(2, "Skills"),
+                unordered_list_block(&[
+                    "Add a skill here.",
+                    "Add another skill here.",
+                    "Add a tool or method here.",
+                ]),
+                heading_block(2, "Experience"),
+                paragraph_block("Role title - Organization or project"),
+                unordered_list_block(&[
+                    "Add a responsibility or result here.",
+                    "Add another responsibility or result here.",
+                ]),
+                heading_block(2, "Education"),
+                paragraph_block("Program or credential - Institution"),
+            ],
+        )),
+        "meeting-minutes" => Ok(template_document(
+            "Untitled Meeting Minutes",
+            vec![
+                heading_block(1, "Meeting Minutes"),
+                paragraph_block("Meeting topic"),
+                paragraph_block("Date and time"),
+                paragraph_block("Attendees"),
+                heading_block(2, "Agenda"),
+                ordered_list_block(&[
+                    "Add agenda item one.",
+                    "Add agenda item two.",
+                    "Add agenda item three.",
+                ]),
+                heading_block(2, "Decisions"),
+                unordered_list_block(&["Add a decision here.", "Add another decision here."]),
+                heading_block(2, "Action Items"),
+                table_block(vec![
+                    vec!["Action", "Owner", "Due date", "Status"],
+                    vec!["Action item", "Owner", "YYYY-MM-DD", "Open"],
+                    vec!["Action item", "Owner", "YYYY-MM-DD", "Open"],
+                ]),
+            ],
+        )),
+        "memo" => Ok(template_document(
+            "Untitled Memo",
+            vec![
+                heading_block(1, "Memo"),
+                paragraph_block("To: Audience"),
+                paragraph_block("From: Sender"),
+                paragraph_block("Date: YYYY-MM-DD"),
+                paragraph_block("Subject: Topic"),
+                heading_block(2, "Purpose"),
+                paragraph_block("Add the purpose of this memo here."),
+                heading_block(2, "Background"),
+                paragraph_block("Add relevant context here."),
+                heading_block(2, "Requested Action"),
+                paragraph_block("Add the requested action or decision here."),
+            ],
+        )),
+        "invoice" => Ok(template_document(
+            "Untitled Invoice",
+            vec![
+                heading_block(1, "Invoice"),
+                table_block(vec![
+                    vec!["Field", "Value"],
+                    vec!["Invoice number", "INV-0000"],
+                    vec!["Invoice date", "YYYY-MM-DD"],
+                    vec!["Due date", "YYYY-MM-DD"],
+                ]),
+                heading_block(2, "Bill To"),
+                paragraph_block("Recipient or billing contact"),
+                heading_block(2, "Line Items"),
+                table_block(vec![
+                    vec!["Description", "Quantity", "Unit price", "Amount"],
+                    vec!["Service or item", "0", "0.00", "0.00"],
+                    vec!["Service or item", "0", "0.00", "0.00"],
+                    vec!["Subtotal", "", "", "0.00"],
+                    vec!["Tax", "", "", "0.00"],
+                    vec!["Total", "", "", "0.00"],
+                ]),
+                paragraph_block("Payment notes"),
+            ],
+        )),
+        "flyer" => Ok(template_document(
+            "Untitled Flyer",
+            vec![
+                heading_block(1, "Event Or Announcement"),
+                paragraph_block("Short headline"),
+                heading_block(2, "When"),
+                paragraph_block("Date and time"),
+                heading_block(2, "Where"),
+                paragraph_block("Location"),
+                heading_block(2, "Details"),
+                paragraph_block("Add a brief invitation or announcement here."),
+                heading_block(2, "Contact"),
+                paragraph_block("Contact method"),
+            ],
+        )),
         _ => Err("template is unavailable".to_string()),
     }
+}
+
+fn template_document(title: &str, blocks: Vec<Block>) -> Document {
+    let mut document = Document::new_untitled();
+    document.meta.title = title.to_string();
+    document.sections[0].blocks = blocks;
+    document
 }
 
 fn paragraph_block(text: &str) -> Block {
@@ -585,6 +759,43 @@ fn heading_block(level: u8, text: &str) -> Block {
         bookmark_id: None,
         level,
         inlines: vec![Inline::text(text)],
+    })
+}
+
+fn unordered_list_block(items: &[&str]) -> Block {
+    list_block("900w-unordered", items)
+}
+
+fn ordered_list_block(items: &[&str]) -> Block {
+    list_block("900w-ordered", items)
+}
+
+fn list_block(definition_id: &str, items: &[&str]) -> Block {
+    Block::List(ListBlock {
+        definition_id: definition_id.to_string(),
+        items: items
+            .iter()
+            .map(|item| ListItem {
+                level: 1,
+                blocks: vec![paragraph_block(item)],
+            })
+            .collect(),
+    })
+}
+
+fn table_block(rows: Vec<Vec<&str>>) -> Block {
+    Block::Table(Table {
+        rows: rows
+            .into_iter()
+            .map(|cells| TableRow {
+                cells: cells
+                    .into_iter()
+                    .map(|cell| TableCell {
+                        blocks: vec![paragraph_block(cell)],
+                    })
+                    .collect(),
+            })
+            .collect(),
     })
 }
 
@@ -1285,28 +1496,114 @@ mod tests {
     fn templates_are_generated_and_generic() {
         let summaries = template_summaries();
 
+        let expected_ids = vec![
+            "blank",
+            "report",
+            "letter",
+            "project-report",
+            "resume",
+            "meeting-minutes",
+            "memo",
+            "invoice",
+            "flyer",
+        ];
         assert_eq!(
             summaries
                 .iter()
                 .map(|template| template.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["blank", "report", "letter"]
+            expected_ids
         );
 
-        let report = build_template_document("report").expect("report template should exist");
-        assert_eq!(report.meta.title, "Untitled Report");
-        assert!(report.stats().word_count > 4);
-        assert!(!word_export::export_txt(&report)
-            .expect("template text should export")
-            .contains("private"));
+        let denied_fragments = [
+            "private",
+            "/Users/",
+            "/Volumes/",
+            "../",
+            "C:\\",
+            "file:",
+            "localhost",
+            "127.0.0.1",
+            "900Labs",
+            "samir",
+            "john",
+            "jane",
+            "acme",
+            "globex",
+        ];
+        for summary in summaries {
+            assert!(!summary.name.trim().is_empty());
+            assert!(!summary.description.trim().is_empty());
+
+            let document = build_template_document(&summary.id)
+                .unwrap_or_else(|_| panic!("{} template should exist", summary.id));
+            let serialized =
+                serde_json::to_string(&document).expect("template should serialize to JSON");
+            let exported_text =
+                word_export::export_txt(&document).expect("template text should export");
+            let combined = format!(
+                "{}\n{}\n{}\n{}",
+                summary.name, summary.description, serialized, exported_text
+            )
+            .to_lowercase();
+
+            for denied_fragment in denied_fragments {
+                assert!(
+                    !combined.contains(&denied_fragment.to_lowercase()),
+                    "{} template should not contain {}",
+                    summary.id,
+                    denied_fragment
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generated_templates_round_trip_through_odt() {
+        for summary in template_summaries() {
+            let document = build_template_document(&summary.id)
+                .unwrap_or_else(|_| panic!("{} template should exist", summary.id));
+            let bytes = word_odf::write_odt_bytes(&document)
+                .unwrap_or_else(|_| panic!("{} template should write as odt", summary.id));
+            let parsed = word_odf::read_odt_bytes(&bytes)
+                .unwrap_or_else(|_| panic!("{} template should reopen as odt", summary.id));
+
+            assert_eq!(parsed.meta.title, document.meta.title);
+            assert_eq!(
+                parsed.sections[0].blocks.len(),
+                document.sections[0].blocks.len()
+            );
+        }
+    }
+
+    #[test]
+    fn table_heavy_templates_include_table_blocks() {
+        let invoice = build_template_document("invoice").expect("invoice template should exist");
+        let project_report =
+            build_template_document("project-report").expect("project template should exist");
+
+        assert!(document_has_table(&invoice));
+        assert!(document_has_table(&project_report));
     }
 
     #[test]
     fn unknown_template_is_rejected_without_path_handling() {
-        let err =
-            build_template_document("../report").expect_err("path-shaped template id should fail");
+        for template_id in ["unknown", "../report", "/tmp/report", "C:\\draft\\report"] {
+            let err =
+                build_template_document(template_id).expect_err("unknown template id should fail");
 
-        assert_eq!(err, "template is unavailable");
+            assert_eq!(err, "template is unavailable");
+            assert!(!err.contains(template_id));
+        }
+    }
+
+    fn document_has_table(document: &Document) -> bool {
+        document.sections.iter().any(|section| {
+            section
+                .blocks
+                .iter()
+                .any(|block| matches!(block, Block::Table(_)))
+        })
     }
 
     #[test]

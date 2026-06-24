@@ -19,3 +19,4 @@ All notable changes to 900Word are tracked here.
 - Bookmarks and internal links MVP with safe generated block IDs on paragraphs/headings, compact editor controls, ODT `text:bookmark` round-trip, and sanitized HTML element IDs/fragment hrefs.
 - Table structure editing MVP with bounded row/column insert sizes and contextual add/delete row, add/delete column, and delete-table controls for editable tables.
 - Image resize UX with a direct selected-image drag handle that updates durable bounded scale metadata, plus generic oversized-image import guidance that avoids path and filename disclosure.
+- Expanded generated starter template gallery for formal letters, school reports, project reports, resumes, meeting minutes, memos, invoice-style documents, and flyers using only placeholder-safe document model blocks.
