@@ -13,13 +13,17 @@
     clearEditorDirectFormatting,
     setEditorBlockType,
     setEditorParagraphFormat,
+    setEditorSpellIssues,
     setEditorTextStyle,
+    snapshotEditorFormatting,
     snapshotEditorDomSelection,
     snapshotEditorSelection,
     toggleEditorList,
     toggleEditorMark,
     type EditorFindMatch,
+    type EditorFormattingSnapshot,
     type EditorSelectionSnapshot,
+    type EditorSpellIssueRange,
     type SupportedListName,
     type SupportedMarkName,
     type SupportedParagraphAttrs,
@@ -30,8 +34,10 @@
     canEditProjectedDocument,
     documentProjectionWarnings,
     documentToText,
+    type DocumentStyle,
     type DocumentState,
     type EditorProjectedChange,
+    type ListBlock,
     type PageSetup
   } from './lib/documentProjection';
   import { localeDirection, translate, uiLocales, type UiStringKey } from './lib/i18n';
@@ -46,6 +52,7 @@
     word: string;
     byte_start: number;
     byte_end: number;
+    suggestions?: string[];
   }
 
   interface SpellCheckResult {
@@ -170,6 +177,16 @@
   let spacingBefore = $state(0);
   let spacingAfter = $state(3);
   let firstLineIndent = $state(0);
+  let activeFormatting = $state<EditorFormattingSnapshot>(emptyFormattingSnapshot());
+  let spellIssueRanges = $state<EditorSpellIssueRange[]>([]);
+  let spellPopover = $state<{
+    issue: EditorSpellIssueRange;
+    x: number;
+    y: number;
+  } | null>(null);
+  let statsPanelOpen = $state(false);
+  let ignoredSpellWords = new Set<string>();
+  let ignoredSpellInstances = new Set<string>();
   let pageSetup = $state<PageSetup>(defaultPageSetup());
   let findQuery = $state('');
   let replaceText = $state('');
@@ -189,6 +206,10 @@
   let uiDirection = $derived(localeDirection(settings.ui_locale));
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
+  let selectionWordCount = $derived(activeFormatting.selectionWordCount);
+  let characterCountNoSpaces = $derived(countNonWhitespaceCharacters(plainText));
+  let paragraphCount = $derived(countProjectedParagraphs(documentState));
+  let readingMinutes = $derived(stats.word_count === 0 ? 0 : Math.max(1, Math.ceil(stats.word_count / 200)));
   let showWorkspaceSidebar = $derived(
     fileState.recent_documents.length > 0 ||
       fileState.recovery_documents.length > 0 ||
@@ -231,6 +252,9 @@
     pageSetup = document.sections[0]?.page ?? defaultPageSetup();
     stats = await invoke<DocumentStats>('get_document_stats');
     projectionWarnings = collectDocumentWarnings(document);
+    spellIssues = [];
+    spellIssueRanges = [];
+    spellPopover = null;
     const editable = canEditProjectedDocument(document);
     status = editable ? nextStatus : tr('editorReadOnly');
     view?.destroy();
@@ -239,8 +263,10 @@
       onInteraction: markEditorStarted,
       onSelectionChange: (selection) => {
         lastEditorSelection = selection;
+        refreshSelectionFormatting(selection);
       }
     });
+    refreshSelectionFormatting();
     refreshFindState();
   }
 
@@ -249,6 +275,8 @@
     editorHasStarted = true;
     editorIsEmpty = change.text.trim().length === 0;
     refreshFindState();
+    clearSpellDecorations();
+    refreshSelectionFormatting();
     editorSyncError = null;
     editorSyncQueue = editorSyncQueue
       .then(() => syncEditorChange(change))
@@ -440,7 +468,9 @@
       text: plainText,
       languageTag: settings.language_tag
     });
-    spellIssues = result.issues;
+    spellIssues = result.issues.filter((issue) => !spellIssueIgnored(issue));
+    spellIssueRanges = setEditorSpellIssues(view, spellIssues, plainText);
+    spellPopover = null;
     if (result.warnings.length > 0) {
       status = `${tr('offlineDictionaryFallback')}: ${result.dictionary_display_name}`;
     } else {
@@ -449,6 +479,100 @@
           ? tr('statusNoSpellingIssues')
           : tr('spellIssueCount', { count: spellIssues.length });
     }
+  }
+
+  function clearSpellDecorations() {
+    spellIssues = [];
+    spellIssueRanges = setEditorSpellIssues(view, [], plainText);
+    spellPopover = null;
+    ignoredSpellInstances = new Set();
+  }
+
+  function handleEditorContextMenu(event: MouseEvent) {
+    if (!view || spellIssueRanges.length === 0) {
+      return;
+    }
+    const pos = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos;
+    if (pos === undefined) {
+      return;
+    }
+    const issue = spellIssueRanges.find((candidate) => pos >= candidate.from && pos <= candidate.to);
+    if (!issue) {
+      spellPopover = null;
+      return;
+    }
+    event.preventDefault();
+    spellPopover = {
+      issue,
+      x: Math.min(event.clientX, window.innerWidth - 240),
+      y: Math.min(event.clientY, window.innerHeight - 220)
+    };
+  }
+
+  function replaceSpellIssue(suggestion: string) {
+    if (!spellPopover) {
+      return;
+    }
+    const issue = spellPopover.issue;
+    if (replaceEditorTextRange(view, issue.from, issue.to, suggestion)) {
+      spellPopover = null;
+      status = tr('spellingSuggestionApplied');
+    }
+  }
+
+  function ignoreSpellIssueOnce() {
+    if (!spellPopover) {
+      return;
+    }
+    ignoredSpellInstances.add(spellInstanceKey(spellPopover.issue));
+    refreshVisibleSpellIssues();
+    status = tr('spellIgnoredOnce');
+  }
+
+  function ignoreSpellIssueAll() {
+    if (!spellPopover) {
+      return;
+    }
+    ignoredSpellWords.add(normalizeSpellWord(spellPopover.issue.word));
+    refreshVisibleSpellIssues();
+    status = tr('spellIgnoredAll');
+  }
+
+  async function addSpellIssueToPersonalDictionary() {
+    if (!spellPopover) {
+      return;
+    }
+    const word = spellPopover.issue.word;
+    try {
+      await invoke('add_to_personal_dictionary', {
+        word,
+        languageTag: settings.language_tag
+      });
+      ignoredSpellWords.add(normalizeSpellWord(word));
+      refreshVisibleSpellIssues();
+      dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
+      status = tr('spellAddedToDictionary', { word });
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  function refreshVisibleSpellIssues() {
+    spellIssues = spellIssues.filter((issue) => !spellIssueIgnored(issue));
+    spellIssueRanges = setEditorSpellIssues(view, spellIssues, plainText);
+    spellPopover = null;
+  }
+
+  function spellIssueIgnored(issue: SpellIssue) {
+    return ignoredSpellWords.has(normalizeSpellWord(issue.word)) || ignoredSpellInstances.has(spellInstanceKey(issue));
+  }
+
+  function spellInstanceKey(issue: Pick<SpellIssue, 'word' | 'byte_start' | 'byte_end'>) {
+    return `${normalizeSpellWord(issue.word)}:${issue.byte_start}:${issue.byte_end}`;
+  }
+
+  function normalizeSpellWord(word: string) {
+    return word.trim().replace(/^'+|'+$/g, '').toLocaleLowerCase();
   }
 
   function applyInlineMark(mark: SupportedMarkName, label: string) {
@@ -488,8 +612,110 @@
     }
   }
 
+  function refreshSelectionFormatting(selection = lastEditorSelection) {
+    activeFormatting = snapshotEditorFormatting(view, selection);
+    selectedStyleId = paragraphStyles.some((style) => style.id === activeFormatting.styleId)
+      ? activeFormatting.styleId
+      : 'body';
+    selectedFontFamily = activeFormatting.textStyle.fontFamily ?? 'system-ui';
+    selectedFontSize = activeFormatting.textStyle.fontSizePt ?? 12;
+    selectedTextColor = activeFormatting.textStyle.textColor ?? '#20242c';
+    selectedHighlightColor = activeFormatting.textStyle.highlightColor ?? '#fff3bf';
+    selectedLineSpacing = activeFormatting.paragraphFormat.lineSpacing ?? 1150;
+    spacingBefore = activeFormatting.paragraphFormat.spacingBefore ?? 0;
+    spacingAfter = activeFormatting.paragraphFormat.spacingAfter ?? 3;
+    firstLineIndent = activeFormatting.paragraphFormat.firstLineIndent ?? 0;
+  }
+
+  function emptyFormattingSnapshot(): EditorFormattingSnapshot {
+    return {
+      blockType: null,
+      styleId: 'body',
+      paragraphFormat: {},
+      textStyle: {},
+      marks: {
+        bold: false,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+        superscript: false,
+        subscript: false
+      },
+      list: null,
+      selectionWordCount: 0
+    };
+  }
+
   function markEditorStarted() {
     editorHasStarted = true;
+  }
+
+  async function updateStyleFromSelection() {
+    if (!editorEditable || !documentState) {
+      status = tr('editorReadOnly');
+      return;
+    }
+
+    captureToolbarSelection(true);
+    refreshSelectionFormatting();
+    if (activeFormatting.blockType !== 'paragraph') {
+      status = tr('styleUpdateNeedsParagraph');
+      return;
+    }
+
+    try {
+      await waitForEditorSync();
+      const styleId = activeFormatting.styleId || 'body';
+      const existing = documentState.styles?.[styleId];
+      const style: DocumentStyle = {
+        id: styleId,
+        name: existing?.name ?? styleLabel(styleId),
+        kind: 'Paragraph',
+        parent: existing?.parent ?? null,
+        properties: {
+          ...(existing?.properties ?? {}),
+          paragraph: paragraphAttrsToWordCoreFormat(activeFormatting.paragraphFormat)
+        }
+      };
+      const document = await invoke<DocumentState>('apply_document_command', {
+        command: {
+          type: 'update_style',
+          style
+        }
+      });
+      await loadDocumentIntoEditor(document, tr('styleUpdated', { style: style.name }));
+      await refreshFileState();
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  function paragraphAttrsToWordCoreFormat(attrs: SupportedParagraphAttrs) {
+    const format: Record<string, string | number | null> = {};
+    if (attrs.align !== undefined && attrs.align !== null) format.alignment = attrs.align;
+    if (attrs.lineSpacing !== undefined && attrs.lineSpacing !== null) {
+      format.line_spacing_per_mille = attrs.lineSpacing;
+    }
+    if (attrs.spacingBefore !== undefined && attrs.spacingBefore !== null) {
+      format.spacing_before_mm = attrs.spacingBefore;
+    }
+    if (attrs.spacingAfter !== undefined && attrs.spacingAfter !== null) {
+      format.spacing_after_mm = attrs.spacingAfter;
+    }
+    if (attrs.indentStart !== undefined && attrs.indentStart !== null) {
+      format.indent_start_mm = attrs.indentStart;
+    }
+    if (attrs.indentEnd !== undefined && attrs.indentEnd !== null) {
+      format.indent_end_mm = attrs.indentEnd;
+    }
+    if (attrs.firstLineIndent !== undefined && attrs.firstLineIndent !== null) {
+      format.first_line_indent_mm = attrs.firstLineIndent;
+    }
+    return Object.keys(format).length > 0 ? format : null;
+  }
+
+  function styleLabel(styleId: string) {
+    return paragraphStyles.find((style) => style.id === styleId)?.label ?? styleId;
   }
 
   function applyParagraph() {
@@ -686,10 +912,16 @@
   }
 
   function handleWindowClick(event: MouseEvent) {
-    if (!fileMenuOpen || !(event.target instanceof Node) || fileMenuRoot?.contains(event.target)) {
+    const target = event.target;
+    if (!(target instanceof Node)) {
       return;
     }
-    closeFileMenu();
+    if (fileMenuOpen && !fileMenuRoot?.contains(target)) {
+      closeFileMenu();
+    }
+    if (spellPopover && target instanceof Element && !target.closest('.spell-popover')) {
+      spellPopover = null;
+    }
   }
 
   function replaceCurrentMatch() {
@@ -768,6 +1000,42 @@
     );
   }
 
+  function countNonWhitespaceCharacters(text: string) {
+    return Array.from(text).filter((char) => !/\s/.test(char)).length;
+  }
+
+  function countProjectedParagraphs(document: DocumentState | undefined) {
+    if (!document) {
+      return 0;
+    }
+    return document.sections.reduce(
+      (total, section) =>
+        total +
+        section.blocks.reduce((blockTotal, block) => {
+          if (block.type === 'Paragraph' || block.type === 'Heading') {
+            return blockTotal + 1;
+          }
+          if (isProjectedListBlock(block)) {
+            return blockTotal + block.value.items.length;
+          }
+          return blockTotal;
+        }, 0),
+      0
+    );
+  }
+
+  function isProjectedListBlock(
+    block: DocumentState['sections'][number]['blocks'][number]
+  ): block is ListBlock {
+    return (
+      block.type === 'List' &&
+      typeof block.value === 'object' &&
+      block.value !== null &&
+      'items' in block.value &&
+      Array.isArray(block.value.items)
+    );
+  }
+
   function defaultDocumentFileName() {
     const cleaned = title
       .replace(/[\\/:*?"<>|]+/g, ' ')
@@ -827,9 +1095,16 @@
     } else if (key === 'n') {
       event.preventDefault();
       newDocument().catch(setStatusFromError);
+    } else if (key === 'o') {
+      event.preventDefault();
+      openDocumentWithDialog().catch(setStatusFromError);
     } else if (key === 's') {
       event.preventDefault();
-      saveCurrentDocument().catch(setStatusFromError);
+      if (event.shiftKey) {
+        saveDocumentAsWithDialog().catch(setStatusFromError);
+      } else {
+        saveCurrentDocument().catch(setStatusFromError);
+      }
     } else if (key === 'p') {
       event.preventDefault();
       printDocument().catch(setStatusFromError);
@@ -938,6 +1213,7 @@
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('open')}</span>
             </span>
+            <span class="menu-shortcut">Cmd+O</span>
           </button>
 
           <div class="menu-separator" role="separator"></div>
@@ -959,6 +1235,7 @@
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('saveAs')}</span>
             </span>
+            <span class="menu-shortcut">Cmd+Shift+S</span>
           </button>
           <button class="menu-command" type="button" onclick={() => runFileMenuAction(autosaveDocument)}>
             <span class="menu-glyph glyph-autosave" aria-hidden="true"></span>
@@ -1073,6 +1350,15 @@
         {/each}
       </select>
       <button
+        disabled={!editorEditable || activeFormatting.blockType !== 'paragraph'}
+        title={tr('updateStyleFromSelection')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, updateStyleFromSelection)}
+        onclick={(event) => runToolbarKeyboardCommand(event, updateStyleFromSelection)}
+      >
+        {tr('updateStyle')}
+      </button>
+      <button
         disabled={!editorEditable}
         title={tr('clearFormatting')}
         type="button"
@@ -1086,10 +1372,12 @@
     <div class="tool-group formatting-tools" role="group" aria-label={tr('textFormatting')}>
       <button
         aria-label={tr('bold')}
+        aria-pressed={activeFormatting.marks.bold}
+        class:active-format={activeFormatting.marks.bold}
         class="format-button strong"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('bold', tr('bold')))}
-        title={tr('bold')}
+        title={`${tr('bold')} (Cmd+B)`}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('bold', tr('bold')))}
       >
@@ -1097,10 +1385,12 @@
       </button>
       <button
         aria-label={tr('italic')}
+        aria-pressed={activeFormatting.marks.italic}
+        class:active-format={activeFormatting.marks.italic}
         class="format-button italic"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('italic', tr('italic')))}
-        title={tr('italic')}
+        title={`${tr('italic')} (Cmd+I)`}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('italic', tr('italic')))}
       >
@@ -1108,10 +1398,12 @@
       </button>
       <button
         aria-label={tr('underline')}
+        aria-pressed={activeFormatting.marks.underline}
+        class:active-format={activeFormatting.marks.underline}
         class="format-button underline"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('underline', tr('underline')))}
-        title={tr('underline')}
+        title={`${tr('underline')} (Cmd+U)`}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('underline', tr('underline')))}
       >
@@ -1119,6 +1411,8 @@
       </button>
       <button
         aria-label={tr('strikethrough')}
+        aria-pressed={activeFormatting.marks.strikethrough}
+        class:active-format={activeFormatting.marks.strikethrough}
         class="format-button strike"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
@@ -1130,6 +1424,8 @@
       </button>
       <button
         aria-label={tr('superscript')}
+        aria-pressed={activeFormatting.marks.superscript}
+        class:active-format={activeFormatting.marks.superscript}
         class="format-button script"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
@@ -1141,6 +1437,8 @@
       </button>
       <button
         aria-label={tr('subscript')}
+        aria-pressed={activeFormatting.marks.subscript}
+        class:active-format={activeFormatting.marks.subscript}
         class="format-button script"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
@@ -1236,6 +1534,8 @@
 
     <div class="tool-group paragraph-tools" role="group" aria-label={tr('paragraphControls')}>
       <button
+        aria-pressed={activeFormatting.paragraphFormat.align === 'left'}
+        class:active-format={activeFormatting.paragraphFormat.align === 'left'}
         disabled={!editorEditable}
         title={tr('alignLeft')}
         type="button"
@@ -1245,6 +1545,8 @@
         L
       </button>
       <button
+        aria-pressed={activeFormatting.paragraphFormat.align === 'center'}
+        class:active-format={activeFormatting.paragraphFormat.align === 'center'}
         disabled={!editorEditable}
         title={tr('alignCenter')}
         type="button"
@@ -1254,6 +1556,8 @@
         C
       </button>
       <button
+        aria-pressed={activeFormatting.paragraphFormat.align === 'right'}
+        class:active-format={activeFormatting.paragraphFormat.align === 'right'}
         disabled={!editorEditable}
         title={tr('alignRight')}
         type="button"
@@ -1263,6 +1567,8 @@
         R
       </button>
       <button
+        aria-pressed={activeFormatting.paragraphFormat.align === 'justify'}
+        class:active-format={activeFormatting.paragraphFormat.align === 'justify'}
         disabled={!editorEditable}
         title={tr('alignJustify')}
         type="button"
@@ -1323,6 +1629,8 @@
 
     <div class="tool-group list-tools" role="group" aria-label={tr('lists')}>
       <button
+        aria-pressed={activeFormatting.list?.type === 'bullet_list'}
+        class:active-format={activeFormatting.list?.type === 'bullet_list'}
         disabled={!editorEditable}
         title={tr('bulletList')}
         type="button"
@@ -1332,6 +1640,8 @@
         UL
       </button>
       <button
+        aria-pressed={activeFormatting.list?.type === 'ordered_list'}
+        class:active-format={activeFormatting.list?.type === 'ordered_list'}
         disabled={!editorEditable}
         title={tr('numberedList')}
         type="button"
@@ -1454,7 +1764,9 @@
       class:hidden-view={activeView !== 'editor'}
       class="editor-panel"
       id="editor-view"
+      oncontextmenu={handleEditorContextMenu}
       role="tabpanel"
+      tabindex={activeView === 'editor' ? 0 : -1}
     >
       <div
         bind:this={editorHost}
@@ -1462,6 +1774,28 @@
         class="editor-host"
         data-placeholder={tr('startWriting')}
       ></div>
+      {#if spellPopover}
+        <div
+          aria-label={tr('spelling')}
+          class="spell-popover"
+          role="dialog"
+          style={`left: ${spellPopover.x}px; top: ${spellPopover.y}px;`}
+        >
+          <div class="spell-popover-title">{spellPopover.issue.word}</div>
+          {#if spellPopover.issue.suggestions && spellPopover.issue.suggestions.length > 0}
+            {#each spellPopover.issue.suggestions as suggestion}
+              <button type="button" onclick={() => replaceSpellIssue(suggestion)}>{suggestion}</button>
+            {/each}
+          {:else}
+            <span class="spell-muted">{tr('noSuggestions')}</span>
+          {/if}
+          <div class="spell-actions">
+            <button type="button" onclick={ignoreSpellIssueOnce}>{tr('ignoreOnce')}</button>
+            <button type="button" onclick={ignoreSpellIssueAll}>{tr('ignoreAll')}</button>
+            <button type="button" onclick={addSpellIssueToPersonalDictionary}>{tr('addToDictionary')}</button>
+          </div>
+        </div>
+      {/if}
     </div>
 
     <div
@@ -1614,10 +1948,31 @@
       <span>{tr('dirty')}: <strong>{fileState.dirty ? tr('yes') : tr('no')}</strong></span>
     </div>
     <div class="bottom-group">
-      <span class="bottom-label">{tr('stats')}</span>
+      <button
+        aria-expanded={statsPanelOpen}
+        class="bottom-action"
+        type="button"
+        onclick={() => (statsPanelOpen = !statsPanelOpen)}
+      >
+        {tr('stats')}
+      </button>
       <span>{tr('words')}: <strong>{stats.word_count}</strong></span>
+      <span>{tr('selectionWords')}: <strong>{selectionWordCount}</strong></span>
       <span>{tr('characters')}: <strong>{stats.character_count}</strong></span>
       <span>{tr('blocks')}: <strong>{stats.block_count}</strong></span>
+      {#if statsPanelOpen}
+        <div class="status-panel" role="dialog" aria-label={tr('documentStatistics')}>
+          <dl>
+            <div><dt>{tr('words')}</dt><dd>{stats.word_count}</dd></div>
+            <div><dt>{tr('selectionWords')}</dt><dd>{selectionWordCount}</dd></div>
+            <div><dt>{tr('characters')}</dt><dd>{stats.character_count}</dd></div>
+            <div><dt>{tr('charactersNoSpaces')}</dt><dd>{characterCountNoSpaces}</dd></div>
+            <div><dt>{tr('paragraphs')}</dt><dd>{paragraphCount}</dd></div>
+            <div><dt>{tr('blocks')}</dt><dd>{stats.block_count}</dd></div>
+            <div><dt>{tr('readingTime')}</dt><dd>{tr('readingMinutes', { count: readingMinutes })}</dd></div>
+          </dl>
+        </div>
+      {/if}
     </div>
     <div class="bottom-group">
       <span class="bottom-label">{tr('spelling')}</span>

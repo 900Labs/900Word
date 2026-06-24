@@ -24,7 +24,7 @@ Rust workspace crates
 
 `word-core` owns durable document truth. ProseMirror is an editing projection, and ODT is the persisted package format.
 
-The editor schema accepts only nodes and marks with matching `word-core` semantics. Sprint 009 adds editable ordered/unordered list nodes, paragraph direct-format attributes, and inline text-style attributes on top of the original paragraph, heading, text, and inline mark projection. Broader ProseMirror nodes remain unavailable until `word-core` has matching durable semantics and import/export tests. Documents that contain modeled-but-unprojected blocks, such as tables or images, open in a read-only editor projection with warnings until those blocks have complete projection support.
+The editor schema accepts only nodes and marks with matching `word-core` semantics. Sprint 009 adds editable ordered/unordered list nodes, paragraph direct-format attributes, and inline text-style attributes on top of the original paragraph, heading, text, and inline mark projection. Sprint 010 adds selection-derived toolbar state, list-aware Enter/paste behavior, and a durable update-style-from-selection command for selected paragraph style properties. Broader ProseMirror nodes remain unavailable until `word-core` has matching durable semantics and import/export tests. Documents that contain modeled-but-unprojected blocks, such as tables or images, open in a read-only editor projection with warnings until those blocks have complete projection support.
 
 Import flow:
 
@@ -49,6 +49,7 @@ Editor sync flow:
 Current ODT support covers:
 
 - Paragraphs and headings with `word-core` style IDs.
+- Paragraph style registry properties for 900Word-authored paragraph style updates.
 - Paragraph direct formatting for 900Word-authored alignment, line spacing, spacing, and indents.
 - Inline text runs with bold, italic, underline, strikethrough, superscript, subscript, font family, font size, text color, highlight color, and safe `http`, `https`, or `mailto` links.
 - Ordered and unordered lists with 900Word-authored list item levels.

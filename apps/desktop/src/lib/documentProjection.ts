@@ -24,6 +24,20 @@ export interface ParagraphFormat {
   first_line_indent_mm?: number | null;
 }
 
+export interface StyleProperties {
+  paragraph?: ParagraphFormat | null;
+  inline?: InlineStyle | null;
+  page?: PageSetup | null;
+}
+
+export interface DocumentStyle {
+  id: string;
+  name: string;
+  kind: 'Paragraph' | 'Character' | 'Table' | 'Page';
+  parent?: string | null;
+  properties: StyleProperties;
+}
+
 export interface ParagraphBlock {
   type: 'Paragraph';
   value: {
@@ -75,6 +89,7 @@ export interface DocumentState {
   meta: {
     title: string;
   };
+  styles?: Record<string, DocumentStyle>;
   lists?: Record<string, ListDefinition>;
   sections: Array<{
     blocks: Block[];
@@ -162,6 +177,15 @@ export type DocumentCommand =
       type: 'delete_block';
       section_index: number;
       block_index: number;
+    }
+  | {
+      type: 'update_page_setup';
+      section_index: number;
+      page: PageSetup;
+    }
+  | {
+      type: 'update_style';
+      style: DocumentStyle;
     };
 
 export function documentToText(document: DocumentState): string {
@@ -195,7 +219,7 @@ export function documentToEditorDoc(document: DocumentState): EditorDoc {
   const content: EditorBlockNode[] = [];
   for (const section of document.sections) {
     for (const block of section.blocks) {
-      const node = blockToEditorNode(block, document.lists);
+      const node = blockToEditorNode(block, document.lists, document.styles);
       content.push(node);
     }
   }
@@ -206,10 +230,13 @@ export function documentToEditorDoc(document: DocumentState): EditorDoc {
   };
 }
 
-export function editorDocToWordCoreBlocks(editorDoc: EditorDoc): EditableBlock[] {
+export function editorDocToWordCoreBlocks(
+  editorDoc: EditorDoc,
+  styles?: Record<string, DocumentStyle>
+): EditableBlock[] {
   return editorDoc.content.map((block) => {
     if (block.type === 'bullet_list' || block.type === 'ordered_list') {
-      return editorListToWordCoreBlock(block);
+      return editorListToWordCoreBlock(block, styles);
     }
     if (block.type === 'heading') {
       const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
@@ -226,7 +253,7 @@ export function editorDocToWordCoreBlocks(editorDoc: EditorDoc): EditableBlock[]
       return { type: 'Paragraph', value: { style: 'body', inlines: [] } };
     }
     const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
-    const format = editorParagraphAttrsToFormat(block.attrs);
+    const format = editorParagraphAttrsToFormat(block.attrs, styles);
     return {
       type: 'Paragraph',
       value: {
@@ -302,9 +329,13 @@ function isListBlock(block: Block): block is ListBlock {
   return block.type === 'List' && typeof block.value === 'object' && block.value !== null && 'items' in block.value;
 }
 
-function blockToEditorNode(block: Block, lists?: Record<string, ListDefinition>): EditorBlockNode {
+function blockToEditorNode(
+  block: Block,
+  lists?: Record<string, ListDefinition>,
+  styles?: Record<string, DocumentStyle>
+): EditorBlockNode {
   if (isListBlock(block)) {
-    return wordCoreListToEditorNode(block, lists);
+    return wordCoreListToEditorNode(block, lists, styles);
   }
 
   if (!hasInlineContent(block)) {
@@ -330,7 +361,7 @@ function blockToEditorNode(block: Block, lists?: Record<string, ListDefinition>)
 
   return {
     type: 'paragraph',
-    attrs: paragraphAttrsFromFormat(block.value.style || 'body', block.value.format),
+    attrs: paragraphAttrsFromFormat(block.value.style || 'body', block.value.format, styles),
     content
   };
 }
@@ -419,7 +450,11 @@ function mapEditorMark(mark: string): string | undefined {
   return supportedMarks[mark];
 }
 
-function wordCoreListToEditorNode(block: ListBlock, lists?: Record<string, ListDefinition>): EditorListNode {
+function wordCoreListToEditorNode(
+  block: ListBlock,
+  lists?: Record<string, ListDefinition>,
+  styles?: Record<string, DocumentStyle>
+): EditorListNode {
   const registryOrdered = lists?.[block.value.definition_id]?.ordered;
   const ordered =
     registryOrdered ?? (block.value.definition_id === '900w-ordered' || block.value.definition_id.endsWith('-ol'));
@@ -432,7 +467,7 @@ function wordCoreListToEditorNode(block: ListBlock, lists?: Record<string, ListD
       content:
         item.blocks.length > 0
           ? item.blocks.map((child): EditorParagraphNode | EditorHeadingNode => {
-              const node = blockToEditorNode(child, lists);
+              const node = blockToEditorNode(child, lists, styles);
               if (node.type === 'paragraph' || node.type === 'heading') {
                 return node;
               }
@@ -447,7 +482,7 @@ function wordCoreListToEditorNode(block: ListBlock, lists?: Record<string, ListD
   };
 }
 
-function editorListToWordCoreBlock(block: EditorListNode): ListBlock {
+function editorListToWordCoreBlock(block: EditorListNode, styles?: Record<string, DocumentStyle>): ListBlock {
   const definitionId =
     block.attrs?.definitionId || (block.type === 'ordered_list' ? '900w-ordered' : '900w-unordered');
   return {
@@ -457,7 +492,7 @@ function editorListToWordCoreBlock(block: EditorListNode): ListBlock {
       items: block.content.map((item) => ({
         level: clampListLevel(item.attrs?.level ?? 1),
         blocks: (item.content ?? [])
-          .map((child) => editorChildBlockToWordCore(child))
+          .map((child) => editorChildBlockToWordCore(child, styles))
           .filter((child): child is ParagraphBlock | HeadingBlock => child !== undefined)
       }))
     }
@@ -465,7 +500,8 @@ function editorListToWordCoreBlock(block: EditorListNode): ListBlock {
 }
 
 function editorChildBlockToWordCore(
-  block: EditorParagraphNode | EditorHeadingNode
+  block: EditorParagraphNode | EditorHeadingNode,
+  styles?: Record<string, DocumentStyle>
 ): ParagraphBlock | HeadingBlock | undefined {
   const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
   if (block.type === 'heading') {
@@ -474,7 +510,7 @@ function editorChildBlockToWordCore(
       value: { level: clampHeadingLevel(block.attrs?.level ?? 1), inlines }
     };
   }
-  const format = editorParagraphAttrsToFormat(block.attrs);
+  const format = editorParagraphAttrsToFormat(block.attrs, styles);
   return {
     type: 'Paragraph',
     value: {
@@ -485,28 +521,99 @@ function editorChildBlockToWordCore(
   };
 }
 
-function paragraphAttrsFromFormat(style: string, format: ParagraphFormat | undefined): EditorParagraphAttrs {
+function paragraphAttrsFromFormat(
+  style: string,
+  format: ParagraphFormat | undefined,
+  styles?: Record<string, DocumentStyle>
+): EditorParagraphAttrs {
   const attrs: EditorParagraphAttrs = { style };
-  if (format?.alignment) attrs.align = format.alignment;
-  if (format?.line_spacing_per_mille) attrs.lineSpacing = format.line_spacing_per_mille;
-  if (format?.spacing_before_mm) attrs.spacingBefore = format.spacing_before_mm;
-  if (format?.spacing_after_mm) attrs.spacingAfter = format.spacing_after_mm;
-  if (format?.indent_start_mm) attrs.indentStart = format.indent_start_mm;
-  if (format?.indent_end_mm) attrs.indentEnd = format.indent_end_mm;
-  if (format?.first_line_indent_mm) attrs.firstLineIndent = format.first_line_indent_mm;
+  const styleFormat = styles?.[style]?.kind === 'Paragraph' ? styles?.[style]?.properties.paragraph : undefined;
+  const merged = mergeParagraphFormats(styleFormat ?? undefined, format);
+  if (merged.alignment !== undefined && merged.alignment !== null) attrs.align = merged.alignment;
+  if (merged.line_spacing_per_mille !== undefined && merged.line_spacing_per_mille !== null) {
+    attrs.lineSpacing = merged.line_spacing_per_mille;
+  }
+  if (merged.spacing_before_mm !== undefined && merged.spacing_before_mm !== null) {
+    attrs.spacingBefore = merged.spacing_before_mm;
+  }
+  if (merged.spacing_after_mm !== undefined && merged.spacing_after_mm !== null) {
+    attrs.spacingAfter = merged.spacing_after_mm;
+  }
+  if (merged.indent_start_mm !== undefined && merged.indent_start_mm !== null) {
+    attrs.indentStart = merged.indent_start_mm;
+  }
+  if (merged.indent_end_mm !== undefined && merged.indent_end_mm !== null) {
+    attrs.indentEnd = merged.indent_end_mm;
+  }
+  if (merged.first_line_indent_mm !== undefined && merged.first_line_indent_mm !== null) {
+    attrs.firstLineIndent = merged.first_line_indent_mm;
+  }
   return attrs;
 }
 
-function editorParagraphAttrsToFormat(attrs: EditorParagraphAttrs | undefined): ParagraphFormat | undefined {
+function editorParagraphAttrsToFormat(
+  attrs: EditorParagraphAttrs | undefined,
+  styles?: Record<string, DocumentStyle>
+): ParagraphFormat | undefined {
   const format: ParagraphFormat = {};
-  if (attrs?.align) format.alignment = attrs.align;
-  if (attrs?.lineSpacing) format.line_spacing_per_mille = attrs.lineSpacing;
-  if (attrs?.spacingBefore) format.spacing_before_mm = attrs.spacingBefore;
-  if (attrs?.spacingAfter) format.spacing_after_mm = attrs.spacingAfter;
-  if (attrs?.indentStart) format.indent_start_mm = attrs.indentStart;
-  if (attrs?.indentEnd) format.indent_end_mm = attrs.indentEnd;
-  if (attrs?.firstLineIndent) format.first_line_indent_mm = attrs.firstLineIndent;
-  return Object.keys(format).length > 0 ? format : undefined;
+  if (attrs?.align !== undefined && attrs.align !== null) format.alignment = attrs.align;
+  if (attrs?.lineSpacing !== undefined && attrs.lineSpacing !== null) format.line_spacing_per_mille = attrs.lineSpacing;
+  if (attrs?.spacingBefore !== undefined && attrs.spacingBefore !== null) format.spacing_before_mm = attrs.spacingBefore;
+  if (attrs?.spacingAfter !== undefined && attrs.spacingAfter !== null) format.spacing_after_mm = attrs.spacingAfter;
+  if (attrs?.indentStart !== undefined && attrs.indentStart !== null) format.indent_start_mm = attrs.indentStart;
+  if (attrs?.indentEnd !== undefined && attrs.indentEnd !== null) format.indent_end_mm = attrs.indentEnd;
+  if (attrs?.firstLineIndent !== undefined && attrs.firstLineIndent !== null) {
+    format.first_line_indent_mm = attrs.firstLineIndent;
+  }
+  const inherited =
+    attrs?.style && styles?.[attrs.style]?.kind === 'Paragraph'
+      ? styles[attrs.style]?.properties.paragraph
+      : undefined;
+  const direct = subtractInheritedParagraphFormat(format, inherited ?? undefined);
+  return Object.keys(direct).length > 0 ? direct : undefined;
+}
+
+function mergeParagraphFormats(
+  styleFormat: ParagraphFormat | undefined,
+  directFormat: ParagraphFormat | undefined
+): ParagraphFormat {
+  return {
+    ...(styleFormat ?? {}),
+    ...(directFormat ?? {})
+  };
+}
+
+function subtractInheritedParagraphFormat(format: ParagraphFormat, inherited: ParagraphFormat | undefined): ParagraphFormat {
+  if (!inherited) {
+    return format;
+  }
+  const direct: ParagraphFormat = {};
+  if (format.alignment !== undefined && format.alignment !== inherited.alignment) direct.alignment = format.alignment;
+  if (
+    format.line_spacing_per_mille !== undefined &&
+    format.line_spacing_per_mille !== inherited.line_spacing_per_mille
+  ) {
+    direct.line_spacing_per_mille = format.line_spacing_per_mille;
+  }
+  if (format.spacing_before_mm !== undefined && format.spacing_before_mm !== inherited.spacing_before_mm) {
+    direct.spacing_before_mm = format.spacing_before_mm;
+  }
+  if (format.spacing_after_mm !== undefined && format.spacing_after_mm !== inherited.spacing_after_mm) {
+    direct.spacing_after_mm = format.spacing_after_mm;
+  }
+  if (format.indent_start_mm !== undefined && format.indent_start_mm !== inherited.indent_start_mm) {
+    direct.indent_start_mm = format.indent_start_mm;
+  }
+  if (format.indent_end_mm !== undefined && format.indent_end_mm !== inherited.indent_end_mm) {
+    direct.indent_end_mm = format.indent_end_mm;
+  }
+  if (
+    format.first_line_indent_mm !== undefined &&
+    format.first_line_indent_mm !== inherited.first_line_indent_mm
+  ) {
+    direct.first_line_indent_mm = format.first_line_indent_mm;
+  }
+  return direct;
 }
 
 function inlineStyleIsEmpty(style: InlineStyle): boolean {

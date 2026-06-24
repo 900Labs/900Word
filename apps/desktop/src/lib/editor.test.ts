@@ -3,6 +3,11 @@ import { EditorState, TextSelection, type Transaction } from 'prosemirror-state'
 import {
   findEditorDocMatches,
   clearEditorDirectFormattingTransaction,
+  continueListOnEnterTransaction,
+  editorDocPlainText,
+  editorStateSelectionFormatting,
+  mapSpellIssuesToEditorRanges,
+  pastePlainTextAsBlocksTransaction,
   setEditorParagraphFormatTransaction,
   restoreEditorSelection,
   setEditorBlockType,
@@ -351,4 +356,247 @@ describe('findEditorDocMatches', () => {
     expect(nextState.doc.child(0).textContent).toBe('One');
     expect(nextState.doc.child(1).textContent).toBe('Two');
   });
+
+  it('detects active formatting from the selected text and containing list item', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'bullet_list',
+          content: [
+            {
+              type: 'list_item',
+              attrs: { level: 2 },
+              content: [
+                {
+                  type: 'paragraph',
+                  attrs: { style: 'quote', align: 'center', lineSpacing: 1500 },
+                  content: [
+                    {
+                      type: 'text',
+                      text: 'Item',
+                      marks: [
+                        { type: 'bold' },
+                        { type: 'textStyle', attrs: { fontFamily: 'serif', fontSizePt: 14 } }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    const range = textRange(doc, 'Item');
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, range.from, range.to))
+    );
+
+    const snapshot = editorStateSelectionFormatting(state);
+
+    expect(snapshot.styleId).toBe('quote');
+    expect(snapshot.paragraphFormat.align).toBe('center');
+    expect(snapshot.textStyle.fontFamily).toBe('serif');
+    expect(snapshot.marks.bold).toBe(true);
+    expect(snapshot.list).toEqual({ type: 'bullet_list', level: 2 });
+    expect(snapshot.selectionWordCount).toBe(1);
+  });
+
+  it('continues a non-empty list item on Enter', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'ordered_list',
+          attrs: { definitionId: '900w-ordered' },
+          content: [
+            {
+              type: 'list_item',
+              attrs: { level: 1 },
+              content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'One' }] }]
+            }
+          ]
+        }
+      ]
+    });
+    const cursor = textEnd(doc, 'One');
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, cursor))
+    );
+
+    const transaction = continueListOnEnterTransaction(state);
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.childCount).toBe(2);
+    expect(nextState.doc.firstChild?.child(1).attrs.level).toBe(1);
+  });
+
+  it('exits a list when Enter is pressed on an empty list item', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'bullet_list',
+          attrs: { definitionId: '900w-unordered' },
+          content: [
+            {
+              type: 'list_item',
+              attrs: { level: 1 },
+              content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+            }
+          ]
+        }
+      ]
+    });
+    const cursor = firstTextblockStart(doc);
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, cursor))
+    );
+
+    const transaction = continueListOnEnterTransaction(state);
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.type.name).toBe('paragraph');
+  });
+
+  it('pastes simple bullet lines as a list', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, '- One\n- Two');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.type.name).toBe('bullet_list');
+    expect(nextState.doc.firstChild?.childCount).toBe(2);
+  });
+
+  it('pastes simple newline text as paragraphs', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'One\nTwo');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.childCount).toBe(2);
+    expect(nextState.doc.child(1).textContent).toBe('Two');
+  });
+
+  it('lets the native paste path handle multiline text inside non-empty paragraphs', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Existing text' }]
+        }
+      ]
+    });
+    const cursor = textEnd(doc, 'Existing text');
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, cursor))
+    );
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'One\nTwo');
+
+    expect(transaction).toBeUndefined();
+  });
+
+  it('lets the native paste path handle partial multiline replacements inside paragraphs', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Hello world!' }]
+        }
+      ]
+    });
+    const range = textRange(doc, 'Hello world!');
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, range.from + 6, range.to - 1))
+    );
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'One\nTwo');
+
+    expect(transaction).toBeUndefined();
+  });
+
+  it('uses the same newline-separated text representation for spell input and mapping', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'Hello' }] },
+        { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'qwerty' }] }
+      ]
+    });
+
+    expect(editorDocPlainText(doc)).toBe('Hello\nqwerty');
+  });
+
+  it('maps byte-based spell issues to editor decoration ranges', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'Hello' }] },
+        { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'qwerty' }] }
+      ]
+    });
+
+    const ranges = mapSpellIssuesToEditorRanges(
+      doc,
+      [{ word: 'qwerty', byte_start: 6, byte_end: 12, suggestions: ['query'] }],
+      'Hello\nqwerty'
+    );
+
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0].word).toBe('qwerty');
+    expect(ranges[0].to).toBeGreaterThan(ranges[0].from);
+  });
 });
+
+function textRange(doc: ReturnType<typeof supportedSchema.nodeFromJSON>, text: string) {
+  let range: { from: number; to: number } | undefined;
+  doc.descendants((node, pos) => {
+    if (range || !node.isTextblock || node.textContent !== text) {
+      return !range;
+    }
+    range = { from: pos + 1, to: pos + 1 + text.length };
+    return false;
+  });
+  if (!range) {
+    throw new Error(`Text not found: ${text}`);
+  }
+  return range;
+}
+
+function textEnd(doc: ReturnType<typeof supportedSchema.nodeFromJSON>, text: string) {
+  return textRange(doc, text).to;
+}
+
+function firstTextblockStart(doc: ReturnType<typeof supportedSchema.nodeFromJSON>) {
+  let found: number | undefined;
+  doc.descendants((node, pos) => {
+    if (found || !node.isTextblock) {
+      return !found;
+    }
+    found = pos + 1;
+    return false;
+  });
+  if (!found) {
+    throw new Error('Textblock not found');
+  }
+  return found;
+}

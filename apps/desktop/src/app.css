@@ -60,6 +60,14 @@ button:active:not(:disabled) {
   border-color: #0f6b5f;
 }
 
+button.active-format,
+button[aria-pressed="true"] {
+  border-color: #0f6b5f;
+  background: #dcece8;
+  color: #0b4f47;
+  box-shadow: inset 0 0 0 1px rgba(15, 107, 95, 0.18);
+}
+
 button:disabled {
   color: #838b94;
   background: #edf0f2;
@@ -856,6 +864,57 @@ select:focus-visible {
   line-height: 0;
 }
 
+.spell-misspelled {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: #b42318;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 0.18em;
+}
+
+.spell-popover {
+  position: fixed;
+  z-index: 40;
+  width: min(16rem, calc(100vw - 1.2rem));
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.55rem;
+  border: 1px solid #9ea8af;
+  border-radius: 7px;
+  background: #ffffff;
+  box-shadow: 0 16px 38px rgba(22, 27, 34, 0.2);
+}
+
+.spell-popover-title {
+  padding: 0 0.15rem 0.25rem;
+  border-bottom: 1px solid #d9dfdc;
+  color: #20242c;
+  font-weight: 800;
+}
+
+.spell-popover button {
+  width: 100%;
+  min-height: 32px;
+  text-align: left;
+}
+
+.spell-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.25rem;
+}
+
+.spell-actions button {
+  min-width: 0;
+  padding-inline: 0.35rem;
+  text-align: center;
+}
+
+.spell-muted {
+  color: #66717b;
+  font-size: 0.86rem;
+}
+
 .form-surface {
   width: min(100%, 48rem);
   margin: 0 auto;
@@ -940,6 +999,7 @@ select:focus-visible {
 }
 
 .bottom-group {
+  position: relative;
   min-width: 0;
   display: flex;
   flex: 1 1 15rem;
@@ -963,6 +1023,42 @@ select:focus-visible {
   min-height: 28px;
   padding: 0.25rem 0.5rem;
   font-size: 0.78rem;
+}
+
+.status-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.45rem);
+  z-index: 35;
+  width: min(22rem, calc(100vw - 1rem));
+  padding: 0.65rem;
+  border: 1px solid #b8c1c7;
+  border-radius: 7px;
+  background: #ffffff;
+  box-shadow: 0 14px 32px rgba(22, 27, 34, 0.18);
+}
+
+.status-panel dl {
+  margin: 0;
+  display: grid;
+  gap: 0.38rem;
+}
+
+.status-panel dl div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.8rem;
+}
+
+.status-panel dt {
+  color: #59636e;
+}
+
+.status-panel dd {
+  margin: 0;
+  color: #20242c;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
 
 .print-frame {

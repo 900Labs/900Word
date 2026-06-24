@@ -11,6 +11,8 @@ const BUNDLED_SOURCE: &str = "generated bootstrap Hunspell dictionary";
 const BUNDLED_AFF: &str = include_str!("../dictionaries/en_US/en_US.aff");
 const BUNDLED_DIC: &str = include_str!("../dictionaries/en_US/en_US.dic");
 const MAX_USER_DICTIONARY_BYTES: u64 = 1024 * 1024;
+const MAX_PERSONAL_DICTIONARY_BYTES: u64 = 128 * 1024;
+const MAX_SUGGESTIONS: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DictionaryInfo {
@@ -27,6 +29,8 @@ pub struct SpellIssue {
     pub word: String,
     pub byte_start: usize,
     pub byte_end: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -81,6 +85,14 @@ impl SpellChecker {
     }
 
     pub fn check(&self, text: &str) -> Vec<SpellIssue> {
+        self.check_with_personal_words(text, &BTreeSet::new())
+    }
+
+    pub fn check_with_personal_words(
+        &self,
+        text: &str,
+        personal_words: &BTreeSet<String>,
+    ) -> Vec<SpellIssue> {
         let mut issues = Vec::new();
         let mut word_start = None;
 
@@ -91,12 +103,12 @@ impl SpellChecker {
             }
 
             if let Some(start) = word_start.take() {
-                self.push_issue_if_needed(text, start, index, &mut issues);
+                self.push_issue_if_needed(text, start, index, personal_words, &mut issues);
             }
         }
 
         if let Some(start) = word_start {
-            self.push_issue_if_needed(text, start, text.len(), &mut issues);
+            self.push_issue_if_needed(text, start, text.len(), personal_words, &mut issues);
         }
 
         issues
@@ -107,17 +119,50 @@ impl SpellChecker {
         text: &str,
         start: usize,
         end: usize,
+        personal_words: &BTreeSet<String>,
         issues: &mut Vec<SpellIssue>,
     ) {
         let word = &text[start..end];
         let normalized = normalize_word(word);
-        if !self.words.contains(&normalized) {
+        if !self.words.contains(&normalized) && !personal_words.contains(&normalized) {
             issues.push(SpellIssue {
                 word: word.to_string(),
                 byte_start: start,
                 byte_end: end,
+                suggestions: self.suggest(word),
             });
         }
+    }
+
+    pub fn suggest(&self, word: &str) -> Vec<String> {
+        let normalized = normalize_word(word);
+        if normalized.is_empty() {
+            return Vec::new();
+        }
+
+        let Some(first_char) = normalized.chars().next() else {
+            return Vec::new();
+        };
+
+        let mut suggestions = Vec::new();
+        for candidate in &self.words {
+            if suggestions.len() >= MAX_SUGGESTIONS {
+                break;
+            }
+            let length_delta = candidate
+                .chars()
+                .count()
+                .abs_diff(normalized.chars().count());
+            if length_delta > 2 {
+                continue;
+            }
+            if candidate.starts_with(first_char)
+                && bounded_edit_distance(candidate, &normalized, 2).is_some()
+            {
+                suggestions.push(candidate.clone());
+            }
+        }
+        suggestions
     }
 }
 
@@ -153,6 +198,57 @@ pub fn checker_for_with_user_root(
         return Ok(checker);
     }
     checker_for(language_tag)
+}
+
+pub fn read_personal_words(
+    user_root: &Path,
+    language_tag: &str,
+) -> Result<BTreeSet<String>, SpellError> {
+    let path = personal_words_path(user_root, language_tag)?;
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let metadata = fs::symlink_metadata(&path).map_err(|_| SpellError::DictionaryIo)?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_PERSONAL_DICTIONARY_BYTES {
+        return Err(SpellError::InvalidDictionary {
+            reason: "personal dictionary file is invalid",
+        });
+    }
+    let text = fs::read_to_string(path).map_err(|_| SpellError::DictionaryIo)?;
+    Ok(text
+        .lines()
+        .filter_map(normalize_personal_word)
+        .collect::<BTreeSet<_>>())
+}
+
+pub fn add_personal_word(
+    user_root: &Path,
+    language_tag: &str,
+    word: &str,
+) -> Result<(), SpellError> {
+    fs::create_dir_all(user_root).map_err(|_| SpellError::DictionaryIo)?;
+    let normalized = normalize_personal_word(word).ok_or(SpellError::InvalidDictionary {
+        reason: "personal dictionary word is invalid",
+    })?;
+    let path = personal_words_path(user_root, language_tag)?;
+    let mut words = read_personal_words(user_root, language_tag)?;
+    if !words.insert(normalized) {
+        return Ok(());
+    }
+    let byte_len: usize = words.iter().map(|entry| entry.len() + 1).sum();
+    if byte_len as u64 > MAX_PERSONAL_DICTIONARY_BYTES {
+        return Err(SpellError::InvalidDictionary {
+            reason: "personal dictionary file is too large",
+        });
+    }
+    let mut output = String::new();
+    for entry in words {
+        output.push_str(&entry);
+        output.push('\n');
+    }
+    fs::write(&path, output).map_err(|_| SpellError::DictionaryIo)?;
+    set_private_file_permissions(&path)?;
+    Ok(())
 }
 
 pub fn list_user_dictionaries(user_root: &Path) -> Vec<DictionaryInfo> {
@@ -278,6 +374,24 @@ fn matching_aff_path(root: &Path, language_tag: &str) -> PathBuf {
     root.join(format!("{language_tag}.aff"))
 }
 
+fn personal_words_path(root: &Path, language_tag: &str) -> Result<PathBuf, SpellError> {
+    validate_language_tag(language_tag)?;
+    let normalized = normalize_language_tag(language_tag).replace('-', "_");
+    Ok(root.join(format!("personal-{normalized}.txt")))
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) -> Result<(), SpellError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|_| SpellError::DictionaryIo)
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) -> Result<(), SpellError> {
+    Ok(())
+}
+
 fn dictionary_file_stems(language_tag: &str) -> Vec<String> {
     let normalized = normalize_language_tag(language_tag);
     let underscore = normalized.replace('-', "_");
@@ -379,6 +493,46 @@ fn normalize_word(word: &str) -> String {
     word.trim_matches('\'').to_lowercase()
 }
 
+fn normalize_personal_word(word: &str) -> Option<String> {
+    let normalized = normalize_word(word);
+    if normalized.is_empty()
+        || normalized.chars().count() > 64
+        || !normalized.chars().all(is_word_char)
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn bounded_edit_distance(left: &str, right: &str, max_distance: usize) -> Option<usize> {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    if left.len().abs_diff(right.len()) > max_distance {
+        return None;
+    }
+
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_char) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        let mut row_min = current[0];
+        for (right_index, right_char) in right.iter().enumerate() {
+            let substitution = previous[right_index] + usize::from(left_char != right_char);
+            let insertion = current[right_index] + 1;
+            let deletion = previous[right_index + 1] + 1;
+            current[right_index + 1] = substitution.min(insertion).min(deletion);
+            row_min = row_min.min(current[right_index + 1]);
+        }
+        if row_min > max_distance {
+            return None;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    let distance = previous[right.len()];
+    (distance <= max_distance).then_some(distance)
+}
+
 fn normalize_language_tag(language_tag: &str) -> String {
     language_tag.replace('_', "-")
 }
@@ -414,6 +568,47 @@ mod tests {
 
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].word, "qwerty");
+    }
+
+    #[test]
+    fn english_checker_returns_bounded_suggestions() {
+        let checker = SpellChecker::bootstrap_english();
+
+        let issues = checker.check("helo");
+
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].suggestions.iter().any(|word| word == "hello"));
+        assert!(issues[0].suggestions.len() <= MAX_SUGGESTIONS);
+    }
+
+    #[test]
+    fn personal_words_are_used_as_local_overrides() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        add_personal_word(dir.path(), "en-US", "qwerty").expect("personal word should write");
+
+        let words = read_personal_words(dir.path(), "en-US").expect("personal words should read");
+        let checker = SpellChecker::bootstrap_english();
+
+        assert!(checker
+            .check_with_personal_words("hello qwerty", &words)
+            .is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn personal_dictionary_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        add_personal_word(dir.path(), "en-US", "qwerty").expect("personal word should write");
+
+        let mode = fs::metadata(dir.path().join("personal-en_US.txt"))
+            .expect("personal dictionary file should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

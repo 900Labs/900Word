@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 use word_core::{
     Block, Document, Heading, Inline, InlineMark, ListDefinition, PageSetup, Paragraph,
+    ParagraphFormat, Style, StyleKind,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -95,7 +96,7 @@ fn export_html_with_options(
     for section in &document.sections {
         output.push_str("<section>");
         for block in &section.blocks {
-            push_block_html(block, &document.lists, &mut output);
+            push_block_html(block, &document.lists, &document.styles, &mut output);
         }
         output.push_str("</section>");
     }
@@ -148,11 +149,16 @@ fn push_heading_text(heading: &Heading, output: &mut String) {
     }
 }
 
-fn push_block_html(block: &Block, lists: &BTreeMap<String, ListDefinition>, output: &mut String) {
+fn push_block_html(
+    block: &Block,
+    lists: &BTreeMap<String, ListDefinition>,
+    styles: &BTreeMap<word_core::StyleId, Style>,
+    output: &mut String,
+) {
     match block {
         Block::Paragraph(paragraph) => {
             output.push_str("<p");
-            output.push_str(&paragraph_html_attrs(paragraph));
+            output.push_str(&paragraph_html_attrs(paragraph, styles));
             output.push('>');
             push_inlines_html(&paragraph.inlines, output);
             output.push_str("</p>");
@@ -179,7 +185,7 @@ fn push_block_html(block: &Block, lists: &BTreeMap<String, ListDefinition>, outp
             for item in &list.items {
                 output.push_str("<li>");
                 for block in &item.blocks {
-                    push_block_html(block, lists, output);
+                    push_block_html(block, lists, styles, output);
                 }
                 output.push_str("</li>");
             }
@@ -194,7 +200,7 @@ fn push_block_html(block: &Block, lists: &BTreeMap<String, ListDefinition>, outp
                 for cell in &row.cells {
                     output.push_str("<td>");
                     for block in &cell.blocks {
-                        push_block_html(block, lists, output);
+                        push_block_html(block, lists, styles, output);
                     }
                     output.push_str("</td>");
                 }
@@ -283,17 +289,21 @@ fn push_inline_html(inline: &Inline, output: &mut String) {
     }
 }
 
-fn paragraph_html_attrs(paragraph: &Paragraph) -> String {
+fn paragraph_html_attrs(
+    paragraph: &Paragraph,
+    styles: &BTreeMap<word_core::StyleId, Style>,
+) -> String {
     let mut attrs = String::new();
     attrs.push_str(" data-style=\"");
     attrs.push_str(&escape_html(paragraph.style.as_str()));
     attrs.push('"');
-    if paragraph.format.is_default() {
+    let format = effective_paragraph_format(paragraph, styles);
+    if format.is_default() {
         return attrs;
     }
 
     let mut style = String::new();
-    if let Some(alignment) = paragraph.format.alignment {
+    if let Some(alignment) = format.alignment {
         let value = match alignment {
             word_core::ParagraphAlignment::Left => "left",
             word_core::ParagraphAlignment::Center => "center",
@@ -304,32 +314,32 @@ fn paragraph_html_attrs(paragraph: &Paragraph) -> String {
         style.push_str(value);
         style.push(';');
     }
-    if let Some(line_spacing) = paragraph.format.line_spacing_per_mille {
+    if let Some(line_spacing) = format.line_spacing_per_mille {
         style.push_str("line-height:");
         style.push_str(&(line_spacing as f32 / 1000.0).to_string());
         style.push(';');
     }
-    if let Some(spacing_before) = paragraph.format.spacing_before_mm {
+    if let Some(spacing_before) = format.spacing_before_mm {
         style.push_str("margin-top:");
         style.push_str(&spacing_before.to_string());
         style.push_str("mm;");
     }
-    if let Some(spacing_after) = paragraph.format.spacing_after_mm {
+    if let Some(spacing_after) = format.spacing_after_mm {
         style.push_str("margin-bottom:");
         style.push_str(&spacing_after.to_string());
         style.push_str("mm;");
     }
-    if let Some(indent_start) = paragraph.format.indent_start_mm {
+    if let Some(indent_start) = format.indent_start_mm {
         style.push_str("margin-left:");
         style.push_str(&indent_start.to_string());
         style.push_str("mm;");
     }
-    if let Some(indent_end) = paragraph.format.indent_end_mm {
+    if let Some(indent_end) = format.indent_end_mm {
         style.push_str("margin-right:");
         style.push_str(&indent_end.to_string());
         style.push_str("mm;");
     }
-    if let Some(first_line_indent) = paragraph.format.first_line_indent_mm {
+    if let Some(first_line_indent) = format.first_line_indent_mm {
         style.push_str("text-indent:");
         style.push_str(&first_line_indent.to_string());
         style.push_str("mm;");
@@ -340,6 +350,40 @@ fn paragraph_html_attrs(paragraph: &Paragraph) -> String {
         attrs.push('"');
     }
     attrs
+}
+
+fn effective_paragraph_format(
+    paragraph: &Paragraph,
+    styles: &BTreeMap<word_core::StyleId, Style>,
+) -> ParagraphFormat {
+    let mut format = styles
+        .get(&paragraph.style)
+        .filter(|style| style.kind == StyleKind::Paragraph)
+        .and_then(|style| style.properties.paragraph.clone())
+        .unwrap_or_default();
+
+    if paragraph.format.alignment.is_some() {
+        format.alignment = paragraph.format.alignment;
+    }
+    if paragraph.format.line_spacing_per_mille.is_some() {
+        format.line_spacing_per_mille = paragraph.format.line_spacing_per_mille;
+    }
+    if paragraph.format.spacing_before_mm.is_some() {
+        format.spacing_before_mm = paragraph.format.spacing_before_mm;
+    }
+    if paragraph.format.spacing_after_mm.is_some() {
+        format.spacing_after_mm = paragraph.format.spacing_after_mm;
+    }
+    if paragraph.format.indent_start_mm.is_some() {
+        format.indent_start_mm = paragraph.format.indent_start_mm;
+    }
+    if paragraph.format.indent_end_mm.is_some() {
+        format.indent_end_mm = paragraph.format.indent_end_mm;
+    }
+    if paragraph.format.first_line_indent_mm.is_some() {
+        format.first_line_indent_mm = paragraph.format.first_line_indent_mm;
+    }
+    format
 }
 
 fn mark_html_tag(mark: InlineMark) -> &'static str {
@@ -603,6 +647,46 @@ mod tests {
         assert!(html.contains("line-height:1.5"));
         assert!(html.contains("font-family:serif"));
         assert!(html.contains("background-color:#fff3bf"));
+    }
+
+    #[test]
+    fn html_export_applies_paragraph_style_properties() {
+        let mut document = Document::new_untitled();
+        document
+            .register_style(Style {
+                id: "quote".into(),
+                name: "Quote".to_string(),
+                kind: StyleKind::Paragraph,
+                parent: None,
+                properties: word_core::StyleProperties {
+                    paragraph: Some(word_core::ParagraphFormat {
+                        alignment: Some(word_core::ParagraphAlignment::Justify),
+                        line_spacing_per_mille: Some(1500),
+                        spacing_before_mm: Some(0),
+                        spacing_after_mm: Some(4),
+                        indent_start_mm: Some(6),
+                        indent_end_mm: None,
+                        first_line_indent_mm: Some(-2),
+                    }),
+                    inline: None,
+                    page: None,
+                },
+            })
+            .expect("style should register");
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            style: "quote".into(),
+            format: Default::default(),
+            inlines: vec![Inline::text("Styled")],
+        })];
+
+        let html = export_html(&document).expect("html export should succeed");
+
+        assert!(html.contains("data-style=\"quote\""));
+        assert!(html.contains("text-align:justify"));
+        assert!(html.contains("line-height:1.5"));
+        assert!(html.contains("margin-top:0mm"));
+        assert!(html.contains("margin-left:6mm"));
+        assert!(html.contains("text-indent:-2mm"));
     }
 
     #[test]

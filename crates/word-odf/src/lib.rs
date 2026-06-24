@@ -935,6 +935,7 @@ struct ParseState<'a> {
     contexts: Vec<ParseContext>,
     active_text: Option<ActiveText>,
     active_frame: Option<ImageFrame>,
+    active_style_name: Option<String>,
     styles: BTreeMap<StyleId, Style>,
     assets: BTreeMap<String, AssetRef>,
     asset_payloads: &'a BTreeMap<String, AssetPayload>,
@@ -953,6 +954,7 @@ impl<'a> ParseState<'a> {
             contexts: Vec::new(),
             active_text: None,
             active_frame: None,
+            active_style_name: None,
             styles: Document::new_untitled().styles,
             assets: BTreeMap::new(),
             asset_payloads,
@@ -998,8 +1000,8 @@ impl<'a> ParseState<'a> {
             b"style" => self.start_style(start)?,
             b"page-layout" => {}
             b"page-layout-properties" => self.read_page_layout_properties(start)?,
+            b"paragraph-properties" => self.read_paragraph_style_properties(start)?,
             b"text-properties"
-            | b"paragraph-properties"
             | b"list-style"
             | b"list-level-style-bullet"
             | b"list-level-style-number" => {}
@@ -1047,7 +1049,10 @@ impl<'a> ParseState<'a> {
                 self.start_frame(start)?;
                 self.finish_frame();
             }
-            b"style" => self.start_style(start)?,
+            b"style" => {
+                self.start_style(start)?;
+                self.active_style_name = None;
+            }
             b"page-layout" => {}
             b"page-layout-properties" => self.read_page_layout_properties(start)?,
             b"document-content"
@@ -1055,10 +1060,10 @@ impl<'a> ParseState<'a> {
             | b"body"
             | b"text"
             | b"text-properties"
-            | b"paragraph-properties"
             | b"list-style"
             | b"list-level-style-bullet"
             | b"list-level-style-number" => {}
+            b"paragraph-properties" => self.read_paragraph_style_properties(start)?,
             unknown => self.warn_unsupported_element(unknown),
         }
         Ok(())
@@ -1091,12 +1096,14 @@ impl<'a> ParseState<'a> {
             b"table-row" => self.finish_table_row(),
             b"table" => self.finish_table(),
             b"frame" => self.finish_frame(),
+            b"style" => self.active_style_name = None,
             _ => {}
         }
         Ok(())
     }
 
     fn start_style(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        self.active_style_name = None;
         let Some(family) = attr_value(start, b"family")? else {
             return Ok(());
         };
@@ -1120,6 +1127,7 @@ impl<'a> ParseState<'a> {
 
         let display_name =
             attr_value(start, b"display-name")?.unwrap_or_else(|| style_name.clone());
+        self.active_style_name = Some(style_name.clone());
         self.styles.insert(
             StyleId::from(style_name.as_str()),
             Style {
@@ -1130,6 +1138,63 @@ impl<'a> ParseState<'a> {
                 properties: Default::default(),
             },
         );
+        Ok(())
+    }
+
+    fn read_paragraph_style_properties(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let Some(style_name) = self.active_style_name.clone() else {
+            return Ok(());
+        };
+
+        let mut format = self
+            .styles
+            .get(&StyleId::from(style_name.as_str()))
+            .and_then(|style| style.properties.paragraph.clone())
+            .unwrap_or_default();
+
+        if let Some(value) = attr_value(start, b"text-align")? {
+            format.alignment = match value.as_str() {
+                "left" => Some(ParagraphAlignment::Left),
+                "center" => Some(ParagraphAlignment::Center),
+                "right" => Some(ParagraphAlignment::Right),
+                "justify" => Some(ParagraphAlignment::Justify),
+                _ => format.alignment,
+            };
+        }
+        if let Some(value) = attr_value(start, b"line-height")? {
+            if let Some(per_mille) = parse_line_height_per_mille(&value) {
+                format.line_spacing_per_mille = Some(per_mille);
+            }
+        }
+        if let Some(value) = attr_value(start, b"margin-top")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                format.spacing_before_mm = Some(mm);
+            }
+        }
+        if let Some(value) = attr_value(start, b"margin-bottom")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                format.spacing_after_mm = Some(mm);
+            }
+        }
+        if let Some(value) = attr_value(start, b"margin-left")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                format.indent_start_mm = Some(mm);
+            }
+        }
+        if let Some(value) = attr_value(start, b"margin-right")? {
+            if let Some(mm) = parse_mm_attr(&value) {
+                format.indent_end_mm = Some(mm);
+            }
+        }
+        if let Some(value) = attr_value(start, b"text-indent")? {
+            if let Some(mm) = parse_signed_mm_attr(&value) {
+                format.first_line_indent_mm = Some(mm);
+            }
+        }
+
+        if let Some(style) = self.styles.get_mut(&StyleId::from(style_name.as_str())) {
+            style.properties.paragraph = Some(format);
+        }
         Ok(())
     }
 
@@ -1674,6 +1739,19 @@ fn parse_mm_attr(value: &str) -> Option<u16> {
     Some(parsed)
 }
 
+fn parse_signed_mm_attr(value: &str) -> Option<i16> {
+    let trimmed = value.trim();
+    let number = trimmed.strip_suffix("mm")?.trim();
+    number.parse::<i16>().ok()
+}
+
+fn parse_line_height_per_mille(value: &str) -> Option<u16> {
+    let trimmed = value.trim();
+    let percent = trimmed.strip_suffix('%')?.trim();
+    let parsed = percent.parse::<u16>().ok()?;
+    Some(parsed.saturating_mul(10))
+}
+
 fn local_name(name: &[u8]) -> &[u8] {
     name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
@@ -2191,6 +2269,51 @@ mod tests {
         let parsed = read_odt_bytes(&bytes).expect("read should succeed");
 
         assert_eq!(parsed.sections[0].page, document.sections[0].page);
+    }
+
+    #[test]
+    fn paragraph_style_properties_round_trip_through_odt_styles() {
+        let mut document = Document::new_untitled();
+        document
+            .register_style(Style {
+                id: StyleId::from("quote"),
+                name: "Quote".to_string(),
+                kind: StyleKind::Paragraph,
+                parent: None,
+                properties: word_core::StyleProperties {
+                    paragraph: Some(ParagraphFormat {
+                        alignment: Some(ParagraphAlignment::Justify),
+                        line_spacing_per_mille: Some(1500),
+                        spacing_before_mm: Some(2),
+                        spacing_after_mm: Some(5),
+                        indent_start_mm: Some(8),
+                        indent_end_mm: Some(3),
+                        first_line_indent_mm: Some(-4),
+                    }),
+                    inline: None,
+                    page: None,
+                },
+            })
+            .expect("style should register");
+
+        let parsed =
+            read_odt_bytes(&write_odt_bytes(&document).expect("write should succeed")).unwrap();
+        let style = parsed
+            .style(&StyleId::from("quote"))
+            .expect("quote style should import");
+        let format = style
+            .properties
+            .paragraph
+            .as_ref()
+            .expect("paragraph style properties should import");
+
+        assert_eq!(format.alignment, Some(ParagraphAlignment::Justify));
+        assert_eq!(format.line_spacing_per_mille, Some(1500));
+        assert_eq!(format.spacing_before_mm, Some(2));
+        assert_eq!(format.spacing_after_mm, Some(5));
+        assert_eq!(format.indent_start_mm, Some(8));
+        assert_eq!(format.indent_end_mm, Some(3));
+        assert_eq!(format.first_line_indent_mm, Some(-4));
     }
 
     #[test]

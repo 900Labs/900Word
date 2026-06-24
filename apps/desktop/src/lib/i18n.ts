@@ -21,6 +21,7 @@ export type UiStringKey =
   | 'bulletListApplied'
   | 'case'
   | 'characters'
+  | 'charactersNoSpaces'
   | 'checkSpelling'
   | 'clear'
   | 'clearFormatting'
@@ -59,6 +60,7 @@ export type UiStringKey =
   | 'fontFamily'
   | 'fontSize'
   | 'formattingCleared'
+  | 'addToDictionary'
   | 'heading1'
   | 'heading2'
   | 'heading3'
@@ -70,6 +72,8 @@ export type UiStringKey =
   | 'html'
   | 'history'
   | 'increaseIndent'
+  | 'ignoreAll'
+  | 'ignoreOnce'
   | 'italic'
   | 'language'
   | 'left'
@@ -87,6 +91,7 @@ export type UiStringKey =
   | 'next'
   | 'noIssues'
   | 'noMatches'
+  | 'noSuggestions'
   | 'no'
   | 'numberedList'
   | 'numberedListApplied'
@@ -99,6 +104,7 @@ export type UiStringKey =
   | 'paragraphApplied'
   | 'paragraphControls'
   | 'paragraphFormatApplied'
+  | 'paragraphs'
   | 'paragraphUnchanged'
   | 'pageSetupUpdated'
   | 'pageSize'
@@ -118,19 +124,28 @@ export type UiStringKey =
   | 'replace'
   | 'replaceAll'
   | 'right'
+  | 'readingMinutes'
+  | 'readingTime'
   | 'save'
   | 'saveAs'
   | 'saveSettings'
   | 'saved'
   | 'settings'
   | 'settingsUpdated'
+  | 'selectionWords'
+  | 'spellAddedToDictionary'
+  | 'spellIgnoredAll'
+  | 'spellIgnoredOnce'
   | 'spellIssueCount'
   | 'spelling'
+  | 'spellingSuggestionApplied'
   | 'starting'
   | 'startWriting'
   | 'statusNoSpellingIssues'
   | 'stats'
   | 'styleApplied'
+  | 'styleUpdated'
+  | 'styleUpdateNeedsParagraph'
   | 'styleUnchanged'
   | 'styles'
   | 'spacingAfter'
@@ -149,6 +164,8 @@ export type UiStringKey =
   | 'underline'
   | 'undo'
   | 'undoApplied'
+  | 'updateStyle'
+  | 'updateStyleFromSelection'
   | 'useTemplate'
   | 'userDictionarySuffix'
   | 'version'
@@ -188,6 +205,7 @@ const english: UiStrings = {
   bulletListApplied: 'Bullet list applied',
   case: 'Case',
   characters: 'Characters',
+  charactersNoSpaces: 'Characters without spaces',
   checkSpelling: 'Check Spelling',
   clear: 'Clear',
   clearFormatting: 'Clear formatting',
@@ -226,6 +244,7 @@ const english: UiStrings = {
   fontFamily: 'Font family',
   fontSize: 'Font size',
   formattingCleared: 'Formatting cleared',
+  addToDictionary: 'Add',
   heading1: 'H1',
   heading2: 'H2',
   heading3: 'H3',
@@ -237,6 +256,8 @@ const english: UiStrings = {
   html: 'HTML',
   history: 'History',
   increaseIndent: 'Increase indent',
+  ignoreAll: 'Ignore all',
+  ignoreOnce: 'Ignore once',
   italic: 'Italic',
   language: 'Language',
   left: 'Left',
@@ -255,6 +276,7 @@ const english: UiStrings = {
   no: 'No',
   noIssues: 'No issues.',
   noMatches: 'No matches',
+  noSuggestions: 'No suggestions',
   numberedList: 'Numbered list',
   numberedListApplied: 'Numbered list applied',
   off: 'Off',
@@ -267,6 +289,7 @@ const english: UiStrings = {
   paragraphControls: 'Paragraph controls',
   paragraphFormatApplied: '{label} applied',
   paragraphUnchanged: 'Paragraph unchanged',
+  paragraphs: 'Paragraphs',
   pageSetupUpdated: 'Page setup updated',
   pageSize: 'Page size',
   pdf: 'PDF',
@@ -284,6 +307,8 @@ const english: UiStrings = {
   redoApplied: 'Redo applied',
   replace: 'Replace',
   replaceAll: 'All',
+  readingMinutes: '{count} min',
+  readingTime: 'Reading time',
   right: 'Right',
   save: 'Save',
   saveAs: 'Save As...',
@@ -291,13 +316,20 @@ const english: UiStrings = {
   saved: 'Saved',
   settings: 'Settings',
   settingsUpdated: 'Settings updated',
+  selectionWords: 'Selection words',
+  spellAddedToDictionary: 'Added "{word}" to the personal dictionary',
+  spellIgnoredAll: 'Word ignored for this session',
+  spellIgnoredOnce: 'Spelling issue ignored once',
   spellIssueCount: '{count} spelling issue(s)',
   spelling: 'Spelling',
+  spellingSuggestionApplied: 'Spelling suggestion applied',
   starting: 'Starting...',
   startWriting: 'Start writing...',
   statusNoSpellingIssues: 'No spelling issues found',
   stats: 'Stats',
   styleApplied: '{style} applied',
+  styleUpdated: '{style} updated from selection',
+  styleUpdateNeedsParagraph: 'Select a paragraph style to update',
   styleUnchanged: 'Style unchanged',
   styles: 'Styles',
   spacingAfter: 'Spacing after',
@@ -316,6 +348,8 @@ const english: UiStrings = {
   underline: 'Underline',
   undo: 'Undo',
   undoApplied: 'Undo applied',
+  updateStyle: 'Update',
+  updateStyleFromSelection: 'Update style from selection',
   useTemplate: 'Use Template',
   userDictionarySuffix: 'user',
   version: 'Version',
