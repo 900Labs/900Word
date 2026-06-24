@@ -260,6 +260,35 @@ describe('supportedSchema', () => {
     ).toThrow();
   });
 
+  it('accepts safe bookmark attrs and fragment links only', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 1, bookmarkId: 'bm-heading' },
+          content: [{ type: 'text', text: 'Target' }]
+        },
+        {
+          type: 'paragraph',
+          attrs: { style: 'body', bookmarkId: 'bm-body' },
+          content: [{ type: 'text', text: 'Jump', marks: [{ type: 'link', attrs: { href: '#bm-heading' } }] }]
+        }
+      ]
+    });
+
+    expect(doc.child(0).attrs.bookmarkId).toBe('bm-heading');
+    expect(sanitizeEditorHref('#bm-heading')).toBe('#bm-heading');
+    expect(sanitizeEditorHref('#../bad')).toBeUndefined();
+
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [{ type: 'paragraph', attrs: { style: 'body', bookmarkId: '../bad' }, content: [] }]
+      })
+    ).toThrow('unsupported paragraph bookmark');
+  });
+
   it('rejects unsafe link schemes before schema projection', () => {
     expect(sanitizeEditorHref('javascript:alert(1)')).toBeUndefined();
     expect(sanitizeEditorHref('file://example.invalid/document.odt')).toBeUndefined();

@@ -572,6 +572,7 @@ fn build_template_document(template_id: &str) -> Result<Document, String> {
 
 fn paragraph_block(text: &str) -> Block {
     Block::Paragraph(Paragraph {
+        bookmark_id: None,
         style: StyleId::from("body"),
         format: Default::default(),
         inlines: vec![Inline::text(text)],
@@ -580,6 +581,7 @@ fn paragraph_block(text: &str) -> Block {
 
 fn heading_block(level: u8, text: &str) -> Block {
     Block::Heading(Heading {
+        bookmark_id: None,
         level,
         inlines: vec![Inline::text(text)],
     })

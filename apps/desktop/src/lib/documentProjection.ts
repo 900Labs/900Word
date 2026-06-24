@@ -1,4 +1,4 @@
-import { sanitizeEditorHref } from './editorSecurity';
+import { sanitizeBookmarkId, sanitizeEditorHref } from './editorSecurity';
 
 export interface Inline {
   text: string;
@@ -44,6 +44,7 @@ export interface DocumentStyle {
 export interface ParagraphBlock {
   type: 'Paragraph';
   value: {
+    bookmark_id?: string | null;
     style?: string;
     format?: ParagraphFormat;
     inlines: Inline[];
@@ -53,6 +54,7 @@ export interface ParagraphBlock {
 export interface HeadingBlock {
   type: 'Heading';
   value: {
+    bookmark_id?: string | null;
     level: number;
     inlines: Inline[];
   };
@@ -185,6 +187,7 @@ export interface EditorHeadingNode {
   type: 'heading';
   attrs?: {
     level?: number;
+    bookmarkId?: string | null;
   };
   content?: EditorTextNode[];
 }
@@ -239,6 +242,7 @@ export interface EditorImageNode {
 }
 
 export interface EditorParagraphAttrs {
+  bookmarkId?: string | null;
   style?: string;
   align?: 'left' | 'center' | 'right' | 'justify' | null;
   lineSpacing?: number | null;
@@ -272,6 +276,17 @@ export interface DocumentOutlineEntry {
   editorBlockIndex: number;
   level: 1 | 2 | 3;
   text: string;
+  bookmarkId?: string | null;
+}
+
+export interface DocumentLinkTarget {
+  id: string;
+  label: string;
+  kind: 'heading' | 'bookmark';
+  sectionIndex: number;
+  blockIndex: number;
+  editorBlockIndex: number;
+  level?: 1 | 2 | 3;
 }
 
 export type DocumentCommand =
@@ -342,10 +357,29 @@ export function documentOutline(document: DocumentState): DocumentOutlineEntry[]
   return entries;
 }
 
+export function documentLinkTargets(document: DocumentState): DocumentLinkTarget[] {
+  const targets: DocumentLinkTarget[] = [];
+  let editorBlockIndex = 0;
+  document.sections.forEach((section, sectionIndex) => {
+    section.blocks.forEach((block, blockIndex) => {
+      targets.push(...linkTargetsFromBlock(block, sectionIndex, blockIndex, editorBlockIndex));
+      editorBlockIndex += 1;
+    });
+  });
+  return uniqueLinkTargets(targets);
+}
+
 export function documentOutlineFromEditableBlocks(blocks: EditableBlock[]): DocumentOutlineEntry[] {
   return blocks
     .map((block, index) => outlineEntryFromBlock(block, 0, index, index))
     .filter((entry): entry is DocumentOutlineEntry => entry !== undefined);
+}
+
+export function documentLinkTargetsFromEditableBlocks(blocks: EditableBlock[]): DocumentLinkTarget[] {
+  return uniqueLinkTargets(
+    blocks
+      .flatMap((block, index) => linkTargetsFromBlock(block, 0, index, index))
+  );
 }
 
 export function documentProjectionWarnings(document: DocumentState): string[] {
@@ -404,8 +438,90 @@ function outlineEntryFromBlock(
     blockIndex,
     editorBlockIndex,
     level: level as 1 | 2 | 3,
-    text
+    text,
+    ...optionalBookmarkId(block)
   };
+}
+
+function linkTargetFromBlock(
+  block: Block,
+  sectionIndex: number,
+  blockIndex: number,
+  editorBlockIndex: number
+): DocumentLinkTarget | undefined {
+  if (!hasInlineContent(block)) {
+    return undefined;
+  }
+  const id = blockBookmarkId(block);
+  if (!id) {
+    return undefined;
+  }
+  const text = block.value.inlines.map(inlineToPlainText).join('').trim();
+  const fallback = block.type === 'Heading' ? `Heading ${blockIndex + 1}` : `Bookmark ${blockIndex + 1}`;
+  const level = block.type === 'Heading' ? Math.trunc(Number(block.value.level)) : undefined;
+  return {
+    id,
+    label: text.length > 0 ? text : fallback,
+    kind: block.type === 'Heading' ? 'heading' : 'bookmark',
+    sectionIndex,
+    blockIndex,
+    editorBlockIndex,
+    ...(level !== undefined && level >= 1 && level <= 3 ? { level: level as 1 | 2 | 3 } : {})
+  };
+}
+
+function linkTargetsFromBlock(
+  block: Block,
+  sectionIndex: number,
+  blockIndex: number,
+  editorBlockIndex: number
+): DocumentLinkTarget[] {
+  const targets: DocumentLinkTarget[] = [];
+  const ownTarget = linkTargetFromBlock(block, sectionIndex, blockIndex, editorBlockIndex);
+  if (ownTarget) {
+    targets.push(ownTarget);
+  }
+  if (isListBlock(block)) {
+    for (const item of block.value.items) {
+      for (const child of item.blocks) {
+        targets.push(...linkTargetsFromBlock(child, sectionIndex, blockIndex, editorBlockIndex));
+      }
+    }
+  } else if (isTableBlock(block)) {
+    for (const row of block.value.rows) {
+      for (const cell of row.cells) {
+        for (const child of cell.blocks) {
+          targets.push(...linkTargetsFromBlock(child, sectionIndex, blockIndex, editorBlockIndex));
+        }
+      }
+    }
+  }
+  return targets;
+}
+
+function blockBookmarkId(block: Block): string | null {
+  if (!hasInlineContent(block)) {
+    return null;
+  }
+  return sanitizeBookmarkId(block.value.bookmark_id ?? '') ?? null;
+}
+
+function optionalBookmarkId(block: Block): { bookmarkId?: string } {
+  const bookmarkId = blockBookmarkId(block);
+  return bookmarkId ? { bookmarkId } : {};
+}
+
+function uniqueLinkTargets(targets: DocumentLinkTarget[]): DocumentLinkTarget[] {
+  const seen = new Set<string>();
+  const unique: DocumentLinkTarget[] = [];
+  for (const target of targets) {
+    if (seen.has(target.id)) {
+      continue;
+    }
+    seen.add(target.id);
+    unique.push(target);
+  }
+  return unique;
 }
 
 export function canEditProjectedDocument(document: DocumentState): boolean {
@@ -595,14 +711,20 @@ function blockToEditorNode(
   if (block.type === 'Heading') {
     return {
       type: 'heading',
-      attrs: { level: clampHeadingLevel(block.value.level) },
+      attrs: {
+        level: clampHeadingLevel(block.value.level),
+        ...bookmarkEditorAttr(block.value.bookmark_id)
+      },
       content
     };
   }
 
   return {
     type: 'paragraph',
-    attrs: paragraphAttrsFromFormat(block.value.style || 'body', block.value.format, styles),
+    attrs: {
+      ...paragraphAttrsFromFormat(block.value.style || 'body', block.value.format, styles),
+      ...bookmarkEditorAttr(block.value.bookmark_id)
+    },
     content
   };
 }
@@ -644,6 +766,7 @@ function editorBlockToWordCoreBlock(block: EditorBlockNode, styles?: Record<stri
       return {
         type: 'Heading',
         value: {
+          ...bookmarkWordCoreValue(block.attrs?.bookmarkId),
           level: clampHeadingLevel(block.attrs?.level ?? 1),
           inlines
         }
@@ -655,6 +778,7 @@ function editorBlockToWordCoreBlock(block: EditorBlockNode, styles?: Record<stri
       return {
         type: 'Paragraph',
         value: {
+          ...bookmarkWordCoreValue(block.attrs?.bookmarkId),
           style: block.attrs?.style || 'body',
           ...(format ? { format } : {}),
           inlines
@@ -1044,18 +1168,33 @@ function editorChildBlockToWordCore(
   if (block.type === 'heading') {
     return {
       type: 'Heading',
-      value: { level: clampHeadingLevel(block.attrs?.level ?? 1), inlines }
+      value: {
+        ...bookmarkWordCoreValue(block.attrs?.bookmarkId),
+        level: clampHeadingLevel(block.attrs?.level ?? 1),
+        inlines
+      }
     };
   }
   const format = editorParagraphAttrsToFormat(block.attrs, styles);
   return {
     type: 'Paragraph',
     value: {
+      ...bookmarkWordCoreValue(block.attrs?.bookmarkId),
       style: block.attrs?.style || 'body',
       ...(format ? { format } : {}),
       inlines
     }
   };
+}
+
+function bookmarkEditorAttr(bookmarkId: unknown): { bookmarkId?: string } {
+  const sanitized = typeof bookmarkId === 'string' ? sanitizeBookmarkId(bookmarkId) : undefined;
+  return sanitized ? { bookmarkId: sanitized } : {};
+}
+
+function bookmarkWordCoreValue(bookmarkId: unknown): { bookmark_id?: string } {
+  const sanitized = typeof bookmarkId === 'string' ? sanitizeBookmarkId(bookmarkId) : undefined;
+  return sanitized ? { bookmark_id: sanitized } : {};
 }
 
 function paragraphAttrsFromFormat(

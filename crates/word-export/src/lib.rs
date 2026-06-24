@@ -292,7 +292,9 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
         }
         Block::Heading(heading) => {
             let level = heading.level.clamp(1, 6);
-            output.push_str(&format!("<h{level}>"));
+            output.push_str(&format!("<h{level}"));
+            output.push_str(&bookmark_html_attr(heading.bookmark_id.as_deref()));
+            output.push('>');
             push_inlines_html(&heading.inlines, document, output);
             output.push_str(&format!("</h{level}>"));
         }
@@ -552,6 +554,7 @@ fn paragraph_html_attrs(
     styles: &BTreeMap<word_core::StyleId, Style>,
 ) -> String {
     let mut attrs = String::new();
+    attrs.push_str(&bookmark_html_attr(paragraph.bookmark_id.as_deref()));
     attrs.push_str(" data-style=\"");
     attrs.push_str(&escape_html(paragraph.style.as_str()));
     attrs.push('"');
@@ -657,11 +660,35 @@ fn mark_html_tag(mark: InlineMark) -> &'static str {
 
 fn sanitize_href(href: &str) -> Option<&str> {
     let trimmed = href.trim();
+    if let Some(fragment) = trimmed.strip_prefix('#') {
+        return sanitize_bookmark_id(fragment).map(|_| trimmed);
+    }
     let lowercase = trimmed.to_ascii_lowercase();
     if lowercase.starts_with("https://")
         || lowercase.starts_with("http://")
         || lowercase.starts_with("mailto:")
     {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
+fn bookmark_html_attr(bookmark_id: Option<&str>) -> String {
+    let Some(bookmark_id) = bookmark_id.and_then(sanitize_bookmark_id) else {
+        return String::new();
+    };
+    format!(" id=\"{}\"", escape_html(bookmark_id))
+}
+
+fn sanitize_bookmark_id(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    let mut chars = trimmed.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic() || trimmed.len() > 64 {
+        return None;
+    }
+    if chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
         Some(trimmed)
     } else {
         None
@@ -816,6 +843,7 @@ mod tests {
                 items: vec![ListItem {
                     level: 0,
                     blocks: vec![Block::Paragraph(Paragraph {
+                        bookmark_id: None,
                         style: "body".into(),
                         format: Default::default(),
                         inlines: vec![Inline::text("List item")],
@@ -826,6 +854,7 @@ mod tests {
                 rows: vec![TableRow {
                     cells: vec![TableCell {
                         blocks: vec![Block::Paragraph(Paragraph {
+                            bookmark_id: None,
                             style: "body".into(),
                             format: Default::default(),
                             inlines: vec![Inline::text("Cell text")],
@@ -888,6 +917,7 @@ mod tests {
     fn html_export_strips_unsafe_links_and_preserves_marks() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
             style: "body".into(),
             format: Default::default(),
             inlines: vec![Inline {
@@ -907,9 +937,41 @@ mod tests {
     }
 
     #[test]
+    fn html_export_preserves_safe_bookmarks_and_internal_links() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-heading".to_string()),
+                level: 2,
+                inlines: vec![Inline::text("Target")],
+            }),
+            Block::Paragraph(Paragraph {
+                bookmark_id: Some("bm-body".to_string()),
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![Inline {
+                    text: "Jump".to_string(),
+                    marks: Vec::new(),
+                    link: Some("#bm-heading".to_string()),
+                    style: Default::default(),
+                    field: None,
+                }],
+            }),
+        ];
+
+        let html = export_html(&document).expect("html export should succeed");
+
+        assert!(html.contains("<h2 id=\"bm-heading\">Target</h2>"));
+        assert!(html.contains("<p id=\"bm-body\" data-style=\"body\">"));
+        assert!(html.contains("href=\"#bm-heading\""));
+        assert!(!html.contains("#../bad"));
+    }
+
+    #[test]
     fn html_export_preserves_authoring_direct_formatting() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
             style: "quote".into(),
             format: word_core::ParagraphFormat {
                 alignment: Some(word_core::ParagraphAlignment::Center),
@@ -968,6 +1030,7 @@ mod tests {
             })
             .expect("style should register");
         document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
             style: "quote".into(),
             format: Default::default(),
             inlines: vec![Inline::text("Styled")],
@@ -998,6 +1061,7 @@ mod tests {
             items: vec![ListItem {
                 level: 0,
                 blocks: vec![Block::Paragraph(Paragraph {
+                    bookmark_id: None,
                     style: "body".into(),
                     format: Default::default(),
                     inlines: vec![Inline::text("First")],

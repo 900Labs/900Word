@@ -208,6 +208,7 @@ impl Default for Section {
         Self {
             id: Uuid::new_v4(),
             blocks: vec![Block::Paragraph(Paragraph {
+                bookmark_id: None,
                 style: StyleId::from("body"),
                 format: ParagraphFormat::default(),
                 inlines: Vec::new(),
@@ -448,6 +449,8 @@ impl Block {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Paragraph {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bookmark_id: Option<String>,
     pub style: StyleId,
     #[serde(default, skip_serializing_if = "ParagraphFormat::is_default")]
     pub format: ParagraphFormat,
@@ -464,6 +467,8 @@ impl Paragraph {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Heading {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bookmark_id: Option<String>,
     pub level: u8,
     pub inlines: Vec<Inline>,
 }
@@ -937,6 +942,16 @@ mod tests {
         assert_eq!(document.stats().word_count, 0);
         assert_eq!(document.stats().character_count, 0);
         assert_eq!(document.stats().block_count, 1);
+    }
+
+    #[test]
+    fn new_document_does_not_create_bookmark_ids_by_default() {
+        let document = Document::new_untitled();
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("default block should be a paragraph");
+        };
+
+        assert_eq!(paragraph.bookmark_id, None);
     }
 
     #[test]
