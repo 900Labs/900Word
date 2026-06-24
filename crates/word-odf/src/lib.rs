@@ -5,10 +5,11 @@ use std::fmt::Display;
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    AssetRef, Block, Document, DocumentWarning, Heading, ImageBlock, Inline, InlineMark,
-    InlineStyle, ListBlock, ListDefinition, ListItem, PageField, PageRegion, PageRegionBlock,
-    PageRegionKind, PageRegionParagraph, PageRegions, PageSetup, Paragraph, ParagraphAlignment,
-    ParagraphFormat, Section, Style, StyleId, StyleKind, Table, TableCell, TableRow,
+    AssetRef, Block, Document, DocumentWarning, Heading, ImageAlignment, ImageBlock,
+    ImagePresentation, Inline, InlineMark, InlineStyle, ListBlock, ListDefinition, ListItem,
+    PageField, PageRegion, PageRegionBlock, PageRegionKind, PageRegionParagraph, PageRegions,
+    PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat, Section, Style, StyleId, StyleKind,
+    Table, TableCell, TableRow,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -421,6 +422,7 @@ fn render_content_xml(document: &Document) -> Result<String, OdtError> {
          xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\" \
          xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
          xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\" \
+         xmlns:word900=\"urn:900labs:900word:metadata\" \
          office:version=\"1.3\">\
          {automatic_styles}<office:body><office:text>{body}</office:text></office:body>\
          </office:document-content>"
@@ -675,16 +677,35 @@ fn render_image(
         })?;
     let href = asset_package_path(asset)?;
     let alt = image.alt_text.as_deref().unwrap_or_default();
+    let caption_attr = image
+        .presentation
+        .caption
+        .as_deref()
+        .map(|caption| format!(" word900:caption=\"{}\"", escape_xml(caption)))
+        .unwrap_or_default();
+    let scale = image.presentation.scale_percent.clamp(25, 200);
     output.push_str(&format!(
         "<text:p text:style-name=\"{IMAGE_PARAGRAPH_STYLE}\">\
-         <draw:frame draw:name=\"{}\" svg:title=\"{}\">\
+         <draw:frame draw:name=\"{}\" svg:title=\"{}\" word900:alignment=\"{}\" word900:scale-percent=\"{}\"{}>\
          <draw:image xlink:href=\"{}\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>\
          </draw:frame></text:p>",
         escape_xml(&image.asset_id),
         escape_xml(alt),
+        image_alignment_name(image.presentation.alignment),
+        scale,
+        caption_attr,
         escape_xml(&href)
     ));
     Ok(())
+}
+
+fn image_alignment_name(alignment: ImageAlignment) -> &'static str {
+    match alignment {
+        ImageAlignment::Inline => "inline",
+        ImageAlignment::Left => "left",
+        ImageAlignment::Center => "center",
+        ImageAlignment::Right => "right",
+    }
 }
 
 fn render_inlines(inlines: &[Inline], output: &mut String) {
@@ -1723,10 +1744,24 @@ impl<'a> ParseState<'a> {
     fn start_frame(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
         let name = attr_value(start, b"name")?;
         let alt_text = attr_value(start, b"title")?;
+        let alignment = attr_value(start, b"alignment")?
+            .as_deref()
+            .and_then(parse_image_alignment)
+            .unwrap_or_default();
+        let scale_percent = attr_value(start, b"scale-percent")?
+            .and_then(|value| value.parse::<u16>().ok())
+            .map(|value| value.clamp(25, 200))
+            .unwrap_or(100);
+        let caption = attr_value(start, b"caption")?.filter(|value| !value.trim().is_empty());
         self.active_frame = Some(ImageFrame {
             _name: name,
             alt_text,
             href: None,
+            presentation: ImagePresentation {
+                alignment,
+                scale_percent,
+                caption,
+            },
         });
         Ok(())
     }
@@ -1899,6 +1934,7 @@ impl<'a> ParseState<'a> {
 
         let image = Block::Image(ImageBlock {
             asset_id,
+            presentation: frame.presentation,
             alt_text: frame.alt_text,
         });
 
@@ -1980,6 +2016,7 @@ struct ImageFrame {
     _name: Option<String>,
     alt_text: Option<String>,
     href: Option<String>,
+    presentation: ImagePresentation,
 }
 
 #[derive(Debug)]
@@ -2424,6 +2461,16 @@ fn sanitize_text_href(value: &str) -> Option<String> {
     }
 }
 
+fn parse_image_alignment(value: &str) -> Option<ImageAlignment> {
+    match value {
+        "inline" => Some(ImageAlignment::Inline),
+        "left" => Some(ImageAlignment::Left),
+        "center" => Some(ImageAlignment::Center),
+        "right" => Some(ImageAlignment::Right),
+        _ => None,
+    }
+}
+
 fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         return Some("image/png");
@@ -2544,6 +2591,12 @@ mod tests {
             panic!("fifth block should be an image");
         };
         assert_eq!(image.alt_text.as_deref(), Some("Synthetic sample image"));
+        assert_eq!(image.presentation.alignment, ImageAlignment::Center);
+        assert_eq!(image.presentation.scale_percent, 75);
+        assert_eq!(
+            image.presentation.caption.as_deref(),
+            Some("Synthetic caption")
+        );
         let asset = parsed
             .assets
             .get(&image.asset_id)
@@ -3130,6 +3183,11 @@ mod tests {
             }),
             Block::Image(ImageBlock {
                 asset_id: "sample.png".to_string(),
+                presentation: ImagePresentation {
+                    alignment: ImageAlignment::Center,
+                    scale_percent: 75,
+                    caption: Some("Synthetic caption".to_string()),
+                },
                 alt_text: Some("Synthetic sample image".to_string()),
             }),
         ];

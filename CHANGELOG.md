@@ -15,3 +15,4 @@ All notable changes to 900Word are tracked here.
 - Editable table projection for supported table cells and a default 2x2 insert-table command.
 - Section-level header/footer MVP with simple page fields for page number, total page count, and date.
 - Local image insertion MVP for PNG, JPEG, GIF, and WebP files with embedded document assets, ODT round-trip support, and offline HTML data-URL export.
+- Image polish MVP with editable alt text, captions, alignment, and scale metadata preserved through `word-core`, ProseMirror text sync, ODT save/reopen, and sanitized HTML/print HTML export.

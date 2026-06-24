@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use word_core::{
     AssetRef, Block, Document, DocumentCommand, DocumentError, DocumentStats, Heading, ImageBlock,
-    Inline, Paragraph, StyleId, UndoStack,
+    ImagePresentation, Inline, Paragraph, StyleId, UndoStack,
 };
 use word_spell::{DictionaryInfo, SpellIssue};
 
@@ -595,6 +595,7 @@ fn import_image_into_session(
     let asset_id = unique_image_asset_id(&session.document, extension);
     let block = Block::Image(ImageBlock {
         asset_id: asset_id.clone(),
+        presentation: ImagePresentation::default(),
         alt_text: Some("Image".to_string()),
     });
 

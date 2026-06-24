@@ -460,7 +460,8 @@ select:focus-visible {
 .font-tools,
 .paragraph-tools,
 .list-tools,
-.table-tools {
+.table-tools,
+.image-tools {
   gap: 0.2rem;
 }
 
@@ -487,6 +488,33 @@ select:focus-visible {
   min-width: 0;
   min-height: 30px;
   padding: 0.25rem 0.35rem;
+}
+
+.image-tools {
+  flex: 1 1 32rem;
+}
+
+.image-text-field {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #4e5963;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.image-text-field input {
+  width: clamp(8rem, 18vw, 14rem);
+}
+
+.image-scale {
+  min-width: 13rem;
+}
+
+.image-scale input[type="range"] {
+  width: 7rem;
+  padding-inline: 0;
 }
 
 .list-tools button,
@@ -1012,8 +1040,16 @@ select:focus-visible {
   background: #f8faf9;
 }
 
+.ProseMirror-selectednode figure[data-asset-id],
+.ProseMirror figure[data-asset-id].ProseMirror-selectednode,
+.ProseMirror .ProseMirror-selectednode {
+  outline: 2px solid #0f6b5f;
+  outline-offset: 3px;
+}
+
 .ProseMirror figure[data-asset-id] img {
   display: block;
+  width: 100%;
   max-width: 100%;
   max-height: 24rem;
   object-fit: contain;
