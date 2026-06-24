@@ -64,9 +64,20 @@ Status: complete.
 
 ## Sprint 009: Authoring Foundation
 
-Status: in progress.
+Status: complete.
 
 - Expand the durable style registry, paragraph formatting, inline text style, list definitions, and editor projection.
 - Add toolbar controls for styles, font controls, paragraph controls, lists, and clear formatting.
 - Add generated ODT and sanitized HTML handling for 900Word-authored direct formatting.
-- Keep full style editing, Hunspell-backed red underline suggestions, update-style-from-selection, and advanced list continuation behavior open until their implementation and tests are complete.
+- Keep full arbitrary style editing and a persistent style panel deferred.
+
+## Sprint 010: Authoring Polish
+
+Status: complete.
+
+- Add active formatting detection from the current selection.
+- Add update-style-from-selection for selected paragraph style properties.
+- Add list-aware Enter behavior and basic plain-text list paste handling.
+- Add Hunspell-backed misspelling underlines, suggestions, ignore actions, and local personal dictionary additions.
+- Add selection word count and an expanded local stats panel.
+- Keep rich clipboard import, full style editing, and a dictionary manager deferred.

@@ -1,7 +1,7 @@
-import type { Node as ProseMirrorNode } from 'prosemirror-model';
+import { Fragment, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model';
 import { EditorState, type Transaction } from 'prosemirror-state';
 import { TextSelection } from 'prosemirror-state';
-import { EditorView } from 'prosemirror-view';
+import { Decoration, DecorationSet, EditorView } from 'prosemirror-view';
 import 'prosemirror-view/style/prosemirror.css';
 import {
   documentToEditorDoc,
@@ -52,11 +52,42 @@ export interface EditorSelectionSnapshot {
   empty: boolean;
 }
 
+export interface EditorFormattingSnapshot {
+  blockType: SupportedBlockName | null;
+  styleId: string;
+  paragraphFormat: SupportedParagraphAttrs;
+  textStyle: SupportedTextStyleAttrs;
+  marks: Record<SupportedMarkName, boolean>;
+  list: {
+    type: SupportedListName;
+    level: number;
+  } | null;
+  selectionWordCount: number;
+}
+
+export interface EditorSpellIssue {
+  word: string;
+  byte_start: number;
+  byte_end: number;
+  suggestions?: string[];
+}
+
+export interface EditorSpellIssueRange extends EditorSpellIssue {
+  from: number;
+  to: number;
+}
+
 interface CreateEditorOptions {
   editable: boolean;
   onInteraction?: () => void;
   onSelectionChange?: (selection: EditorSelectionSnapshot) => void;
 }
+
+interface SpellDecorationHolder {
+  value: DecorationSet;
+}
+
+const spellDecorationStore = new WeakMap<EditorView, SpellDecorationHolder>();
 
 export function createEditor(
   host: HTMLElement,
@@ -68,6 +99,7 @@ export function createEditor(
     doc: supportedSchema.nodeFromJSON(documentToEditorDoc(document))
   });
 
+  const spellDecorations: SpellDecorationHolder = { value: DecorationSet.empty };
   const view = new EditorView(host, {
     state,
     attributes: {
@@ -75,6 +107,30 @@ export function createEditor(
       autocapitalize: 'sentences'
     },
     editable: () => options.editable,
+    decorations() {
+      return spellDecorations.value;
+    },
+    handleKeyDown(editorView, event) {
+      if (event.key !== 'Enter' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
+        return false;
+      }
+      const transaction = continueListOnEnterTransaction(editorView.state);
+      if (!transaction) {
+        return false;
+      }
+      editorView.dispatch(transaction.scrollIntoView());
+      return true;
+    },
+    handlePaste(editorView, event) {
+      const text = event.clipboardData?.getData('text/plain') ?? '';
+      const transaction = pastePlainTextAsBlocksTransaction(editorView.state, text);
+      if (!transaction) {
+        return false;
+      }
+      event.preventDefault();
+      editorView.dispatch(transaction.scrollIntoView());
+      return true;
+    },
     handleDOMEvents: {
       focus() {
         options.onInteraction?.();
@@ -99,12 +155,13 @@ export function createEditor(
         return;
       }
       onChange({
-        text: view.state.doc.textContent,
-        blocks: editorDocToWordCoreBlocks(view.state.doc.toJSON() as EditorDoc)
+        text: editorDocPlainText(view.state.doc),
+        blocks: editorDocToWordCoreBlocks(view.state.doc.toJSON() as EditorDoc, document.styles)
       });
     }
   });
 
+  spellDecorationStore.set(view, spellDecorations);
   options.onSelectionChange?.(snapshotEditorSelection(view));
   return view;
 }
@@ -114,6 +171,59 @@ export function snapshotEditorSelection(view: EditorView): EditorSelectionSnapsh
     from: view.state.selection.from,
     to: view.state.selection.to,
     empty: view.state.selection.empty
+  };
+}
+
+export function snapshotEditorFormatting(
+  view: EditorView | undefined,
+  fallbackSelection?: EditorSelectionSnapshot
+): EditorFormattingSnapshot {
+  if (!view) {
+    return emptyEditorFormattingSnapshot();
+  }
+  return editorStateSelectionFormatting(view.state, fallbackSelection);
+}
+
+export function editorStateSelectionFormatting(
+  state: EditorState,
+  fallbackSelection?: EditorSelectionSnapshot
+): EditorFormattingSnapshot {
+  const transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const selection = transaction.selection;
+  const textblock = selectedTextblock(transaction);
+  const list = selectedListContext(selection.$from);
+  const textStyle = compactTextStyleAttrs(
+    textStyleAttrsNearSelection(transaction, supportedSchema.marks.textStyle)
+  ) as SupportedTextStyleAttrs;
+
+  let blockType: SupportedBlockName | null = null;
+  let styleId = 'body';
+  const paragraphFormat: SupportedParagraphAttrs = {};
+
+  if (textblock?.node.type.name === 'heading') {
+    blockType = 'heading';
+    styleId = `heading-${textblock.node.attrs.level ?? 1}`;
+  } else if (textblock?.node.type.name === 'paragraph') {
+    blockType = 'paragraph';
+    styleId = textblock.node.attrs.style || 'body';
+    assignDefinedParagraphAttrs(paragraphFormat, textblock.node.attrs as SupportedParagraphAttrs);
+  }
+
+  return {
+    blockType,
+    styleId,
+    paragraphFormat,
+    textStyle,
+    marks: {
+      bold: markActive(transaction, 'bold'),
+      italic: markActive(transaction, 'italic'),
+      underline: markActive(transaction, 'underline'),
+      strikethrough: markActive(transaction, 'strikethrough'),
+      superscript: markActive(transaction, 'superscript'),
+      subscript: markActive(transaction, 'subscript')
+    },
+    list,
+    selectionWordCount: countSelectionWords(transaction)
   };
 }
 
@@ -564,6 +674,127 @@ export function adjustSelectedListLevelTransaction(
   return changed ? transaction : undefined;
 }
 
+export function continueListOnEnterTransaction(
+  state: EditorState,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  if (!transaction.selection.empty) {
+    return undefined;
+  }
+
+  const context = selectedListPositionContext(transaction.selection.$from);
+  if (!context || context.textblock.node.type.name !== 'paragraph') {
+    return undefined;
+  }
+
+  const paragraph = context.textblock.node;
+  const itemBlocks = nodeChildren(context.item.node);
+  const paragraphIndex = itemBlocks.findIndex((node) => node === paragraph);
+  if (paragraphIndex < 0) {
+    return undefined;
+  }
+
+  if (paragraph.textContent.length === 0 && itemBlocks.length === 1) {
+    return exitEmptyListItem(transaction, context);
+  }
+
+  const splitOffset = Math.max(0, Math.min(paragraph.content.size, transaction.selection.$from.parentOffset));
+  const beforeParagraph = paragraph.type.create(
+    paragraph.attrs,
+    paragraph.content.cut(0, splitOffset),
+    paragraph.marks
+  );
+  const afterParagraph = paragraph.type.create(
+    paragraph.attrs,
+    paragraph.content.cut(splitOffset),
+    paragraph.marks
+  );
+  const beforeBlocks = [...itemBlocks.slice(0, paragraphIndex), beforeParagraph];
+  const afterBlocks = [afterParagraph, ...itemBlocks.slice(paragraphIndex + 1)];
+  const items = nodeChildren(context.list.node);
+  const nextItems = [
+    ...items.slice(0, context.itemIndex),
+    context.item.node.type.create(context.item.node.attrs, beforeBlocks, context.item.node.marks),
+    context.item.node.type.create(context.item.node.attrs, afterBlocks, context.item.node.marks),
+    ...items.slice(context.itemIndex + 1)
+  ];
+  const nextList = context.list.node.type.create(context.list.node.attrs, nextItems, context.list.node.marks);
+  transaction = transaction.replaceWith(context.list.pos, context.list.pos + context.list.node.nodeSize, nextList);
+
+  const cursor = listItemParagraphStart(transaction.doc, context.list.pos, context.itemIndex + 1);
+  if (cursor !== undefined) {
+    transaction = transaction.setSelection(TextSelection.create(transaction.doc, cursor));
+  }
+  return transaction;
+}
+
+export function pastePlainTextAsBlocksTransaction(
+  state: EditorState,
+  text: string,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  if (!text.includes('\n')) {
+    return undefined;
+  }
+
+  const parsed = parsePlainTextBlocks(text);
+  if (parsed.length === 0) {
+    return undefined;
+  }
+
+  const transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { from, to } = selectedTopLevelRange(transaction);
+  const selected = topLevelNodesInRange(transaction, from, to);
+  if (transaction.selection.empty) {
+    if (selected.length !== 1 || !selected[0].node.isTextblock || selected[0].node.textContent.trim().length > 0) {
+      return undefined;
+    }
+  } else if (!selectionCoversTopLevelContent(transaction, from, to)) {
+    return undefined;
+  }
+  return transaction.replaceWith(from, to, Fragment.fromArray(parsed));
+}
+
+export function setEditorSpellIssues(
+  view: EditorView | undefined,
+  issues: EditorSpellIssue[],
+  plainText: string
+): EditorSpellIssueRange[] {
+  if (!view) {
+    return [];
+  }
+
+  const ranges = mapSpellIssuesToEditorRanges(view.state.doc, issues, plainText);
+  const decorations = ranges.map((issue) =>
+    Decoration.inline(issue.from, issue.to, {
+      class: 'spell-misspelled',
+      'data-spell-word': issue.word
+    })
+  );
+  const holder = spellDecorationStore.get(view);
+  if (holder) {
+    holder.value = DecorationSet.create(view.state.doc, decorations);
+  }
+  view.updateState(view.state);
+  return ranges;
+}
+
+export function mapSpellIssuesToEditorRanges(
+  doc: ProseMirrorNode,
+  issues: EditorSpellIssue[],
+  plainText: string
+): EditorSpellIssueRange[] {
+  return issues
+    .map((issue) => {
+      const start = utf8ByteOffsetToStringIndex(plainText, issue.byte_start);
+      const end = utf8ByteOffsetToStringIndex(plainText, issue.byte_end);
+      const range = mapPlainTextRangeInsideDoc(doc, start, end);
+      return range ? { ...issue, ...range } : undefined;
+    })
+    .filter((issue): issue is EditorSpellIssueRange => issue !== undefined);
+}
+
 export function findEditorTextMatches(
   view: EditorView | undefined,
   query: string,
@@ -668,6 +899,10 @@ export function replaceAllEditorText(
   return true;
 }
 
+export function editorDocPlainText(doc: ProseMirrorNode): string {
+  return doc.textBetween(0, doc.content.size, '\n', ' ');
+}
+
 function transactionWithFallbackSelection(
   state: EditorState,
   fallbackSelection?: EditorSelectionSnapshot
@@ -709,6 +944,310 @@ function selectedTopLevelRange(transaction: Transaction): { from: number; to: nu
   const from = fromDepth === 0 ? 0 : transaction.selection.$from.before(1);
   const to = toDepth === 0 ? transaction.doc.content.size : transaction.selection.$to.after(1);
   return { from, to };
+}
+
+function topLevelNodesInRange(
+  transaction: Transaction,
+  from: number,
+  to: number
+): Array<{ node: ProseMirrorNode; pos: number }> {
+  const nodes: Array<{ node: ProseMirrorNode; pos: number }> = [];
+  transaction.doc.nodesBetween(from, to, (node, pos, parent) => {
+    if (parent === transaction.doc) {
+      nodes.push({ node, pos });
+      return false;
+    }
+    return true;
+  });
+  return nodes;
+}
+
+function selectionCoversTopLevelContent(transaction: Transaction, from: number, to: number): boolean {
+  return transaction.selection.from <= from + 1 && transaction.selection.to >= Math.max(from + 1, to - 1);
+}
+
+function selectedTextblock(
+  transaction: Transaction
+): { node: ProseMirrorNode; pos: number } | undefined {
+  const { $from } = transaction.selection;
+  for (let depth = $from.depth; depth >= 0; depth -= 1) {
+    const node = $from.node(depth);
+    if (node.isTextblock) {
+      return { node, pos: $from.before(depth) };
+    }
+  }
+  return undefined;
+}
+
+function selectedListContext($pos: ResolvedPos): EditorFormattingSnapshot['list'] {
+  const context = selectedListPositionContext($pos);
+  if (!context) {
+    return null;
+  }
+  return {
+    type: context.list.node.type.name as SupportedListName,
+    level: Number(context.item.node.attrs.level || 1)
+  };
+}
+
+function selectedListPositionContext($pos: ResolvedPos):
+  | {
+      list: { node: ProseMirrorNode; pos: number };
+      item: { node: ProseMirrorNode; pos: number };
+      itemIndex: number;
+      textblock: { node: ProseMirrorNode; pos: number };
+    }
+  | undefined {
+  let itemDepth = -1;
+  let textblockDepth = -1;
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    const node = $pos.node(depth);
+    if (textblockDepth < 0 && node.isTextblock) {
+      textblockDepth = depth;
+    }
+    if (node.type.name === 'list_item') {
+      itemDepth = depth;
+      break;
+    }
+  }
+  if (itemDepth < 0 || textblockDepth < 0) {
+    return undefined;
+  }
+
+  const listDepth = itemDepth - 1;
+  const listNode = $pos.node(listDepth);
+  if (listNode.type.name !== 'bullet_list' && listNode.type.name !== 'ordered_list') {
+    return undefined;
+  }
+
+  return {
+    list: { node: listNode, pos: $pos.before(listDepth) },
+    item: { node: $pos.node(itemDepth), pos: $pos.before(itemDepth) },
+    itemIndex: $pos.index(listDepth),
+    textblock: { node: $pos.node(textblockDepth), pos: $pos.before(textblockDepth) }
+  };
+}
+
+function exitEmptyListItem(
+  transaction: Transaction,
+  context: NonNullable<ReturnType<typeof selectedListPositionContext>>
+): Transaction | undefined {
+  const paragraphType = supportedSchema.nodes.paragraph;
+  if (!paragraphType) {
+    return undefined;
+  }
+
+  const items = nodeChildren(context.list.node);
+  const replacement: ProseMirrorNode[] = [];
+  const beforeItems = items.slice(0, context.itemIndex);
+  const afterItems = items.slice(context.itemIndex + 1);
+
+  if (beforeItems.length > 0) {
+    replacement.push(context.list.node.type.create(context.list.node.attrs, beforeItems, context.list.node.marks));
+  }
+
+  const paragraph = paragraphType.create({ style: 'body' });
+  replacement.push(paragraph);
+
+  if (afterItems.length > 0) {
+    replacement.push(context.list.node.type.create(context.list.node.attrs, afterItems, context.list.node.marks));
+  }
+
+  transaction = transaction.replaceWith(
+    context.list.pos,
+    context.list.pos + context.list.node.nodeSize,
+    Fragment.fromArray(replacement)
+  );
+
+  const beforeSize = beforeItems.length > 0 ? replacement[0].nodeSize : 0;
+  const paragraphPos = context.list.pos + beforeSize;
+  return transaction.setSelection(TextSelection.create(transaction.doc, paragraphPos + 1));
+}
+
+function listItemParagraphStart(
+  doc: ProseMirrorNode,
+  listPos: number,
+  itemIndex: number
+): number | undefined {
+  const list = doc.nodeAt(listPos);
+  if (!list || itemIndex < 0 || itemIndex >= list.childCount) {
+    return undefined;
+  }
+
+  let itemPos = listPos + 1;
+  for (let index = 0; index < itemIndex; index += 1) {
+    itemPos += list.child(index).nodeSize;
+  }
+
+  const item = list.child(itemIndex);
+  if (item.childCount === 0 || !item.child(0).isTextblock) {
+    return undefined;
+  }
+  return itemPos + 2;
+}
+
+function nodeChildren(node: ProseMirrorNode): ProseMirrorNode[] {
+  const children: ProseMirrorNode[] = [];
+  node.forEach((child) => children.push(child));
+  return children;
+}
+
+function parsePlainTextBlocks(text: string): ProseMirrorNode[] {
+  const lines = text
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+  if (lines.length === 0) {
+    return [];
+  }
+
+  const parsedListLines = lines.map(parsePlainTextListLine);
+  if (parsedListLines.every((line) => line !== undefined)) {
+    const listLines = parsedListLines as Array<NonNullable<ReturnType<typeof parsePlainTextListLine>>>;
+    const ordered = listLines.every((line) => line.ordered);
+    const listType = supportedSchema.nodes[ordered ? 'ordered_list' : 'bullet_list'];
+    const itemType = supportedSchema.nodes.list_item;
+    const paragraphType = supportedSchema.nodes.paragraph;
+    const definitionId = ordered ? '900w-ordered' : '900w-unordered';
+    return [
+      listType.create(
+        { definitionId },
+        listLines.map((line) =>
+          itemType.create(
+            { level: line.level },
+            paragraphType.create({ style: 'body' }, line.text ? supportedSchema.text(line.text) : undefined)
+          )
+        )
+      )
+    ];
+  }
+
+  return lines.map((line) =>
+    supportedSchema.nodes.paragraph.create(
+      { style: 'body' },
+      line.trim().length > 0 ? supportedSchema.text(line.trim()) : undefined
+    )
+  );
+}
+
+function parsePlainTextListLine(line: string): { ordered: boolean; text: string; level: number } | undefined {
+  const match = /^(\s*)(?:(?:[-*•])|(?:(?:\d+|[A-Za-z])[.)]))\s+(.+)$/.exec(line);
+  if (!match) {
+    return undefined;
+  }
+  const marker = line.trimStart();
+  const ordered = /^(?:\d+|[A-Za-z])[.)]\s+/.test(marker);
+  const indentUnits = match[1].replace(/\t/g, '    ').length;
+  return {
+    ordered,
+    text: match[2].trim(),
+    level: Math.min(8, Math.max(1, Math.floor(indentUnits / 2) + 1))
+  };
+}
+
+function emptyEditorFormattingSnapshot(): EditorFormattingSnapshot {
+  return {
+    blockType: null,
+    styleId: 'body',
+    paragraphFormat: {},
+    textStyle: {},
+    marks: {
+      bold: false,
+      italic: false,
+      underline: false,
+      strikethrough: false,
+      superscript: false,
+      subscript: false
+    },
+    list: null,
+    selectionWordCount: 0
+  };
+}
+
+function markActive(transaction: Transaction, markName: SupportedMarkName): boolean {
+  const markType = supportedSchema.marks[markName];
+  if (!markType) {
+    return false;
+  }
+
+  if (transaction.selection.empty) {
+    return Boolean(markType.isInSet(transaction.storedMarks ?? transaction.selection.$from.marks()));
+  }
+  return transaction.doc.rangeHasMark(transaction.selection.from, transaction.selection.to, markType);
+}
+
+function countSelectionWords(transaction: Transaction): number {
+  if (transaction.selection.empty) {
+    return 0;
+  }
+  return transaction.doc
+    .textBetween(transaction.selection.from, transaction.selection.to, '\n', ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+function assignDefinedParagraphAttrs(target: SupportedParagraphAttrs, attrs: SupportedParagraphAttrs) {
+  const keys: Array<keyof SupportedParagraphAttrs> = [
+    'align',
+    'lineSpacing',
+    'spacingBefore',
+    'spacingAfter',
+    'indentStart',
+    'indentEnd',
+    'firstLineIndent'
+  ];
+  for (const key of keys) {
+    if (attrs[key] !== undefined) {
+      target[key] = attrs[key] as never;
+    }
+  }
+}
+
+function mapPlainTextRangeInsideDoc(
+  doc: ProseMirrorNode,
+  fromIndex: number,
+  toIndex: number
+): { from: number; to: number } | undefined {
+  let documentTextIndex = 0;
+  let mapped: { from: number; to: number } | undefined;
+  doc.descendants((node, pos) => {
+    if (mapped || !node.isTextblock) {
+      return !mapped;
+    }
+
+    const blockText = node.textContent;
+    const blockStart = documentTextIndex;
+    const blockEnd = blockStart + blockText.length;
+    if (fromIndex >= blockStart && toIndex <= blockEnd) {
+      mapped = mapTextRangeInsideTextblock(node, pos, fromIndex - blockStart, toIndex - fromIndex);
+      return false;
+    }
+    documentTextIndex = blockEnd + 1;
+    return false;
+  });
+  return mapped;
+}
+
+function utf8ByteOffsetToStringIndex(text: string, byteOffset: number): number {
+  if (byteOffset <= 0) {
+    return 0;
+  }
+
+  const encoder = new TextEncoder();
+  let bytes = 0;
+  let index = 0;
+  for (const char of text) {
+    const nextBytes = bytes + encoder.encode(char).length;
+    if (nextBytes > byteOffset) {
+      return index;
+    }
+    bytes = nextBytes;
+    index += char.length;
+  }
+  return text.length;
 }
 
 function compactTextStyleAttrs(attrs: SupportedTextStyleAttrs): Record<string, string | number> {

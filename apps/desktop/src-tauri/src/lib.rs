@@ -154,6 +154,7 @@ pub fn run() {
             export_pdf_to_path,
             prepare_print_html,
             check_spelling,
+            add_to_personal_dictionary,
             list_dictionaries,
             get_settings,
             update_settings,
@@ -412,6 +413,17 @@ fn check_spelling(
 }
 
 #[tauri::command]
+fn add_to_personal_dictionary(
+    word: String,
+    language_tag: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let user_root = user_dictionary_dir(&app)?;
+    ensure_user_dictionary_dir(&user_root)?;
+    word_spell::add_personal_word(&user_root, &language_tag, &word).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn list_dictionaries(app: tauri::AppHandle) -> Result<Vec<DictionaryInfo>, String> {
     let user_root = user_dictionary_dir(&app)?;
     ensure_user_dictionary_dir(&user_root)?;
@@ -447,10 +459,12 @@ fn check_spelling_with_root(
         }
         Err(err) => return Err(err.to_string()),
     };
+    let personal_words = word_spell::read_personal_words(user_root, checker.language_tag())
+        .map_err(|err| err.to_string())?;
     Ok(SpellCheckResult {
         language_tag: checker.language_tag().to_string(),
         dictionary_display_name: checker.display_name().to_string(),
-        issues: checker.check(text),
+        issues: checker.check_with_personal_words(text, &personal_words),
         warnings,
     })
 }
@@ -1150,6 +1164,18 @@ mod tests {
             .expect("user dictionary check should succeed");
 
         assert_eq!(result.language_tag, "de-DE");
+        assert!(result.issues.is_empty());
+    }
+
+    #[test]
+    fn personal_dictionary_words_are_used_by_spell_check() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        word_spell::add_personal_word(dir.path(), "en-US", "qwerty")
+            .expect("personal word should write");
+
+        let result = check_spelling_with_root("hello qwerty", "en-US", dir.path())
+            .expect("personal dictionary check should succeed");
+
         assert!(result.issues.is_empty());
     }
 

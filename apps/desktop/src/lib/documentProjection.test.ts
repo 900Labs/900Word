@@ -197,6 +197,119 @@ describe('documentToText', () => {
     ]);
   });
 
+  it('applies paragraph style properties to editor paragraphs while direct formatting overrides them', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      styles: {
+        quote: {
+          id: 'quote',
+          name: 'Quote',
+          kind: 'Paragraph',
+          parent: null,
+          properties: {
+            paragraph: {
+              alignment: 'center',
+              line_spacing_per_mille: 1500,
+              spacing_before_mm: 0,
+              spacing_after_mm: 4,
+              first_line_indent_mm: -3
+            }
+          }
+        }
+      },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Paragraph',
+              value: {
+                style: 'quote',
+                format: { alignment: 'right' },
+                inlines: [{ text: 'Styled paragraph' }]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(documentToEditorDoc(document).content[0]).toEqual({
+      type: 'paragraph',
+      attrs: {
+        style: 'quote',
+        align: 'right',
+        lineSpacing: 1500,
+        spacingBefore: 0,
+        spacingAfter: 4,
+        firstLineIndent: -3
+      },
+      content: [{ type: 'text', text: 'Styled paragraph' }]
+    });
+    expect(editorDocToWordCoreBlocks(documentToEditorDoc(document), document.styles)).toEqual([
+      {
+        type: 'Paragraph',
+        value: {
+          style: 'quote',
+          format: { alignment: 'right' },
+          inlines: [{ text: 'Styled paragraph', marks: [], link: null }]
+        }
+      }
+    ]);
+  });
+
+  it('does not write inherited paragraph style properties back as direct formatting', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      styles: {
+        quote: {
+          id: 'quote',
+          name: 'Quote',
+          kind: 'Paragraph',
+          parent: null,
+          properties: {
+            paragraph: {
+              alignment: 'justify',
+              line_spacing_per_mille: 1500,
+              spacing_after_mm: 4
+            }
+          }
+        }
+      },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Paragraph',
+              value: {
+                style: 'quote',
+                inlines: [{ text: 'Styled paragraph' }]
+              }
+            }
+          ]
+        }
+      ]
+    };
+    const editorDoc = documentToEditorDoc(document);
+
+    expect(editorDoc.content[0]).toMatchObject({
+      attrs: {
+        style: 'quote',
+        align: 'justify',
+        lineSpacing: 1500,
+        spacingAfter: 4
+      }
+    });
+    expect(editorDocToWordCoreBlocks(editorDoc, document.styles)).toEqual([
+      {
+        type: 'Paragraph',
+        value: {
+          style: 'quote',
+          inlines: [{ text: 'Styled paragraph', marks: [], link: null }]
+        }
+      }
+    ]);
+  });
+
   it('projects word-core lists to editable list nodes and back', () => {
     const document: DocumentState = {
       meta: { title: 'Generated test' },

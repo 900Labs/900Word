@@ -132,6 +132,7 @@ impl Document {
                 self.touch();
                 Ok(())
             }
+            DocumentCommand::UpdateStyle { style } => self.register_style(style),
         }
     }
 
@@ -520,6 +521,9 @@ pub enum DocumentCommand {
         section_index: usize,
         page: PageSetup,
     },
+    UpdateStyle {
+        style: Style,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -831,6 +835,43 @@ mod tests {
             DocumentError::EmptyField {
                 field: "style name"
             }
+        );
+    }
+
+    #[test]
+    fn command_updates_style_properties() {
+        let mut document = Document::new_untitled();
+
+        document
+            .apply_command(DocumentCommand::UpdateStyle {
+                style: Style {
+                    id: StyleId::from("quote"),
+                    name: "Quote".to_string(),
+                    kind: StyleKind::Paragraph,
+                    parent: None,
+                    properties: StyleProperties {
+                        paragraph: Some(ParagraphFormat {
+                            alignment: Some(ParagraphAlignment::Justify),
+                            line_spacing_per_mille: Some(1500),
+                            spacing_before_mm: Some(2),
+                            spacing_after_mm: Some(4),
+                            indent_start_mm: Some(8),
+                            indent_end_mm: None,
+                            first_line_indent_mm: Some(-3),
+                        }),
+                        inline: None,
+                        page: None,
+                    },
+                },
+            })
+            .expect("style update should apply");
+
+        assert_eq!(
+            document
+                .style(&StyleId::from("quote"))
+                .and_then(|style| style.properties.paragraph.as_ref())
+                .and_then(|format| format.alignment),
+            Some(ParagraphAlignment::Justify)
         );
     }
 }

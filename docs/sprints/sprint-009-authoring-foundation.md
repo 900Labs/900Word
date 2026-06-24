@@ -1,6 +1,6 @@
 # Sprint 009: Authoring Foundation
 
-Status: in progress.
+Status: complete.
 
 ## Scope
 
@@ -28,14 +28,10 @@ This sprint starts the significant word-processor upgrade layer from the upgrade
 - `cargo test -p word-export`
 - `cargo test --workspace`
 
-## Remaining Sprint 009 Work
+## Follow-On Work Moved To Sprint 010
 
-- Implement update-style-from-selection as a real durable command instead of only providing direct formatting controls.
-- Add full style editing/panel behavior and active-style detection from the current selection.
-- Add robust list continuation/exit behavior on Enter and stronger paste handling for tabular/list content.
-- Replace the native spellcheck bridge with Hunspell-backed red underline decorations, right-click suggestions, ignore once/all, and personal dictionary writes.
-- Add selection word count and expanded spell/status panels.
-- Run visual smoke tests after the app is rebuilt with the new toolbar.
+- Sprint 010 implements update-style-from-selection for selected paragraph style properties, active formatting detection, list continuation/exit behavior, basic list paste handling, Hunspell-backed red underline decorations, spelling suggestions, ignore actions, personal dictionary writes, selection word count, and an expanded stats panel.
+- Full arbitrary style editing, a persistent style panel, rich clipboard import, and visual smoke testing of the rebuilt toolbar remain follow-on work.
 
 ## Privacy Notes
 
