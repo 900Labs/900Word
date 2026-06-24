@@ -26,3 +26,5 @@ Sprint 007 keeps exports local. TXT, HTML, and PDF export commands write only to
 Sprint 009 enables native WebView spellcheck attributes as a low-cost editor hint while keeping the explicit Hunspell check workflow local. 900Word does not add remote dictionary lookup, telemetry, or document-text upload paths.
 
 Sprint 010 adds explicit Hunspell-backed red underlines, bounded local suggestions, ignore-once/all session actions, and local personal dictionary additions. Personal dictionary words are stored in app data and are not sent to remote services.
+
+Sprint 011 adds a heading navigator and hyperlink editor. The navigator is derived from the in-memory document model. The link editor validates `http`, `https`, and `mailto` targets locally and does not open, prefetch, or contact link targets during editing.

@@ -81,3 +81,11 @@ Status: complete.
 - Add Hunspell-backed misspelling underlines, suggestions, ignore actions, and local personal dictionary additions.
 - Add selection word count and an expanded local stats panel.
 - Keep rich clipboard import, full style editing, and a dictionary manager deferred.
+
+## Sprint 011: Structure, Navigation, And Links
+
+Status: complete.
+
+- Add a live Heading 1/2/3 navigator sidebar with click-to-jump behavior.
+- Add insert/edit/remove hyperlink UI backed by the existing safe link model and ODT/export path.
+- Keep bookmarks, table editing projection, headers/footers/fields, and image insertion workflows deferred.

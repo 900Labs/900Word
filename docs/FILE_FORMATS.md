@@ -19,6 +19,7 @@ OpenDocument Text (`.odt`) is the native saved format.
 - Sprint 007 PDF export is a simple text-oriented adapter with a generated xref table and no embedded fonts, remote resources, or deterministic layout engine.
 - Sprint 009 preserves 900Word-authored paragraph alignment, line spacing, paragraph spacing, indents, inline font family, font size, text color, highlight color, and list levels through generated automatic ODT style names. This is not yet a claim of full external ODT style compatibility.
 - Sprint 010 preserves 900Word-authored update-style-from-selection paragraph style properties through generated ODT paragraph styles. This is limited to paragraph formatting properties and is not a full external ODT style editor.
+- Sprint 011 exposes desktop hyperlink authoring for the existing safe link subset. Links are limited to `http`, `https`, and `mailto`; bookmarks and internal anchors remain deferred.
 - Unsupported ODT elements import with warnings.
 - Unsupported or unsafe image references import with warnings instead of remote loading.
 - Unsupported image payload types are rejected instead of embedded.

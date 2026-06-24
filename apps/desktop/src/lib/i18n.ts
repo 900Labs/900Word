@@ -9,6 +9,7 @@ export type UiStringKey =
   | 'alignJustify'
   | 'alignLeft'
   | 'alignRight'
+  | 'apply'
   | 'applyPage'
   | 'autosave'
   | 'autosaveUpdated'
@@ -65,6 +66,7 @@ export type UiStringKey =
   | 'heading2'
   | 'heading3'
   | 'headingApplied'
+  | 'headingJumped'
   | 'headingUnchanged'
   | 'height'
   | 'highContrast'
@@ -79,6 +81,13 @@ export type UiStringKey =
   | 'left'
   | 'license'
   | 'lineSpacing'
+  | 'link'
+  | 'linkApplied'
+  | 'linkHref'
+  | 'linkInvalid'
+  | 'linkRemoved'
+  | 'linkTools'
+  | 'linkUnchanged'
   | 'listLevelChanged'
   | 'lists'
   | 'matchCount'
@@ -87,6 +96,7 @@ export type UiStringKey =
   | 'markToggled'
   | 'markUnavailable'
   | 'mainMenu'
+  | 'navigator'
   | 'new'
   | 'next'
   | 'noIssues'
@@ -98,6 +108,7 @@ export type UiStringKey =
   | 'off'
   | 'offlineDictionaryFallback'
   | 'open'
+  | 'openLinkPanel'
   | 'openRecent'
   | 'page'
   | 'paragraph'
@@ -123,6 +134,7 @@ export type UiStringKey =
   | 'redoApplied'
   | 'replace'
   | 'replaceAll'
+  | 'removeLink'
   | 'right'
   | 'readingMinutes'
   | 'readingTime'
@@ -162,6 +174,7 @@ export type UiStringKey =
   | 'txt'
   | 'uiLocale'
   | 'underline'
+  | 'unlink'
   | 'undo'
   | 'undoApplied'
   | 'updateStyle'
@@ -193,6 +206,7 @@ const english: UiStrings = {
   alignJustify: 'Justify',
   alignLeft: 'Align left',
   alignRight: 'Align right',
+  apply: 'Apply',
   applyPage: 'Apply Page',
   autosave: 'Autosave',
   autosaveUpdated: 'Recovery draft updated',
@@ -249,6 +263,7 @@ const english: UiStrings = {
   heading2: 'H2',
   heading3: 'H3',
   headingApplied: 'Heading {level} applied',
+  headingJumped: 'Jumped to {heading}',
   headingUnchanged: 'Heading {level} unchanged',
   height: 'Height',
   highContrast: 'High contrast',
@@ -263,6 +278,13 @@ const english: UiStrings = {
   left: 'Left',
   license: 'License',
   lineSpacing: 'Line spacing',
+  link: 'Link',
+  linkApplied: 'Link applied',
+  linkHref: 'Link address',
+  linkInvalid: 'Use a safe http, https, or mailto link',
+  linkRemoved: 'Link removed',
+  linkTools: 'Link tools',
+  linkUnchanged: 'Link unchanged',
   listLevelChanged: 'List level changed',
   lists: 'Lists',
   matchCount: '{current}/{total}',
@@ -271,6 +293,7 @@ const english: UiStrings = {
   markToggled: '{label} toggled',
   markUnavailable: '{label} unavailable',
   mainMenu: 'Main menu',
+  navigator: 'Navigator',
   new: 'New',
   next: 'Next',
   no: 'No',
@@ -282,6 +305,7 @@ const english: UiStrings = {
   off: 'Off',
   offlineDictionaryFallback: 'Dictionary fallback used',
   open: 'Open',
+  openLinkPanel: 'Insert or edit link',
   openRecent: 'Open',
   page: 'Page',
   paragraph: 'P',
@@ -307,6 +331,7 @@ const english: UiStrings = {
   redoApplied: 'Redo applied',
   replace: 'Replace',
   replaceAll: 'All',
+  removeLink: 'Remove link',
   readingMinutes: '{count} min',
   readingTime: 'Reading time',
   right: 'Right',
@@ -346,6 +371,7 @@ const english: UiStrings = {
   txt: 'TXT',
   uiLocale: 'UI language',
   underline: 'Underline',
+  unlink: 'Unlink',
   undo: 'Undo',
   undoApplied: 'Undo applied',
   updateStyle: 'Update',

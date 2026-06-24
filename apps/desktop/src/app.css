@@ -496,6 +496,54 @@ select:focus-visible {
   gap: 0.18rem;
 }
 
+.link-tools {
+  position: relative;
+}
+
+.link-popover {
+  position: absolute;
+  top: calc(100% + 0.45rem);
+  left: 0;
+  z-index: 22;
+  width: min(26rem, calc(100vw - 2rem));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.55rem;
+  border: 1px solid #c8ced2;
+  border-radius: 7px;
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgba(22, 27, 34, 0.18);
+}
+
+.link-popover input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid #b9c0c6;
+  border-radius: 6px;
+  padding: 0.4rem 0.55rem;
+}
+
+.link-popover button {
+  min-width: fit-content;
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  .link-tools {
+    flex-basis: 100%;
+  }
+
+  .link-popover {
+    position: static;
+    width: 100%;
+    margin-top: 0.35rem;
+    box-shadow: none;
+  }
+}
+
 .format-button {
   width: 36px;
   min-width: 36px;
@@ -698,6 +746,60 @@ select:focus-visible {
 
 .action-list span {
   flex: 1 1 8rem;
+}
+
+.navigator-list {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.navigator-list li {
+  margin: 0;
+}
+
+.navigator-list button {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  justify-content: flex-start;
+  padding: 0.34rem 0.45rem;
+  border-color: transparent;
+  background: transparent;
+  color: #26313b;
+  text-align: left;
+}
+
+.navigator-list button:hover:not(:disabled) {
+  border-color: #b8d6d0;
+  background: #eef7f4;
+  box-shadow: none;
+}
+
+.navigator-level-2 button {
+  padding-left: 1.1rem;
+}
+
+.navigator-level-3 button {
+  padding-left: 1.75rem;
+}
+
+.navigator-marker {
+  flex: 0 0 auto;
+  min-width: 1.55rem;
+  padding: 0.05rem 0.22rem;
+  border: 1px solid #cdd7d4;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #0f6b5f;
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-align: center;
 }
 
 .page-setup {
@@ -1135,6 +1237,14 @@ select:focus-visible {
   .find-popover {
     position: static;
     width: 100%;
+    margin-top: 0.35rem;
+    box-shadow: none;
+  }
+
+  .link-popover {
+    position: static;
+    width: 100%;
+    grid-template-columns: 1fr;
     margin-top: 0.35rem;
     box-shadow: none;
   }

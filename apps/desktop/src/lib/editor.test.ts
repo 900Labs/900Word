@@ -8,10 +8,13 @@ import {
   editorStateSelectionFormatting,
   mapSpellIssuesToEditorRanges,
   pastePlainTextAsBlocksTransaction,
+  removeEditorLinkTransaction,
   setEditorParagraphFormatTransaction,
   restoreEditorSelection,
+  selectEditorTopLevelBlock,
   setEditorBlockType,
   setEditorBlockTypeTransaction,
+  setEditorLinkTransaction,
   setEditorTextStyleTransaction,
   toggleEditorMark,
   toggleEditorListTransaction,
@@ -233,6 +236,183 @@ describe('findEditorDocMatches', () => {
     const nextState = state.apply(transaction!);
     expect(nextState.doc.firstChild?.firstChild?.marks[0].type.name).toBe('textStyle');
     expect(nextState.doc.firstChild?.firstChild?.marks[0].attrs.fontFamily).toBe('serif');
+  });
+
+  it('applies and removes safe link marks on a selected range', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Visit example' }]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const linked = setEditorLinkTransaction(state, 'https://example.invalid', { from: 1, to: 6, empty: false });
+    expect(linked).toBeDefined();
+    let nextState = state.apply(linked!);
+    expect(nextState.doc.firstChild?.firstChild?.marks[0].type.name).toBe('link');
+    expect(nextState.doc.firstChild?.firstChild?.marks[0].attrs.href).toBe('https://example.invalid');
+
+    const removed = removeEditorLinkTransaction(nextState, { from: 1, to: 6, empty: false });
+    expect(removed).toBeDefined();
+    nextState = nextState.apply(removed!);
+    expect(nextState.doc.firstChild?.firstChild?.marks).toEqual([]);
+  });
+
+  it('rejects unsafe link marks from toolbar transactions', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'Unsafe' }] }]
+    });
+    const state = EditorState.create({ doc });
+
+    expect(setEditorLinkTransaction(state, 'javascript:alert(1)', { from: 1, to: 7, empty: false })).toBeUndefined();
+  });
+
+  it('edits an existing link when the cursor is inside linked text', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            {
+              type: 'text',
+              text: 'Linked',
+              marks: [{ type: 'link', attrs: { href: 'https://old.example.invalid' } }]
+            }
+          ]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, 3))
+    );
+
+    const transaction = setEditorLinkTransaction(state, 'https://new.example.invalid');
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+
+    expect(nextState.doc.firstChild?.firstChild?.marks[0].attrs.href).toBe('https://new.example.invalid');
+  });
+
+  it('does not treat a cursor immediately before a link as inside the link', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            { type: 'text', text: 'Intro ' },
+            {
+              type: 'text',
+              text: 'Linked',
+              marks: [{ type: 'link', attrs: { href: 'https://old.example.invalid' } }]
+            }
+          ]
+        }
+      ]
+    });
+    const beforeLink = 1 + 'Intro '.length;
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, beforeLink))
+    );
+
+    expect(editorStateSelectionFormatting(state).linkHref).toBeNull();
+    expect(removeEditorLinkTransaction(state)).toBeUndefined();
+
+    const transaction = setEditorLinkTransaction(state, 'https://new.example.invalid');
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.child(1).marks[0].attrs.href).toBe('https://old.example.invalid');
+  });
+
+  it('does not treat a cursor immediately after a link as inside the link', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            {
+              type: 'text',
+              text: 'Linked',
+              marks: [{ type: 'link', attrs: { href: 'https://old.example.invalid' } }]
+            },
+            { type: 'text', text: ' plain' }
+          ]
+        }
+      ]
+    });
+    const afterLink = 1 + 'Linked'.length;
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, afterLink))
+    );
+
+    expect(editorStateSelectionFormatting(state).linkHref).toBeNull();
+    expect(removeEditorLinkTransaction(state)).toBeUndefined();
+
+    const transaction = setEditorLinkTransaction(state, 'https://new.example.invalid');
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.firstChild?.marks[0].attrs.href).toBe('https://old.example.invalid');
+  });
+
+  it('detects active link formatting from the selected text', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            {
+              type: 'text',
+              text: 'Linked',
+              marks: [{ type: 'link', attrs: { href: 'mailto:test@example.invalid' } }]
+            }
+          ]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, 2, 5))
+    );
+
+    expect(editorStateSelectionFormatting(state).linkHref).toBe('mailto:test@example.invalid');
+  });
+
+  it('does not report adjacent links as active for plain selected text', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            {
+              type: 'text',
+              text: 'Linked',
+              marks: [{ type: 'link', attrs: { href: 'https://example.invalid' } }]
+            },
+            { type: 'text', text: ' plain' }
+          ]
+        }
+      ]
+    });
+    const plainStart = 1 + 'Linked '.length;
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, plainStart, plainStart + 5))
+    );
+
+    expect(editorStateSelectionFormatting(state).linkHref).toBeNull();
   });
 
   it('composes sequential direct text style updates on the same selection', () => {
@@ -544,6 +724,28 @@ describe('findEditorDocMatches', () => {
     });
 
     expect(editorDocPlainText(doc)).toBe('Hello\nqwerty');
+  });
+
+  it('selects a top-level block by navigator index', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'One' }] },
+        { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Two' }] }
+      ]
+    });
+    let state = EditorState.create({ doc });
+    const view = {
+      state,
+      dispatch(transaction: Transaction) {
+        state = state.apply(transaction);
+        this.state = state;
+      },
+      focus() {}
+    };
+
+    expect(selectEditorTopLevelBlock(view as unknown as Parameters<typeof selectEditorTopLevelBlock>[0], 1)).toBe(true);
+    expect(view.state.selection.from).toBe(doc.child(0).nodeSize + 1);
   });
 
   it('maps byte-based spell issues to editor decoration ranges', () => {

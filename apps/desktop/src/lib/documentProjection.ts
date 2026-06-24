@@ -160,6 +160,14 @@ export interface EditorProjectedChange {
   blocks: EditableBlock[];
 }
 
+export interface DocumentOutlineEntry {
+  sectionIndex: number;
+  blockIndex: number;
+  editorBlockIndex: number;
+  level: 1 | 2 | 3;
+  text: string;
+}
+
 export type DocumentCommand =
   | {
       type: 'replace_block';
@@ -196,6 +204,27 @@ export function documentToText(document: DocumentState): string {
   return blocks.map(blockToText).filter(Boolean).join('\n');
 }
 
+export function documentOutline(document: DocumentState): DocumentOutlineEntry[] {
+  const entries: DocumentOutlineEntry[] = [];
+  let editorBlockIndex = 0;
+  document.sections.forEach((section, sectionIndex) => {
+    section.blocks.forEach((block, blockIndex) => {
+      const entry = outlineEntryFromBlock(block, sectionIndex, blockIndex, editorBlockIndex);
+      if (entry) {
+        entries.push(entry);
+      }
+      editorBlockIndex += 1;
+    });
+  });
+  return entries;
+}
+
+export function documentOutlineFromEditableBlocks(blocks: EditableBlock[]): DocumentOutlineEntry[] {
+  return blocks
+    .map((block, index) => outlineEntryFromBlock(block, 0, index, index))
+    .filter((entry): entry is DocumentOutlineEntry => entry !== undefined);
+}
+
 export function documentProjectionWarnings(document: DocumentState): string[] {
   const warnings = [];
   if (document.sections.length !== 1) {
@@ -209,6 +238,32 @@ export function documentProjectionWarnings(document: DocumentState): string[] {
     }
   }
   return warnings;
+}
+
+function outlineEntryFromBlock(
+  block: Block,
+  sectionIndex: number,
+  blockIndex: number,
+  editorBlockIndex: number
+): DocumentOutlineEntry | undefined {
+  if (!hasInlineContent(block) || block.type !== 'Heading') {
+    return undefined;
+  }
+  const level = Math.trunc(Number(block.value.level));
+  if (level < 1 || level > 3) {
+    return undefined;
+  }
+  const text = block.value.inlines.map((inline) => inline.text).join('').trim();
+  if (text.length === 0) {
+    return undefined;
+  }
+  return {
+    sectionIndex,
+    blockIndex,
+    editorBlockIndex,
+    level: level as 1 | 2 | 3,
+    text
+  };
 }
 
 export function canEditProjectedDocument(document: DocumentState): boolean {
