@@ -9,13 +9,21 @@
     replaceEditorTextRange,
     restoreEditorSelection,
     selectEditorTextRange,
+    adjustSelectedListLevel,
+    clearEditorDirectFormatting,
     setEditorBlockType,
+    setEditorParagraphFormat,
+    setEditorTextStyle,
     snapshotEditorDomSelection,
     snapshotEditorSelection,
+    toggleEditorList,
     toggleEditorMark,
     type EditorFindMatch,
     type EditorSelectionSnapshot,
-    type SupportedMarkName
+    type SupportedListName,
+    type SupportedMarkName,
+    type SupportedParagraphAttrs,
+    type SupportedTextStyleAttrs
   } from './lib/editor';
   import {
     buildEditorSyncCommands,
@@ -112,6 +120,30 @@
     { id: 'legal', label: 'US Legal (216 x 356 mm)', width_mm: 216, height_mm: 356 },
     { id: 'tabloid', label: 'Tabloid (279 x 432 mm)', width_mm: 279, height_mm: 432 }
   ];
+  const paragraphStyles = [
+    { id: 'body', label: 'Normal' },
+    { id: 'title', label: 'Title' },
+    { id: 'subtitle', label: 'Subtitle' },
+    { id: 'heading-1', label: 'Heading 1' },
+    { id: 'heading-2', label: 'Heading 2' },
+    { id: 'heading-3', label: 'Heading 3' },
+    { id: 'quote', label: 'Quote' },
+    { id: 'code', label: 'Code' },
+    { id: 'caption', label: 'Caption' }
+  ];
+  const fontFamilies = [
+    { id: 'system-ui', label: 'System' },
+    { id: 'serif', label: 'Serif' },
+    { id: 'sans-serif', label: 'Sans' },
+    { id: 'monospace', label: 'Mono' }
+  ];
+  const fontSizes = [9, 10, 11, 12, 14, 16, 18, 24, 32];
+  const lineSpacings = [
+    { id: 1000, label: '1.0' },
+    { id: 1150, label: '1.15' },
+    { id: 1500, label: '1.5' },
+    { id: 2000, label: '2.0' }
+  ];
 
   let title = $state('900Word');
   let status = $state(translate('en-US', 'starting'));
@@ -129,6 +161,15 @@
   });
   let templates = $state<TemplateSummary[]>([]);
   let selectedTemplateId = $state('blank');
+  let selectedStyleId = $state('body');
+  let selectedFontFamily = $state('system-ui');
+  let selectedFontSize = $state(12);
+  let selectedTextColor = $state('#20242c');
+  let selectedHighlightColor = $state('#fff3bf');
+  let selectedLineSpacing = $state(1150);
+  let spacingBefore = $state(0);
+  let spacingAfter = $state(3);
+  let firstLineIndent = $state(0);
   let pageSetup = $state<PageSetup>(defaultPageSetup());
   let findQuery = $state('');
   let replaceText = $state('');
@@ -461,6 +502,21 @@
       : tr('paragraphUnchanged');
   }
 
+  function applyParagraphStyle(styleId: string) {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    selectedStyleId = styleId;
+    if (styleId === 'heading-1' || styleId === 'heading-2' || styleId === 'heading-3') {
+      applyHeading(Number(styleId.slice(-1)));
+      return;
+    }
+    status = setEditorBlockType(view, 'paragraph', { style: styleId }, lastEditorSelection)
+      ? tr('styleApplied', { style: paragraphStyles.find((style) => style.id === styleId)?.label ?? styleId })
+      : tr('styleUnchanged');
+  }
+
   function applyHeading(level: number) {
     if (!editorEditable) {
       status = tr('editorReadOnly');
@@ -469,6 +525,75 @@
     status = setEditorBlockType(view, 'heading', { level }, lastEditorSelection)
       ? tr('headingApplied', { level })
       : tr('headingUnchanged', { level });
+  }
+
+  function applyTextStyle(attrs: SupportedTextStyleAttrs, label: string) {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    status = setEditorTextStyle(view, attrs, lastEditorSelection)
+      ? tr('styleApplied', { style: label })
+      : tr('styleUnchanged');
+  }
+
+  function applyParagraphFormat(attrs: SupportedParagraphAttrs, label: string) {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    status = setEditorParagraphFormat(view, attrs, lastEditorSelection)
+      ? tr('paragraphFormatApplied', { label })
+      : tr('paragraphUnchanged');
+  }
+
+  function clearFormatting() {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    status = clearEditorDirectFormatting(view, lastEditorSelection)
+      ? tr('formattingCleared')
+      : tr('paragraphUnchanged');
+  }
+
+  function applyList(listName: SupportedListName) {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    status = toggleEditorList(view, listName, lastEditorSelection)
+      ? listName === 'ordered_list'
+        ? tr('numberedListApplied')
+        : tr('bulletListApplied')
+      : tr('paragraphUnchanged');
+  }
+
+  function adjustListLevel(delta: number) {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    status = adjustSelectedListLevel(view, delta, lastEditorSelection)
+      ? tr('listLevelChanged')
+      : tr('paragraphUnchanged');
+  }
+
+  function setSpacingField(field: 'spacingBefore' | 'spacingAfter' | 'firstLineIndent', value: number) {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    const normalized = Math.trunc(value);
+    if (field === 'spacingBefore') {
+      spacingBefore = normalized;
+      applyParagraphFormat({ spacingBefore: normalized }, tr('spacingBefore'));
+    } else if (field === 'spacingAfter') {
+      spacingAfter = normalized;
+      applyParagraphFormat({ spacingAfter: normalized }, tr('spacingAfter'));
+    } else {
+      firstLineIndent = normalized;
+      applyParagraphFormat({ firstLineIndent: normalized }, tr('firstLineIndent'));
+    }
   }
 
   async function undoDocument() {
@@ -680,6 +805,21 @@
     } else if (key === 'u') {
       event.preventDefault();
       applyInlineMark('underline', tr('underline'));
+    } else if (event.altKey && ['1', '2', '3'].includes(key)) {
+      event.preventDefault();
+      applyHeading(Number(key));
+    } else if (event.shiftKey && event.code === 'Digit7') {
+      event.preventDefault();
+      applyList('ordered_list');
+    } else if (event.shiftKey && event.code === 'Digit8') {
+      event.preventDefault();
+      applyList('bullet_list');
+    } else if (key === ']') {
+      event.preventDefault();
+      adjustListLevel(1);
+    } else if (key === '[') {
+      event.preventDefault();
+      adjustListLevel(-1);
     } else if (key === 'f') {
       event.preventDefault();
       activeView = 'editor';
@@ -919,6 +1059,30 @@
       <button type="button" onclick={redoDocument}>{tr('redo')}</button>
     </div>
 
+    <div class="tool-group style-tools" role="group" aria-label={tr('styles')}>
+      <select
+        aria-label={tr('styles')}
+        disabled={!editorEditable}
+        bind:value={selectedStyleId}
+        onpointerdown={() => captureToolbarSelection(true)}
+        onchange={(event) => applyParagraphStyle(event.currentTarget.value)}
+        title={tr('styles')}
+      >
+        {#each paragraphStyles as style}
+          <option value={style.id}>{style.label}</option>
+        {/each}
+      </select>
+      <button
+        disabled={!editorEditable}
+        title={tr('clearFormatting')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, clearFormatting)}
+        onclick={(event) => runToolbarKeyboardCommand(event, clearFormatting)}
+      >
+        {tr('clear')}
+      </button>
+    </div>
+
     <div class="tool-group formatting-tools" role="group" aria-label={tr('textFormatting')}>
       <button
         aria-label={tr('bold')}
@@ -988,6 +1152,53 @@
       </button>
     </div>
 
+    <div class="tool-group font-tools" role="group" aria-label={tr('fontControls')}>
+      <select
+        aria-label={tr('fontFamily')}
+        disabled={!editorEditable}
+        bind:value={selectedFontFamily}
+        onpointerdown={() => captureToolbarSelection(true)}
+        onchange={(event) => applyTextStyle({ fontFamily: event.currentTarget.value }, tr('fontFamily'))}
+        title={tr('fontFamily')}
+      >
+        {#each fontFamilies as font}
+          <option value={font.id}>{font.label}</option>
+        {/each}
+      </select>
+      <select
+        aria-label={tr('fontSize')}
+        disabled={!editorEditable}
+        bind:value={selectedFontSize}
+        onpointerdown={() => captureToolbarSelection(true)}
+        onchange={(event) => applyTextStyle({ fontSizePt: Number(event.currentTarget.value) }, tr('fontSize'))}
+        title={tr('fontSize')}
+      >
+        {#each fontSizes as size}
+          <option value={size}>{size} pt</option>
+        {/each}
+      </select>
+      <input
+        aria-label={tr('textColor')}
+        disabled={!editorEditable}
+        bind:value={selectedTextColor}
+        class="color-input"
+        onpointerdown={() => captureToolbarSelection(true)}
+        onchange={(event) => applyTextStyle({ textColor: event.currentTarget.value }, tr('textColor'))}
+        title={tr('textColor')}
+        type="color"
+      />
+      <input
+        aria-label={tr('highlightColor')}
+        disabled={!editorEditable}
+        bind:value={selectedHighlightColor}
+        class="color-input"
+        onpointerdown={() => captureToolbarSelection(true)}
+        onchange={(event) => applyTextStyle({ highlightColor: event.currentTarget.value }, tr('highlightColor'))}
+        title={tr('highlightColor')}
+        type="color"
+      />
+    </div>
+
     <div class="tool-group" role="group" aria-label={tr('blockFormatting')}>
       <button
         disabled={!editorEditable}
@@ -1012,6 +1223,140 @@
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(2))}
       >
         {tr('heading2')}
+      </button>
+      <button
+        disabled={!editorEditable}
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyHeading(3))}
+        type="button"
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(3))}
+      >
+        {tr('heading3')}
+      </button>
+    </div>
+
+    <div class="tool-group paragraph-tools" role="group" aria-label={tr('paragraphControls')}>
+      <button
+        disabled={!editorEditable}
+        title={tr('alignLeft')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyParagraphFormat({ align: 'left' }, tr('alignLeft')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyParagraphFormat({ align: 'left' }, tr('alignLeft')))}
+      >
+        L
+      </button>
+      <button
+        disabled={!editorEditable}
+        title={tr('alignCenter')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyParagraphFormat({ align: 'center' }, tr('alignCenter')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyParagraphFormat({ align: 'center' }, tr('alignCenter')))}
+      >
+        C
+      </button>
+      <button
+        disabled={!editorEditable}
+        title={tr('alignRight')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyParagraphFormat({ align: 'right' }, tr('alignRight')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyParagraphFormat({ align: 'right' }, tr('alignRight')))}
+      >
+        R
+      </button>
+      <button
+        disabled={!editorEditable}
+        title={tr('alignJustify')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyParagraphFormat({ align: 'justify' }, tr('alignJustify')))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyParagraphFormat({ align: 'justify' }, tr('alignJustify')))}
+      >
+        J
+      </button>
+      <select
+        aria-label={tr('lineSpacing')}
+        disabled={!editorEditable}
+        bind:value={selectedLineSpacing}
+        onpointerdown={() => captureToolbarSelection(true)}
+        onchange={(event) => applyParagraphFormat({ lineSpacing: Number(event.currentTarget.value) }, tr('lineSpacing'))}
+        title={tr('lineSpacing')}
+      >
+        {#each lineSpacings as lineSpacing}
+          <option value={lineSpacing.id}>{lineSpacing.label}</option>
+        {/each}
+      </select>
+      <label class="compact-number" title={tr('spacingBefore')}>
+        {tr('before')}
+        <input
+          disabled={!editorEditable}
+          min="0"
+          max="50"
+          type="number"
+          value={spacingBefore}
+          onpointerdown={() => captureToolbarSelection(true)}
+          onchange={(event) => setSpacingField('spacingBefore', event.currentTarget.valueAsNumber)}
+        />
+      </label>
+      <label class="compact-number" title={tr('spacingAfter')}>
+        {tr('after')}
+        <input
+          disabled={!editorEditable}
+          min="0"
+          max="50"
+          type="number"
+          value={spacingAfter}
+          onpointerdown={() => captureToolbarSelection(true)}
+          onchange={(event) => setSpacingField('spacingAfter', event.currentTarget.valueAsNumber)}
+        />
+      </label>
+      <label class="compact-number" title={tr('firstLineIndent')}>
+        {tr('firstLine')}
+        <input
+          disabled={!editorEditable}
+          min="-50"
+          max="50"
+          type="number"
+          value={firstLineIndent}
+          onpointerdown={() => captureToolbarSelection(true)}
+          onchange={(event) => setSpacingField('firstLineIndent', event.currentTarget.valueAsNumber)}
+        />
+      </label>
+    </div>
+
+    <div class="tool-group list-tools" role="group" aria-label={tr('lists')}>
+      <button
+        disabled={!editorEditable}
+        title={tr('bulletList')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyList('bullet_list'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyList('bullet_list'))}
+      >
+        UL
+      </button>
+      <button
+        disabled={!editorEditable}
+        title={tr('numberedList')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => applyList('ordered_list'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => applyList('ordered_list'))}
+      >
+        1.
+      </button>
+      <button
+        disabled={!editorEditable}
+        title={tr('decreaseIndent')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => adjustListLevel(-1))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => adjustListLevel(-1))}
+      >
+        &lt;
+      </button>
+      <button
+        disabled={!editorEditable}
+        title={tr('increaseIndent')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => adjustListLevel(1))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => adjustListLevel(1))}
+      >
+        &gt;
       </button>
     </div>
 

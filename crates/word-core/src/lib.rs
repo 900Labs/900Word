@@ -22,7 +22,7 @@ impl Document {
             meta: DocumentMeta::new("Untitled Document"),
             sections: vec![Section::default()],
             styles: default_styles(),
-            lists: BTreeMap::new(),
+            lists: default_list_definitions(),
             assets: BTreeMap::new(),
             warnings: Vec::new(),
         }
@@ -177,6 +177,7 @@ impl Default for Section {
             id: Uuid::new_v4(),
             blocks: vec![Block::Paragraph(Paragraph {
                 style: StyleId::from("body"),
+                format: ParagraphFormat::default(),
                 inlines: Vec::new(),
             })],
             page: PageSetup::default(),
@@ -289,6 +290,8 @@ impl Block {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Paragraph {
     pub style: StyleId,
+    #[serde(default, skip_serializing_if = "ParagraphFormat::is_default")]
+    pub format: ParagraphFormat,
     pub inlines: Vec<Inline>,
 }
 
@@ -319,6 +322,8 @@ pub struct Inline {
     pub text: String,
     pub marks: Vec<InlineMark>,
     pub link: Option<String>,
+    #[serde(default, skip_serializing_if = "InlineStyle::is_default")]
+    pub style: InlineStyle,
 }
 
 impl Inline {
@@ -327,8 +332,60 @@ impl Inline {
             text: text.into(),
             marks: Vec::new(),
             link: None,
+            style: InlineStyle::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct InlineStyle {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size_pt: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight_color: Option<String>,
+}
+
+impl InlineStyle {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ParagraphFormat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment: Option<ParagraphAlignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_spacing_per_mille: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spacing_before_mm: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spacing_after_mm: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indent_start_mm: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indent_end_mm: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_line_indent_mm: Option<i16>,
+}
+
+impl ParagraphFormat {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParagraphAlignment {
+    Left,
+    Center,
+    Right,
+    Justify,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -409,6 +466,10 @@ pub struct Style {
     pub id: StyleId,
     pub name: String,
     pub kind: StyleKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<StyleId>,
+    #[serde(default, skip_serializing_if = "StyleProperties::is_default")]
+    pub properties: StyleProperties,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,6 +477,23 @@ pub enum StyleKind {
     Paragraph,
     Character,
     Table,
+    Page,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct StyleProperties {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paragraph: Option<ParagraphFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline: Option<InlineStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<PageSetup>,
+}
+
+impl StyleProperties {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -515,25 +593,68 @@ fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DocumentEr
     }
 }
 
-fn default_styles() -> BTreeMap<StyleId, Style> {
+pub fn default_style_registry() -> BTreeMap<StyleId, Style> {
     let mut styles = BTreeMap::new();
-    styles.insert(
-        StyleId::from("body"),
-        Style {
-            id: StyleId::from("body"),
-            name: "Body".to_string(),
-            kind: StyleKind::Paragraph,
-        },
-    );
-    styles.insert(
-        StyleId::from("heading-1"),
-        Style {
-            id: StyleId::from("heading-1"),
-            name: "Heading 1".to_string(),
-            kind: StyleKind::Paragraph,
-        },
-    );
+    insert_style(&mut styles, "body", "Normal", StyleKind::Paragraph);
+    insert_style(&mut styles, "title", "Title", StyleKind::Paragraph);
+    insert_style(&mut styles, "subtitle", "Subtitle", StyleKind::Paragraph);
+    insert_style(&mut styles, "heading-1", "Heading 1", StyleKind::Paragraph);
+    insert_style(&mut styles, "heading-2", "Heading 2", StyleKind::Paragraph);
+    insert_style(&mut styles, "heading-3", "Heading 3", StyleKind::Paragraph);
+    insert_style(&mut styles, "quote", "Quote", StyleKind::Paragraph);
+    insert_style(&mut styles, "code", "Code", StyleKind::Paragraph);
+    insert_style(&mut styles, "caption", "Caption", StyleKind::Paragraph);
+    insert_style(&mut styles, "emphasis", "Emphasis", StyleKind::Character);
+    insert_style(&mut styles, "strong", "Strong", StyleKind::Character);
+    insert_style(&mut styles, "link", "Link", StyleKind::Character);
+    insert_style(&mut styles, "highlight", "Highlight", StyleKind::Character);
+    insert_style(&mut styles, "default-page", "Default Page", StyleKind::Page);
+    insert_style(&mut styles, "first-page", "First Page", StyleKind::Page);
+    insert_style(&mut styles, "landscape", "Landscape", StyleKind::Page);
+    insert_style(&mut styles, "letterhead", "Letterhead", StyleKind::Page);
     styles
+}
+
+fn default_styles() -> BTreeMap<StyleId, Style> {
+    default_style_registry()
+}
+
+fn insert_style(
+    styles: &mut BTreeMap<StyleId, Style>,
+    id: &'static str,
+    name: &'static str,
+    kind: StyleKind,
+) {
+    let id = StyleId::from(id);
+    styles.insert(
+        id.clone(),
+        Style {
+            id,
+            name: name.to_string(),
+            kind,
+            parent: None,
+            properties: StyleProperties::default(),
+        },
+    );
+}
+
+fn default_list_definitions() -> BTreeMap<String, ListDefinition> {
+    BTreeMap::from([
+        (
+            "900w-unordered".to_string(),
+            ListDefinition {
+                ordered: false,
+                marker: Some("bullet".to_string()),
+            },
+        ),
+        (
+            "900w-ordered".to_string(),
+            ListDefinition {
+                ordered: true,
+                marker: Some("decimal".to_string()),
+            },
+        ),
+    ])
 }
 
 #[cfg(test)]
@@ -654,14 +775,14 @@ mod tests {
     }
 
     #[test]
-    fn default_style_registry_contains_body_and_heading() {
+    fn default_style_registry_contains_authoring_styles() {
         let document = Document::new_untitled();
 
         assert_eq!(
             document
                 .style(&StyleId::from("body"))
                 .map(|style| style.name.as_str()),
-            Some("Body")
+            Some("Normal")
         );
         assert_eq!(
             document
@@ -669,6 +790,26 @@ mod tests {
                 .map(|style| style.kind),
             Some(StyleKind::Paragraph)
         );
+        assert_eq!(
+            document
+                .style(&StyleId::from("heading-3"))
+                .map(|style| style.name.as_str()),
+            Some("Heading 3")
+        );
+        assert_eq!(
+            document
+                .style(&StyleId::from("strong"))
+                .map(|style| style.kind),
+            Some(StyleKind::Character)
+        );
+        assert_eq!(
+            document
+                .style(&StyleId::from("landscape"))
+                .map(|style| style.kind),
+            Some(StyleKind::Page)
+        );
+        assert!(document.lists.contains_key("900w-unordered"));
+        assert!(document.lists.contains_key("900w-ordered"));
     }
 
     #[test]
@@ -680,6 +821,8 @@ mod tests {
                 id: StyleId::from("caption"),
                 name: " ".to_string(),
                 kind: StyleKind::Paragraph,
+                parent: None,
+                properties: StyleProperties::default(),
             })
             .expect_err("blank style name should fail");
 

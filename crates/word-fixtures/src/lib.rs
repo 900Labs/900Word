@@ -20,14 +20,17 @@ pub fn multilingual_sample() -> Document {
         }),
         Block::Paragraph(word_core::Paragraph {
             style: word_core::StyleId::from("body"),
+            format: Default::default(),
             inlines: vec![Inline::text("Hello offline world.")],
         }),
         Block::Paragraph(word_core::Paragraph {
             style: word_core::StyleId::from("body"),
+            format: Default::default(),
             inlines: vec![Inline::text("مرحبا بالعالم")],
         }),
         Block::Paragraph(word_core::Paragraph {
             style: word_core::StyleId::from("body"),
+            format: Default::default(),
             inlines: vec![Inline::text("你好，世界")],
         }),
     ];
