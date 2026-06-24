@@ -305,7 +305,13 @@ const nodes: Record<string, NodeSpec> = {
       const image = safeImageSrc(String(node.attrs.src ?? ''))
         ? ['img', { src: node.attrs.src, alt: altText }]
         : ['span', { class: 'image-placeholder-text' }, altText];
-      return ['figure', attrs, image, ['figcaption', caption]];
+      return [
+        'figure',
+        attrs,
+        image,
+        ['figcaption', caption],
+        ['span', { class: 'image-resize-handle', 'aria-hidden': 'true' }]
+      ];
     }
   },
   text: {
@@ -553,7 +559,7 @@ function imageDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
   if (typeof attrs.caption === 'string' && attrs.caption.trim().length > 0) {
     domAttrs['data-caption'] = attrs.caption;
   }
-  const css = [`max-width: ${scale}%`];
+  const css = [`width: ${scale}%`];
   if (alignment === 'inline') {
     css.push('display: inline-block');
   } else if (alignment === 'left') {
