@@ -517,8 +517,25 @@ select:focus-visible {
   padding-inline: 0;
 }
 
+.table-size-field {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #4e5963;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.table-size-field select {
+  width: 3rem;
+  min-width: 3rem;
+  padding: 0.3rem 0.35rem;
+}
+
 .list-tools button,
-.paragraph-tools button {
+.paragraph-tools button,
+.table-tools button {
   width: 34px;
   min-width: 34px;
   height: 34px;
@@ -527,8 +544,13 @@ select:focus-visible {
 }
 
 .table-tools button {
-  min-width: 4.5rem;
-  font-weight: 800;
+  font-size: 0.76rem;
+}
+
+.table-tools .table-insert-button {
+  width: auto;
+  min-width: 4rem;
+  padding: 0 0.45rem;
 }
 
 .formatting-tools {

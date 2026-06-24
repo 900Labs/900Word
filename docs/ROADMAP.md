@@ -139,3 +139,12 @@ Status: complete.
 - Preserve 900Word-authored bookmarks and internal links through ODT using `text:bookmark` anchors and `#fragment` text links.
 - Emit sanitized HTML element IDs and internal fragment hrefs.
 - Keep richer bookmark management, automatic heading ID assignment, cross-document links, and active PDF link annotations deferred.
+
+## Sprint 017: Table Structure Editing MVP
+
+Status: complete.
+
+- Replace the fixed 2x2 table command with a compact bounded row/column insert control.
+- Add contextual desktop controls for add row above/below, delete row, add column left/right, delete column, and delete table when the selection is inside an editable rectangular table.
+- Keep table edits inside the existing ProseMirror projection and `word-core` block sync path without changing the durable Rust table model.
+- Keep merged cells, resizing, formulas, rich table paste, and heavy table styling deferred.

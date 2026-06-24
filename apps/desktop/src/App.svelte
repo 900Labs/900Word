@@ -6,7 +6,9 @@
     createEditor,
     createEditorBookmarkId,
     editorTopLevelInsertionIndex,
+    editTableStructure,
     findEditorTextMatches,
+    insertTable as insertEditorTable,
     replaceAllEditorText,
     replaceEditorTextRange,
     removeEditorLink,
@@ -23,7 +25,6 @@
     setSelectedImageAttrs,
     setEditorSpellIssues,
     setEditorTextStyle,
-    insertDefaultTable,
     snapshotEditorFormatting,
     snapshotEditorDomSelection,
     snapshotEditorSelection,
@@ -37,6 +38,7 @@
     type SupportedListName,
     type SupportedMarkName,
     type SupportedParagraphAttrs,
+    type SupportedTableEditAction,
     type SupportedTextStyleAttrs
   } from './lib/editor';
   import {
@@ -169,6 +171,7 @@
     { id: 'monospace', label: 'Mono' }
   ];
   const fontSizes = [9, 10, 11, 12, 14, 16, 18, 24, 32];
+  const tableDimensions = [1, 2, 3, 4, 5, 6, 7, 8];
   const lineSpacings = [
     { id: 1000, label: '1.0' },
     { id: 1150, label: '1.15' },
@@ -262,6 +265,8 @@
   );
   let editorSyncQueue = Promise.resolve();
   let editorSyncError: string | null = null;
+  let tableRows = $state(2);
+  let tableColumns = $state(2);
   let lastEditorSelection = $state<EditorSelectionSnapshot | undefined>();
   let editorHasStarted = $state(false);
   let editorIsEmpty = $state(true);
@@ -734,6 +739,7 @@
       linkHref: null,
       blockBookmarkId: null,
       list: null,
+      table: null,
       image: null,
       selectionWordCount: 0
     };
@@ -925,7 +931,19 @@
       status = tr('editorReadOnly');
       return;
     }
-    status = insertDefaultTable(view, lastEditorSelection) ? tr('tableInserted') : tr('paragraphUnchanged');
+    status = insertEditorTable(view, tableRows, tableColumns, lastEditorSelection)
+      ? tr('tableInserted')
+      : tr('paragraphUnchanged');
+  }
+
+  function editTable(action: SupportedTableEditAction) {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    const changed = editTableStructure(view, action, lastEditorSelection);
+    refreshSelectionFormatting();
+    status = changed ? tr(action === 'delete_table' ? 'tableDeleted' : 'tableUpdated') : tr('paragraphUnchanged');
   }
 
   async function openLinkPanel() {
@@ -2058,14 +2076,104 @@
     </div>
 
     <div class="tool-group table-tools" role="group" aria-label={tr('tables')}>
+      <label class="table-size-field" title={tr('tableRows')}>
+        {tr('rowsShort')}
+        <select
+          aria-label={tr('tableRows')}
+          disabled={!editorEditable}
+          bind:value={tableRows}
+          onpointerdown={() => captureToolbarSelection(true)}
+        >
+          {#each tableDimensions as size}
+            <option value={size}>{size}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="table-size-field" title={tr('tableColumns')}>
+        {tr('columnsShort')}
+        <select
+          aria-label={tr('tableColumns')}
+          disabled={!editorEditable}
+          bind:value={tableColumns}
+          onpointerdown={() => captureToolbarSelection(true)}
+        >
+          {#each tableDimensions as size}
+            <option value={size}>{size}</option>
+          {/each}
+        </select>
+      </label>
       <button
+        class="table-insert-button"
         disabled={!editorEditable}
         title={tr('insertTable')}
         type="button"
         onpointerdown={(event) => runToolbarPointerCommand(event, insertTable)}
         onclick={(event) => runToolbarKeyboardCommand(event, insertTable)}
       >
-        {tr('insertTable')}
+        {tr('insertTableShort')}
+      </button>
+      <button
+        disabled={!editorEditable || !activeFormatting.table?.canAddRow}
+        title={tr('addRowAbove')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => editTable('add_row_above'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => editTable('add_row_above'))}
+      >
+        +R^
+      </button>
+      <button
+        disabled={!editorEditable || !activeFormatting.table?.canAddRow}
+        title={tr('addRowBelow')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => editTable('add_row_below'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => editTable('add_row_below'))}
+      >
+        +Rv
+      </button>
+      <button
+        disabled={!editorEditable || !activeFormatting.table?.canDeleteRow}
+        title={tr('deleteRow')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => editTable('delete_row'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => editTable('delete_row'))}
+      >
+        -R
+      </button>
+      <button
+        disabled={!editorEditable || !activeFormatting.table?.canAddColumn}
+        title={tr('addColumnLeft')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => editTable('add_column_left'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => editTable('add_column_left'))}
+      >
+        +C&lt;
+      </button>
+      <button
+        disabled={!editorEditable || !activeFormatting.table?.canAddColumn}
+        title={tr('addColumnRight')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => editTable('add_column_right'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => editTable('add_column_right'))}
+      >
+        +C&gt;
+      </button>
+      <button
+        disabled={!editorEditable || !activeFormatting.table?.canDeleteColumn}
+        title={tr('deleteColumn')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => editTable('delete_column'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => editTable('delete_column'))}
+      >
+        -C
+      </button>
+      <button
+        disabled={!editorEditable || !activeFormatting.table?.canDeleteTable}
+        title={tr('deleteTable')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => editTable('delete_table'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => editTable('delete_table'))}
+      >
+        Del
       </button>
     </div>
 

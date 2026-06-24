@@ -6,7 +6,9 @@ import {
   continueListOnEnterTransaction,
   editorDocPlainText,
   editorStateSelectionFormatting,
+  editTableStructureTransaction,
   insertDefaultTableTransaction,
+  insertTableTransaction,
   mapSpellIssuesToEditorRanges,
   pastePlainTextAsBlocksTransaction,
   removeEditorLinkTransaction,
@@ -819,6 +821,213 @@ describe('findEditorDocMatches', () => {
     expect(selectionAncestorNames(nextState)).toContain('table_cell');
   });
 
+  it('inserts a bounded custom-size table', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = insertTableTransaction(state, 3, 4, { from: 1, to: 1, empty: true });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    const table = nextState.doc.child(0);
+    expect(table.type.name).toBe('table');
+    expect(table.childCount).toBe(3);
+    expect(table.child(0).childCount).toBe(4);
+    expect(selectionAncestorNames(nextState)).toContain('table_cell');
+  });
+
+  it('rejects unsafe table insertion dimensions', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    expect(insertTableTransaction(state, 0, 2)).toBeUndefined();
+    expect(insertTableTransaction(state, 2, 9)).toBeUndefined();
+  });
+
+  it('adds and deletes rows around the selected table cell', () => {
+    const state = tableStateWithSelection('A1');
+
+    const added = editTableStructureTransaction(state, 'add_row_below');
+
+    expect(added).toBeDefined();
+    const withRow = state.apply(added!);
+    expect(withRow.doc.child(0).childCount).toBe(3);
+    expect(withRow.doc.textContent).toContain('A1');
+    expect(withRow.doc.textContent).toContain('B2');
+    expect(selectionAncestorNames(withRow)).toContain('table_cell');
+
+    const deleted = editTableStructureTransaction(withRow, 'delete_row');
+
+    expect(deleted).toBeDefined();
+    const withoutInsertedRow = withRow.apply(deleted!);
+    expect(withoutInsertedRow.doc.child(0).childCount).toBe(2);
+  });
+
+  it('adds and deletes columns around the selected table cell', () => {
+    const state = tableStateWithSelection('A2');
+
+    const added = editTableStructureTransaction(state, 'add_column_left');
+
+    expect(added).toBeDefined();
+    const withColumn = state.apply(added!);
+    expect(withColumn.doc.child(0).child(0).childCount).toBe(3);
+    expect(withColumn.doc.child(0).child(1).childCount).toBe(3);
+    expect(withColumn.doc.textContent).toContain('A1');
+    expect(withColumn.doc.textContent).toContain('B2');
+    expect(selectionAncestorNames(withColumn)).toContain('table_cell');
+
+    const deleted = editTableStructureTransaction(withColumn, 'delete_column');
+
+    expect(deleted).toBeDefined();
+    const withoutInsertedColumn = withColumn.apply(deleted!);
+    expect(withoutInsertedColumn.doc.child(0).child(0).childCount).toBe(2);
+    expect(withoutInsertedColumn.doc.child(0).child(1).childCount).toBe(2);
+  });
+
+  it('deletes a selected table and leaves an editable paragraph when it is the only block', () => {
+    const state = tableStateWithSelection('A1');
+
+    const transaction = editTableStructureTransaction(state, 'delete_table');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.childCount).toBe(1);
+    expect(nextState.doc.child(0).type.name).toBe('paragraph');
+    expect(nextState.selection.$from.parent.type.name).toBe('paragraph');
+  });
+
+  it('refuses to delete the last row or last column', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          content: [
+            {
+              type: 'table_row',
+              content: [
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [
+                    { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'Only' }] }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    const cursor = textRange(doc, 'Only').from;
+    const initial = EditorState.create({ doc });
+    const state = initial.apply(initial.tr.setSelection(TextSelection.create(doc, cursor)));
+
+    expect(editorStateSelectionFormatting(state).table).toMatchObject({
+      rows: 1,
+      columns: 1,
+      canDeleteRow: false,
+      canDeleteColumn: false
+    });
+    expect(editTableStructureTransaction(state, 'delete_row')).toBeUndefined();
+    expect(editTableStructureTransaction(state, 'delete_column')).toBeUndefined();
+  });
+
+  it('refuses structure edits for irregular or source-empty tables', () => {
+    const irregular = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          content: [
+            {
+              type: 'table_row',
+              content: [
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [
+                    { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'A1' }] }
+                  ]
+                },
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [
+                    { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'A2' }] }
+                  ]
+                }
+              ]
+            },
+            {
+              type: 'table_row',
+              content: [
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [
+                    { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'B1' }] }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    const irregularCursor = textRange(irregular, 'A1').from;
+    const irregularInitial = EditorState.create({ doc: irregular });
+    const irregularState = irregularInitial.apply(
+      irregularInitial.tr.setSelection(TextSelection.create(irregular, irregularCursor))
+    );
+
+    expect(editorStateSelectionFormatting(irregularState).table).toBeNull();
+    expect(editTableStructureTransaction(irregularState, 'add_column_right')).toBeUndefined();
+
+    const sourceEmpty = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          content: [
+            {
+              type: 'table_row',
+              content: [
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: true },
+                  content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    const sourceEmptyInitial = EditorState.create({ doc: sourceEmpty });
+    const sourceEmptyState = sourceEmptyInitial.apply(sourceEmptyInitial.tr.setSelection(TextSelection.create(sourceEmpty, 3)));
+
+    expect(editorStateSelectionFormatting(sourceEmptyState).table).toBeNull();
+    expect(editTableStructureTransaction(sourceEmptyState, 'add_row_below')).toBeUndefined();
+  });
+
+  it('keeps table structure commands harmless outside editable tables', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'Outside' }] }]
+    });
+    const state = EditorState.create({ doc });
+
+    expect(editorStateSelectionFormatting(state).table).toBeNull();
+    expect(editTableStructureTransaction(state, 'add_row_below')).toBeUndefined();
+  });
+
   it('lets the native paste path handle multiline text inside non-empty paragraphs', () => {
     const doc = supportedSchema.nodeFromJSON({
       type: 'doc',
@@ -948,6 +1157,60 @@ function firstTextblockStart(doc: ReturnType<typeof supportedSchema.nodeFromJSON
     throw new Error('Textblock not found');
   }
   return found;
+}
+
+function tableStateWithSelection(cellText: string) {
+  const doc = supportedSchema.nodeFromJSON({
+    type: 'doc',
+    content: [
+      {
+        type: 'table',
+        content: [
+          {
+            type: 'table_row',
+            content: [
+              {
+                type: 'table_cell',
+                attrs: { unsupported: false, sourceEmpty: false },
+                content: [
+                  { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'A1' }] }
+                ]
+              },
+              {
+                type: 'table_cell',
+                attrs: { unsupported: false, sourceEmpty: false },
+                content: [
+                  { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'A2' }] }
+                ]
+              }
+            ]
+          },
+          {
+            type: 'table_row',
+            content: [
+              {
+                type: 'table_cell',
+                attrs: { unsupported: false, sourceEmpty: false },
+                content: [
+                  { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'B1' }] }
+                ]
+              },
+              {
+                type: 'table_cell',
+                attrs: { unsupported: false, sourceEmpty: false },
+                content: [
+                  { type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'B2' }] }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  const cursor = textRange(doc, cellText).from;
+  const initial = EditorState.create({ doc });
+  return initial.apply(initial.tr.setSelection(TextSelection.create(doc, cursor)));
 }
 
 function selectionAncestorNames(state: EditorState) {
