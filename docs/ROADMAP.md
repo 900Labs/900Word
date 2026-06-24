@@ -88,7 +88,7 @@ Status: complete.
 
 - Add a live Heading 1/2/3 navigator sidebar with click-to-jump behavior.
 - Add insert/edit/remove hyperlink UI backed by the existing safe link model and ODT/export path.
-- Keep bookmarks, headers/footers/fields, and image insertion workflows deferred.
+- Keep headers/footers/fields and image insertion workflows deferred.
 
 ## Sprint 012: Editable Tables MVP
 
@@ -128,3 +128,14 @@ Status: complete.
 - Preserve image metadata through ProseMirror projection/text sync and 900Word-authored ODT save/reopen using the existing `word900` metadata namespace.
 - Reflect image alt/caption/alignment/scale in sanitized HTML and print HTML export.
 - Keep cropping, drag resize handles, richer external ODT image-layout fidelity, and raster PDF image embedding deferred.
+
+## Sprint 016: Bookmarks And Internal Links MVP
+
+Status: complete.
+
+- Add optional safe bookmark IDs to durable paragraph and heading blocks.
+- Preserve bookmark IDs through ProseMirror projection and editor sync.
+- Add compact controls to create/remove a bookmark on the selected paragraph or heading and link selected text to an existing bookmark/heading target.
+- Preserve 900Word-authored bookmarks and internal links through ODT using `text:bookmark` anchors and `#fragment` text links.
+- Emit sanitized HTML element IDs and internal fragment hrefs.
+- Keep richer bookmark management, automatic heading ID assignment, cross-document links, and active PDF link annotations deferred.

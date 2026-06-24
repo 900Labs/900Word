@@ -18,6 +18,9 @@ export type UiStringKey =
   | 'blockFormatting'
   | 'blocks'
   | 'bold'
+  | 'bookmark'
+  | 'bookmarkAdded'
+  | 'bookmarkRemoved'
   | 'bottom'
   | 'bulletList'
   | 'bulletListApplied'
@@ -44,6 +47,7 @@ export type UiStringKey =
   | 'editorReadOnly'
   | 'editingToolbar'
   | 'export'
+  | 'externalLink'
   | 'exportHtml'
   | 'exportHtmlPrepared'
   | 'exportHtmlSaved'
@@ -107,6 +111,7 @@ export type UiStringKey =
   | 'linkHref'
   | 'linkInvalid'
   | 'linkRemoved'
+  | 'linkTarget'
   | 'linkTools'
   | 'linkUnchanged'
   | 'listLevelChanged'
@@ -159,6 +164,8 @@ export type UiStringKey =
   | 'redoApplied'
   | 'replace'
   | 'replaceAll'
+  | 'removeBookmark'
+  | 'removeBookmarkShort'
   | 'removeLink'
   | 'right'
   | 'readingMinutes'
@@ -242,6 +249,9 @@ const english: UiStrings = {
   blockFormatting: 'Block formatting',
   blocks: 'Blocks',
   bold: 'Bold',
+  bookmark: 'Bookmark',
+  bookmarkAdded: 'Bookmark added',
+  bookmarkRemoved: 'Bookmark removed',
   bottom: 'Bottom',
   bulletList: 'Bullet list',
   bulletListApplied: 'Bullet list applied',
@@ -268,6 +278,7 @@ const english: UiStrings = {
   editorReadOnly: 'Editor is read-only',
   editingToolbar: 'Editing toolbar',
   export: 'Export',
+  externalLink: 'External link',
   exportHtml: 'Export HTML',
   exportHtmlPrepared: 'HTML export prepared ({characters} characters)',
   exportHtmlSaved: 'HTML export written ({bytes} bytes)',
@@ -329,8 +340,9 @@ const english: UiStrings = {
   link: 'Link',
   linkApplied: 'Link applied',
   linkHref: 'Link address',
-  linkInvalid: 'Use a safe http, https, or mailto link',
+  linkInvalid: 'Use a safe http, https, mailto, or #bookmark link',
   linkRemoved: 'Link removed',
+  linkTarget: 'Link target',
   linkTools: 'Link tools',
   linkUnchanged: 'Link unchanged',
   listLevelChanged: 'List level changed',
@@ -383,6 +395,8 @@ const english: UiStrings = {
   redoApplied: 'Redo applied',
   replace: 'Replace',
   replaceAll: 'All',
+  removeBookmark: 'Remove bookmark',
+  removeBookmarkShort: 'No mark',
   removeLink: 'Remove link',
   readingMinutes: '{count} min',
   readingTime: 'Reading time',

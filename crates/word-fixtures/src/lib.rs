@@ -15,20 +15,24 @@ pub fn multilingual_sample() -> Document {
     document.sections[0].id = fixture_id(2);
     document.sections[0].blocks = vec![
         Block::Heading(Heading {
+            bookmark_id: None,
             level: 1,
             inlines: vec![Inline::text("Generated sample")],
         }),
         Block::Paragraph(word_core::Paragraph {
+            bookmark_id: None,
             style: word_core::StyleId::from("body"),
             format: Default::default(),
             inlines: vec![Inline::text("Hello offline world.")],
         }),
         Block::Paragraph(word_core::Paragraph {
+            bookmark_id: None,
             style: word_core::StyleId::from("body"),
             format: Default::default(),
             inlines: vec![Inline::text("مرحبا بالعالم")],
         }),
         Block::Paragraph(word_core::Paragraph {
+            bookmark_id: None,
             style: word_core::StyleId::from("body"),
             format: Default::default(),
             inlines: vec![Inline::text("你好，世界")],

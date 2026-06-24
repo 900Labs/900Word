@@ -594,16 +594,18 @@ fn render_block(block: &Block, document: &Document, output: &mut String) -> Resu
             };
             output.push_str(&format!(
                 "<text:p text:style-name=\"{}\">",
-                escape_xml(&style_name)
+                escape_xml(&style_name),
             ));
+            render_bookmark(paragraph.bookmark_id.as_deref(), output);
             render_inlines(&paragraph.inlines, output);
             output.push_str("</text:p>");
         }
         Block::Heading(heading) => {
             output.push_str(&format!(
                 "<text:h text:outline-level=\"{}\">",
-                heading.level.clamp(1, 6)
+                heading.level.clamp(1, 6),
             ));
+            render_bookmark(heading.bookmark_id.as_deref(), output);
             render_inlines(&heading.inlines, output);
             output.push_str("</text:h>");
         }
@@ -697,6 +699,14 @@ fn render_image(
         escape_xml(&href)
     ));
     Ok(())
+}
+
+fn render_bookmark(bookmark_id: Option<&str>, output: &mut String) {
+    if let Some(id) = bookmark_id.and_then(sanitize_bookmark_id) {
+        output.push_str("<text:bookmark text:name=\"");
+        output.push_str(&escape_xml(&id));
+        output.push_str("\"/>");
+    }
 }
 
 fn image_alignment_name(alignment: ImageAlignment) -> &'static str {
@@ -1150,6 +1160,7 @@ impl PageRegionParseState {
                 self.active_text = Some(ActiveText::paragraph(
                     StyleId::from("body"),
                     ParagraphFormat::default(),
+                    None,
                 ));
             }
             b"span" if self.active_text.is_some() => {
@@ -1433,6 +1444,8 @@ impl<'a> ParseState<'a> {
                     active.text.push('\n');
                 }
             }
+            b"bookmark" | b"bookmark-start" => self.read_inline_bookmark_id(start)?,
+            b"bookmark-end" => {}
             b"soft-page-break" => {
                 if self.active_text.is_none() {
                     self.push_block(Block::PageBreak);
@@ -1653,7 +1666,12 @@ impl<'a> ParseState<'a> {
         }
         let style = attr_value(start, b"style-name")?.unwrap_or_else(|| "body".to_string());
         let (style, format) = paragraph_style_from_name(&style);
-        self.active_text = Some(ActiveText::paragraph(StyleId::from(style.as_str()), format));
+        let bookmark_id = self.read_bookmark_id(start)?;
+        self.active_text = Some(ActiveText::paragraph(
+            StyleId::from(style.as_str()),
+            format,
+            bookmark_id,
+        ));
         Ok(())
     }
 
@@ -1666,7 +1684,39 @@ impl<'a> ParseState<'a> {
             .and_then(|value| value.parse::<u8>().ok())
             .unwrap_or(1)
             .clamp(1, 6);
-        self.active_text = Some(ActiveText::heading(level));
+        let bookmark_id = self.read_bookmark_id(start)?;
+        self.active_text = Some(ActiveText::heading(level, bookmark_id));
+        Ok(())
+    }
+
+    fn read_bookmark_id(&mut self, start: &BytesStart<'_>) -> Result<Option<String>, OdtError> {
+        let name = match attr_value(start, b"bookmark-id")? {
+            Some(value) => Some(value),
+            None => attr_value(start, b"name")?,
+        };
+        let sanitized = name.as_deref().and_then(sanitize_bookmark_id);
+        if name.is_some() && sanitized.is_none() {
+            self.warn(
+                "odt_unsafe_bookmark",
+                "Unsafe bookmark name was stripped during import",
+            );
+        }
+        Ok(sanitized)
+    }
+
+    fn read_inline_bookmark_id(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let name = attr_value(start, b"name")?;
+        let sanitized = name.as_deref().and_then(sanitize_bookmark_id);
+        if name.is_some() && sanitized.is_none() {
+            self.warn(
+                "odt_unsafe_bookmark",
+                "Unsafe bookmark name was stripped during import",
+            );
+            return Ok(());
+        }
+        if let (Some(active), Some(bookmark_id)) = (self.active_text.as_mut(), sanitized) {
+            active.set_bookmark_id(bookmark_id);
+        }
         Ok(())
     }
 
@@ -1799,12 +1849,18 @@ impl<'a> ParseState<'a> {
         }
 
         let block = match active.kind {
-            ActiveTextKind::Paragraph { style, format } => Block::Paragraph(Paragraph {
+            ActiveTextKind::Paragraph {
+                bookmark_id,
+                style,
+                format,
+            } => Block::Paragraph(Paragraph {
+                bookmark_id,
                 style,
                 format,
                 inlines: active.inlines,
             }),
-            ActiveTextKind::Heading { level } => Block::Heading(Heading {
+            ActiveTextKind::Heading { bookmark_id, level } => Block::Heading(Heading {
+                bookmark_id,
                 level,
                 inlines: active.inlines,
             }),
@@ -2022,10 +2078,12 @@ struct ImageFrame {
 #[derive(Debug)]
 enum ActiveTextKind {
     Paragraph {
+        bookmark_id: Option<String>,
         style: StyleId,
         format: ParagraphFormat,
     },
     Heading {
+        bookmark_id: Option<String>,
         level: u8,
     },
 }
@@ -2042,9 +2100,13 @@ struct ActiveText {
 }
 
 impl ActiveText {
-    fn paragraph(style: StyleId, format: ParagraphFormat) -> Self {
+    fn paragraph(style: StyleId, format: ParagraphFormat, bookmark_id: Option<String>) -> Self {
         Self {
-            kind: ActiveTextKind::Paragraph { style, format },
+            kind: ActiveTextKind::Paragraph {
+                bookmark_id,
+                style,
+                format,
+            },
             text: String::new(),
             inlines: Vec::new(),
             mark_stack: Vec::new(),
@@ -2054,15 +2116,30 @@ impl ActiveText {
         }
     }
 
-    fn heading(level: u8) -> Self {
+    fn heading(level: u8, bookmark_id: Option<String>) -> Self {
         Self {
-            kind: ActiveTextKind::Heading { level },
+            kind: ActiveTextKind::Heading { bookmark_id, level },
             text: String::new(),
             inlines: Vec::new(),
             mark_stack: Vec::new(),
             style_stack: Vec::new(),
             link_stack: Vec::new(),
             embedded_blocks: Vec::new(),
+        }
+    }
+
+    fn set_bookmark_id(&mut self, bookmark_id: String) {
+        match &mut self.kind {
+            ActiveTextKind::Paragraph {
+                bookmark_id: slot, ..
+            }
+            | ActiveTextKind::Heading {
+                bookmark_id: slot, ..
+            } => {
+                if slot.is_none() {
+                    *slot = Some(bookmark_id);
+                }
+            }
         }
     }
 
@@ -2452,9 +2529,30 @@ fn sanitize_text_href(value: &str) -> Option<String> {
         return None;
     }
 
+    if let Some(fragment) = trimmed.strip_prefix('#') {
+        return sanitize_bookmark_id(fragment).map(|id| format!("#{id}"));
+    }
+
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")
     {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn sanitize_bookmark_id(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let mut chars = trimmed.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+    if trimmed.len() > 64 {
+        return None;
+    }
+    if chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
         Some(trimmed.to_string())
     } else {
         None
@@ -2747,12 +2845,14 @@ mod tests {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![
             Block::Paragraph(Paragraph {
+                bookmark_id: None,
                 style: StyleId::from("body"),
                 format: Default::default(),
                 inlines: vec![Inline::text("Before")],
             }),
             Block::PageBreak,
             Block::Paragraph(Paragraph {
+                bookmark_id: None,
                 style: StyleId::from("body"),
                 format: Default::default(),
                 inlines: vec![Inline::text("After")],
@@ -2941,6 +3041,7 @@ mod tests {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![
             Block::Paragraph(Paragraph {
+                bookmark_id: None,
                 style: StyleId::from("quote"),
                 format: ParagraphFormat {
                     alignment: Some(ParagraphAlignment::Justify),
@@ -2969,6 +3070,7 @@ mod tests {
                 items: vec![ListItem {
                     level: 3,
                     blocks: vec![Block::Paragraph(Paragraph {
+                        bookmark_id: None,
                         style: StyleId::from("body"),
                         format: Default::default(),
                         inlines: vec![Inline::text("Nested item")],
@@ -3012,6 +3114,82 @@ mod tests {
     }
 
     #[test]
+    fn bookmarks_and_internal_links_round_trip_through_odt() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-heading".to_string()),
+                level: 2,
+                inlines: vec![Inline::text("Target")],
+            }),
+            Block::Paragraph(Paragraph {
+                bookmark_id: Some("bm-body".to_string()),
+                style: StyleId::from("body"),
+                format: Default::default(),
+                inlines: vec![Inline {
+                    text: "Jump".to_string(),
+                    marks: Vec::new(),
+                    link: Some("#bm-heading".to_string()),
+                    style: Default::default(),
+                    field: None,
+                }],
+            }),
+        ];
+
+        let bytes = write_odt_bytes(&document).expect("write should succeed");
+        let content_xml = content_xml_from_package(&bytes);
+        assert!(content_xml.contains(r#"<text:bookmark text:name="bm-heading"/>"#));
+        assert!(content_xml.contains(r#"<text:bookmark text:name="bm-body"/>"#));
+        let parsed = read_odt_bytes(&bytes).expect("read should succeed");
+
+        let Block::Heading(heading) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a heading");
+        };
+        assert_eq!(heading.bookmark_id.as_deref(), Some("bm-heading"));
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[1] else {
+            panic!("second block should be a paragraph");
+        };
+        assert_eq!(paragraph.bookmark_id.as_deref(), Some("bm-body"));
+        assert_eq!(paragraph.inlines[0].link.as_deref(), Some("#bm-heading"));
+    }
+
+    #[test]
+    fn unsafe_imported_bookmarks_and_internal_links_are_stripped() {
+        let content = r##"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:xlink="http://www.w3.org/1999/xlink"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:h text:outline-level="1"><text:bookmark text:name="../bad"/><text:a xlink:href="#../bad">Unsafe</text:a></text:h>
+                <text:p><text:bookmark text:name="bm-good"/><text:a xlink:href="#bm-good">Safe</text:a></text:p>
+              </office:text></office:body>
+            </office:document-content>"##;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        let Block::Heading(heading) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a heading");
+        };
+        assert_eq!(heading.bookmark_id, None);
+        assert_eq!(heading.inlines[0].link, None);
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[1] else {
+            panic!("second block should be a paragraph");
+        };
+        assert_eq!(paragraph.bookmark_id.as_deref(), Some("bm-good"));
+        assert_eq!(paragraph.inlines[0].link.as_deref(), Some("#bm-good"));
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsafe_bookmark"));
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsafe_link"));
+    }
+
+    #[test]
     fn parsed_documents_keep_default_list_definitions_for_new_lists() {
         let content = r#"<?xml version="1.0" encoding="UTF-8"?>
             <office:document-content
@@ -3027,6 +3205,7 @@ mod tests {
             items: vec![ListItem {
                 level: 1,
                 blocks: vec![Block::Paragraph(Paragraph {
+                    bookmark_id: None,
                     style: StyleId::from("body"),
                     format: Default::default(),
                     inlines: vec![Inline::text("Numbered")],
@@ -3106,10 +3285,12 @@ mod tests {
         );
         document.sections[0].blocks = vec![
             Block::Heading(Heading {
+                bookmark_id: None,
                 level: 1,
                 inlines: vec![Inline::text("Sprint 003")],
             }),
             Block::Paragraph(Paragraph {
+                bookmark_id: None,
                 style: StyleId::from("caption"),
                 format: Default::default(),
                 inlines: vec![
@@ -3135,6 +3316,7 @@ mod tests {
                     ListItem {
                         level: 1,
                         blocks: vec![Block::Paragraph(Paragraph {
+                            bookmark_id: None,
                             style: StyleId::from("body"),
                             format: Default::default(),
                             inlines: vec![Inline::text("First item")],
@@ -3143,6 +3325,7 @@ mod tests {
                     ListItem {
                         level: 1,
                         blocks: vec![Block::Paragraph(Paragraph {
+                            bookmark_id: None,
                             style: StyleId::from("body"),
                             format: Default::default(),
                             inlines: vec![Inline::text("Second item")],
@@ -3156,6 +3339,7 @@ mod tests {
                         cells: vec![
                             TableCell {
                                 blocks: vec![Block::Paragraph(Paragraph {
+                                    bookmark_id: None,
                                     style: StyleId::from("body"),
                                     format: Default::default(),
                                     inlines: vec![Inline::text("A1")],
@@ -3163,6 +3347,7 @@ mod tests {
                             },
                             TableCell {
                                 blocks: vec![Block::Paragraph(Paragraph {
+                                    bookmark_id: None,
                                     style: StyleId::from("body"),
                                     format: Default::default(),
                                     inlines: vec![Inline::text("B1")],
@@ -3173,6 +3358,7 @@ mod tests {
                     TableRow {
                         cells: vec![TableCell {
                             blocks: vec![Block::Paragraph(Paragraph {
+                                bookmark_id: None,
                                 style: StyleId::from("body"),
                                 format: Default::default(),
                                 inlines: vec![Inline::text("A2")],
@@ -3212,6 +3398,18 @@ mod tests {
             .unwrap();
         writer.write_all(content.as_bytes()).unwrap();
         writer.finish().unwrap().into_inner()
+    }
+
+    fn content_xml_from_package(bytes: &[u8]) -> String {
+        let cursor = Cursor::new(bytes);
+        let mut archive = ZipArchive::new(cursor).unwrap();
+        let mut content = String::new();
+        archive
+            .by_name("content.xml")
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        content
     }
 
     fn test_package_with_content_and_styles(content: &str, styles: &str) -> Vec<u8> {

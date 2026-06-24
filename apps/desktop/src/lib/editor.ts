@@ -12,7 +12,7 @@ import {
 } from './documentProjection';
 import { findTextRanges, type FindRange } from './findReplace';
 import { supportedSchema } from './editorSchema';
-import { sanitizeEditorHref } from './editorSecurity';
+import { sanitizeBookmarkId, sanitizeEditorHref } from './editorSecurity';
 
 export type SupportedMarkName =
   | 'bold'
@@ -67,6 +67,7 @@ export interface EditorFormattingSnapshot {
   textStyle: SupportedTextStyleAttrs;
   marks: Record<SupportedMarkName, boolean>;
   linkHref: string | null;
+  blockBookmarkId: string | null;
   list: {
     type: SupportedListName;
     level: number;
@@ -234,6 +235,7 @@ export function editorStateSelectionFormatting(
       subscript: markActive(transaction, 'subscript')
     },
     linkHref: linkHrefNearSelection(transaction),
+    blockBookmarkId: selectedBlockBookmarkId(transaction),
     list,
     image,
     selectionWordCount: countSelectionWords(transaction)
@@ -441,6 +443,99 @@ export function removeEditorLinkTransaction(
   return stored ? transaction.removeStoredMark(markType) : undefined;
 }
 
+export function createEditorBookmarkId(): string {
+  const bytes = new Uint8Array(8);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  const suffix = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `bm-${suffix}`;
+}
+
+export function setEditorBlockBookmark(
+  view: EditorView | undefined,
+  bookmarkId: string,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = setEditorBlockBookmarkTransaction(view.state, bookmarkId, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function setEditorBlockBookmarkTransaction(
+  state: EditorState,
+  bookmarkId: string,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const safeBookmarkId = sanitizeBookmarkId(bookmarkId);
+  if (!safeBookmarkId) {
+    return undefined;
+  }
+
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const selected = selectedTextblock(transaction);
+  if (!selected || !bookmarkableTextblock(selected.node)) {
+    return undefined;
+  }
+  if (selected.node.attrs.bookmarkId === safeBookmarkId) {
+    return undefined;
+  }
+  return transaction.setNodeMarkup(
+    selected.pos,
+    selected.node.type,
+    { ...selected.node.attrs, bookmarkId: safeBookmarkId },
+    selected.node.marks
+  );
+}
+
+export function removeEditorBlockBookmark(
+  view: EditorView | undefined,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = removeEditorBlockBookmarkTransaction(view.state, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function removeEditorBlockBookmarkTransaction(
+  state: EditorState,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const selected = selectedTextblock(transaction);
+  if (!selected || !bookmarkableTextblock(selected.node) || !selected.node.attrs.bookmarkId) {
+    return undefined;
+  }
+  return transaction.setNodeMarkup(
+    selected.pos,
+    selected.node.type,
+    { ...selected.node.attrs, bookmarkId: null },
+    selected.node.marks
+  );
+}
+
 export function setEditorBlockType(
   view: EditorView | undefined,
   blockName: SupportedBlockName,
@@ -486,8 +581,9 @@ export function setEditorBlockTypeTransaction(
     if (!node.isTextblock) {
       return true;
     }
-    if (node.type !== nodeType || JSON.stringify(node.attrs) !== JSON.stringify(attrs)) {
-      transaction = transaction.setNodeMarkup(pos, nodeType, attrs);
+    const nextAttrs = attrsWithPreservedBookmark(node.attrs, attrs);
+    if (node.type !== nodeType || JSON.stringify(node.attrs) !== JSON.stringify(nextAttrs)) {
+      transaction = transaction.setNodeMarkup(pos, nodeType, nextAttrs);
       changed = true;
     }
     return false;
@@ -681,6 +777,7 @@ export function clearEditorDirectFormattingTransaction(
     }
     const nextAttrs = {
       style: node.attrs.style || 'body',
+      bookmarkId: node.attrs.bookmarkId ?? null,
       align: null,
       lineSpacing: null,
       spacingBefore: null,
@@ -765,7 +862,8 @@ export function toggleEditorListTransaction(
         { level: 1 },
         paragraphType.create(
           {
-            style: node.type.name === 'paragraph' ? node.attrs.style || 'body' : 'body'
+            style: node.type.name === 'paragraph' ? node.attrs.style || 'body' : 'body',
+            bookmarkId: node.attrs.bookmarkId ?? null
           },
           node.content
         )
@@ -1224,6 +1322,26 @@ function selectedTextblock(
   return undefined;
 }
 
+function bookmarkableTextblock(node: ProseMirrorNode): boolean {
+  return node.type.name === 'paragraph' || node.type.name === 'heading';
+}
+
+function selectedBlockBookmarkId(transaction: Transaction): string | null {
+  const selected = selectedTextblock(transaction);
+  if (!selected || !bookmarkableTextblock(selected.node) || typeof selected.node.attrs.bookmarkId !== 'string') {
+    return null;
+  }
+  return sanitizeBookmarkId(selected.node.attrs.bookmarkId) ?? null;
+}
+
+function attrsWithPreservedBookmark(
+  currentAttrs: Record<string, unknown>,
+  nextAttrs: Record<string, string | number>
+): Record<string, string | number | null> {
+  const bookmarkId = sanitizeBookmarkId(String(currentAttrs.bookmarkId ?? ''));
+  return bookmarkId ? { ...nextAttrs, bookmarkId } : nextAttrs;
+}
+
 function selectedImageAttrs(
   transaction: Transaction,
   fallbackSelection?: EditorSelectionSnapshot
@@ -1483,6 +1601,7 @@ function emptyEditorFormattingSnapshot(): EditorFormattingSnapshot {
       subscript: false
     },
     linkHref: null,
+    blockBookmarkId: null,
     list: null,
     image: null,
     selectionWordCount: 0

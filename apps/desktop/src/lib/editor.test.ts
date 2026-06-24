@@ -10,7 +10,9 @@ import {
   mapSpellIssuesToEditorRanges,
   pastePlainTextAsBlocksTransaction,
   removeEditorLinkTransaction,
+  removeEditorBlockBookmarkTransaction,
   setEditorParagraphFormatTransaction,
+  setEditorBlockBookmarkTransaction,
   setSelectedImageAttrsTransaction,
   restoreEditorSelection,
   selectEditorTopLevelBlock,
@@ -273,6 +275,45 @@ describe('findEditorDocMatches', () => {
     const state = EditorState.create({ doc });
 
     expect(setEditorLinkTransaction(state, 'javascript:alert(1)', { from: 1, to: 7, empty: false })).toBeUndefined();
+  });
+
+  it('applies and removes a bookmark id on the selected text block', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'Target' }] }]
+    });
+    const state = EditorState.create({ doc });
+
+    const added = setEditorBlockBookmarkTransaction(state, 'bm-target', { from: 1, to: 3, empty: false });
+    expect(added).toBeDefined();
+    let nextState = state.apply(added!);
+    expect(nextState.doc.firstChild?.attrs.bookmarkId).toBe('bm-target');
+
+    const removed = removeEditorBlockBookmarkTransaction(nextState, { from: 1, to: 3, empty: false });
+    expect(removed).toBeDefined();
+    nextState = nextState.apply(removed!);
+    expect(nextState.doc.firstChild?.attrs.bookmarkId).toBeNull();
+  });
+
+  it('preserves a bookmark id when changing paragraph to heading', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body', bookmarkId: 'bm-existing' },
+          content: [{ type: 'text', text: 'Heading text' }]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = setEditorBlockTypeTransaction(state, 'heading', { level: 2 }, { from: 1, to: 8, empty: false });
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+
+    expect(nextState.doc.firstChild?.type.name).toBe('heading');
+    expect(nextState.doc.firstChild?.attrs.bookmarkId).toBe('bm-existing');
   });
 
   it('edits an existing link when the cursor is inside linked text', () => {
@@ -695,6 +736,28 @@ describe('findEditorDocMatches', () => {
     const nextState = state.apply(transaction!);
     expect(nextState.doc.firstChild?.type.name).toBe('bullet_list');
     expect(nextState.doc.firstChild?.childCount).toBe(2);
+  });
+
+  it('preserves a bookmark id when converting a paragraph into a list', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body', bookmarkId: 'bm-target' },
+          content: [{ type: 'text', text: 'Bookmarked item' }]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = toggleEditorListTransaction(state, 'bullet_list', { from: 1, to: 5, empty: false });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    const listParagraph = nextState.doc.firstChild?.firstChild?.firstChild;
+    expect(listParagraph?.type.name).toBe('paragraph');
+    expect(listParagraph?.attrs.bookmarkId).toBe('bm-target');
   });
 
   it('pastes simple newline text as paragraphs', () => {

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildEditorSyncCommands,
   canEditProjectedDocument,
+  documentLinkTargets,
+  documentLinkTargetsFromEditableBlocks,
   documentOutline,
   documentOutlineFromEditableBlocks,
   documentProjectionWarnings,
@@ -280,6 +282,96 @@ describe('documentToText', () => {
     expect(firstBlock.type).toBe('paragraph');
     expect(firstBlock.type === 'paragraph' ? firstBlock.content : undefined).toEqual([
       { type: 'text', text: 'Unsafe link' }
+    ]);
+  });
+
+  it('round-trips safe bookmark ids and internal fragment links through editor projection', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Heading',
+              value: {
+                bookmark_id: 'bm-heading',
+                level: 2,
+                inlines: [{ text: 'Target' }]
+              }
+            },
+            {
+              type: 'Paragraph',
+              value: {
+                bookmark_id: 'bm-body',
+                inlines: [{ text: 'Jump', link: '#bm-heading' }]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+    expect(editorDoc.content[0]).toMatchObject({ type: 'heading', attrs: { bookmarkId: 'bm-heading' } });
+    expect(editorDoc.content[1]).toMatchObject({
+      type: 'paragraph',
+      attrs: { bookmarkId: 'bm-body' },
+      content: [{ marks: [{ type: 'link', attrs: { href: '#bm-heading' } }] }]
+    });
+    expect(editorDocToWordCoreBlocks(editorDoc)).toEqual([
+      {
+        type: 'Heading',
+        value: {
+          bookmark_id: 'bm-heading',
+          level: 2,
+          inlines: [{ text: 'Target', marks: [], link: null }]
+        }
+      },
+      {
+        type: 'Paragraph',
+        value: {
+          bookmark_id: 'bm-body',
+          style: 'body',
+          inlines: [{ text: 'Jump', marks: [], link: '#bm-heading' }]
+        }
+      }
+    ]);
+    expect(documentLinkTargets(document)).toEqual([
+      {
+        id: 'bm-heading',
+        label: 'Target',
+        kind: 'heading',
+        sectionIndex: 0,
+        blockIndex: 0,
+        editorBlockIndex: 0,
+        level: 2
+      },
+      {
+        id: 'bm-body',
+        label: 'Jump',
+        kind: 'bookmark',
+        sectionIndex: 0,
+        blockIndex: 1,
+        editorBlockIndex: 1
+      }
+    ]);
+  });
+
+  it('does not expose unsafe imported bookmark ids as link targets', () => {
+    expect(
+      documentLinkTargetsFromEditableBlocks([
+        { type: 'Paragraph', value: { bookmark_id: '../bad', style: 'body', inlines: [{ text: 'Bad' }] } },
+        { type: 'Paragraph', value: { bookmark_id: 'bm-good', style: 'body', inlines: [{ text: 'Good' }] } }
+      ])
+    ).toEqual([
+      {
+        id: 'bm-good',
+        label: 'Good',
+        kind: 'bookmark',
+        sectionIndex: 0,
+        blockIndex: 1,
+        editorBlockIndex: 1
+      }
     ]);
   });
 

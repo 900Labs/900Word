@@ -1,5 +1,5 @@
 import { Schema, type MarkSpec, type NodeSpec } from 'prosemirror-model';
-import { sanitizeEditorHref } from './editorSecurity';
+import { sanitizeBookmarkId, sanitizeEditorHref } from './editorSecurity';
 
 const nodes: Record<string, NodeSpec> = {
   doc: {
@@ -35,7 +35,15 @@ const nodes: Record<string, NodeSpec> = {
       spacingAfter: { default: null },
       indentStart: { default: null },
       indentEnd: { default: null },
-      firstLineIndent: { default: null }
+      firstLineIndent: { default: null },
+      bookmarkId: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && (typeof value !== 'string' || !sanitizeBookmarkId(value))) {
+            throw new RangeError('unsupported paragraph bookmark');
+          }
+        }
+      }
     },
     content: 'inline*',
     group: 'block',
@@ -51,7 +59,8 @@ const nodes: Record<string, NodeSpec> = {
             spacingAfter: numberAttr(node, 'data-spacing-after'),
             indentStart: numberAttr(node, 'data-indent-start'),
             indentEnd: numberAttr(node, 'data-indent-end'),
-            firstLineIndent: numberAttr(node, 'data-first-line-indent')
+            firstLineIndent: numberAttr(node, 'data-first-line-indent'),
+            bookmarkId: sanitizeBookmarkId(node.getAttribute('data-bookmark-id') ?? node.getAttribute('id') ?? '') ?? null
           };
         }
       }
@@ -62,21 +71,29 @@ const nodes: Record<string, NodeSpec> = {
   },
   heading: {
     attrs: {
-      level: { default: 1 }
+      level: { default: 1 },
+      bookmarkId: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && (typeof value !== 'string' || !sanitizeBookmarkId(value))) {
+            throw new RangeError('unsupported heading bookmark');
+          }
+        }
+      }
     },
     content: 'inline*',
     defining: true,
     group: 'block',
     parseDOM: [
-      { tag: 'h1', attrs: { level: 1 } },
-      { tag: 'h2', attrs: { level: 2 } },
-      { tag: 'h3', attrs: { level: 3 } },
-      { tag: 'h4', attrs: { level: 4 } },
-      { tag: 'h5', attrs: { level: 5 } },
-      { tag: 'h6', attrs: { level: 6 } }
+      { tag: 'h1', getAttrs: (node) => headingAttrsFromDom(node, 1) },
+      { tag: 'h2', getAttrs: (node) => headingAttrsFromDom(node, 2) },
+      { tag: 'h3', getAttrs: (node) => headingAttrsFromDom(node, 3) },
+      { tag: 'h4', getAttrs: (node) => headingAttrsFromDom(node, 4) },
+      { tag: 'h5', getAttrs: (node) => headingAttrsFromDom(node, 5) },
+      { tag: 'h6', getAttrs: (node) => headingAttrsFromDom(node, 6) }
     ],
     toDOM(node) {
-      return [`h${node.attrs.level}`, 0];
+      return [`h${node.attrs.level}`, blockBookmarkDomAttrs(node.attrs), 0];
     }
   },
   bullet_list: {
@@ -459,6 +476,7 @@ function numberAttr(node: Element, name: string): number | null {
 
 function paragraphDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
   const domAttrs: Record<string, string> = { 'data-style': String(attrs.style || 'body') };
+  Object.assign(domAttrs, blockBookmarkDomAttrs(attrs));
   setStringAttr(domAttrs, 'data-align', attrs.align);
   setNumberAttr(domAttrs, 'data-line-spacing', attrs.lineSpacing);
   setNumberAttr(domAttrs, 'data-spacing-before', attrs.spacingBefore);
@@ -493,6 +511,21 @@ function paragraphDomAttrs(attrs: Record<string, unknown>): Record<string, strin
     domAttrs.style = css.join('; ');
   }
   return domAttrs;
+}
+
+function headingAttrsFromDom(node: Element, level: number): Record<string, string | number | null> {
+  return {
+    level,
+    bookmarkId: sanitizeBookmarkId(node.getAttribute('data-bookmark-id') ?? node.getAttribute('id') ?? '') ?? null
+  };
+}
+
+function blockBookmarkDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
+  if (typeof attrs.bookmarkId !== 'string') {
+    return {};
+  }
+  const bookmarkId = sanitizeBookmarkId(attrs.bookmarkId);
+  return bookmarkId ? { id: bookmarkId, 'data-bookmark-id': bookmarkId } : {};
 }
 
 function tableCellDomAttrs(attrs: Record<string, unknown>): Record<string, string> {

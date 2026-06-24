@@ -27,7 +27,7 @@ All external files are untrusted.
 - Rejection of XML `DOCTYPE` and entity declarations before content import.
 - Rejection of embedded image payloads outside the PNG, JPEG, GIF, and WebP magic-byte allowlist.
 - Warning-based import for unsupported ODT elements.
-- Warning-based stripping of unsafe text links and unsafe or remote image references.
+- Warning-based stripping of unsafe text links, unsafe internal link fragments, unsafe bookmark names, and unsafe or remote image references.
 
 ## Local Image Import Policy
 
@@ -43,7 +43,7 @@ HTML import must strip scripts, event handlers, unsafe CSS URLs, `javascript:`, 
 
 Sprint 007 exporters write only to user-entered paths with validated `.txt`, `.html`, or `.pdf` extensions and no traversal components. Export command results expose only the format and byte length to the frontend.
 
-HTML export is generated from `word-core`, escapes document text, strips unsafe link schemes, does not emit scripts, event handlers, iframe/object/embed content, remote images, local file references, or raw imported HTML, and includes a restrictive offline CSP meta tag. Sprint 014 allows only embedded `data:image/png`, `data:image/jpeg`, `data:image/gif`, and `data:image/webp` URLs generated from in-document asset bytes. Sprint 015 adds escaped image captions and bounded alignment/scale styles generated from document metadata. Print HTML uses the same sanitizer and adds page setup CSS for WebView print.
+HTML export is generated from `word-core`, escapes document text, strips unsafe link schemes, allows only `http`, `https`, `mailto`, and safe local `#fragment` text links, does not emit scripts, event handlers, iframe/object/embed content, remote images, local file references, or raw imported HTML, and includes a restrictive offline CSP meta tag. Sprint 014 allows only embedded `data:image/png`, `data:image/jpeg`, `data:image/gif`, and `data:image/webp` URLs generated from in-document asset bytes. Sprint 015 adds escaped image captions and bounded alignment/scale styles generated from document metadata. Sprint 016 emits only sanitized bookmark IDs as HTML `id` attributes. Print HTML uses the same sanitizer and adds page setup CSS for WebView print.
 
 PDF export is a minimal generated document for smoke testing and simple sharing. It contains no local paths, hostnames, usernames, embedded files, remote references, scripts, or macros. Non-ASCII text is degraded in the bootstrap PDF adapter until a font/layout strategy is accepted.
 

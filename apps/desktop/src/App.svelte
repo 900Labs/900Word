@@ -4,17 +4,20 @@
   import { onMount, tick } from 'svelte';
   import {
     createEditor,
+    createEditorBookmarkId,
     editorTopLevelInsertionIndex,
     findEditorTextMatches,
     replaceAllEditorText,
     replaceEditorTextRange,
     removeEditorLink,
+    removeEditorBlockBookmark,
     restoreEditorSelection,
     selectEditorTopLevelBlock,
     selectEditorTextRange,
     adjustSelectedListLevel,
     clearEditorDirectFormatting,
     setEditorBlockType,
+    setEditorBlockBookmark,
     setEditorLink,
     setEditorParagraphFormat,
     setSelectedImageAttrs,
@@ -39,6 +42,8 @@
   import {
     buildEditorSyncCommands,
     canEditProjectedDocument,
+    documentLinkTargets,
+    documentLinkTargetsFromEditableBlocks,
     documentOutline,
     documentOutlineFromEditableBlocks,
     documentProjectionWarnings,
@@ -51,6 +56,7 @@
     type DocumentCommand,
     type DocumentState,
     type EditorProjectedChange,
+    type DocumentLinkTarget,
     type DocumentOutlineEntry,
     type ListBlock,
     type PageField,
@@ -229,9 +235,11 @@
   let findPanelOpen = $state(false);
   let linkPanelOpen = $state(false);
   let linkHrefInput = $state('');
+  let selectedLinkTargetId = $state('');
   let fileMenuOpen = $state(false);
   let exportMenuOpen = $state(false);
   let navigatorHeadings = $state<DocumentOutlineEntry[]>([]);
+  let linkTargets = $state<DocumentLinkTarget[]>([]);
   let dictionaries = $state<DictionaryInfo[]>([]);
   let settings = $state<Settings>({
     telemetry_enabled: false,
@@ -287,6 +295,7 @@
     title = document.meta.title;
     plainText = documentToText(document);
     navigatorHeadings = documentOutline(document);
+    linkTargets = documentLinkTargets(document);
     editorIsEmpty = plainText.trim().length === 0;
     editorHasStarted = !editorIsEmpty;
     pageSetup = document.sections[0]?.page ?? defaultPageSetup();
@@ -319,6 +328,7 @@
   function handleEditorChange(change: EditorProjectedChange) {
     plainText = change.text;
     navigatorHeadings = documentOutlineFromEditableBlocks(change.blocks);
+    linkTargets = documentLinkTargetsFromEditableBlocks(change.blocks);
     editorHasStarted = true;
     editorIsEmpty = change.text.trim().length === 0;
     refreshFindState();
@@ -354,6 +364,7 @@
     }
     documentState = nextDocument;
     navigatorHeadings = documentOutline(nextDocument);
+    linkTargets = documentLinkTargets(nextDocument);
     projectionWarnings = collectDocumentWarnings(nextDocument);
     fileState = { ...fileState, dirty: true };
     stats = await invoke<DocumentStats>('get_document_stats');
@@ -721,6 +732,7 @@
         subscript: false
       },
       linkHref: null,
+      blockBookmarkId: null,
       list: null,
       image: null,
       selectionWordCount: 0
@@ -925,6 +937,7 @@
     restoreEditorSelection(view, lastEditorSelection);
     refreshSelectionFormatting();
     linkHrefInput = activeFormatting.linkHref ?? '';
+    selectedLinkTargetId = linkHrefInput.startsWith('#') ? linkHrefInput.slice(1) : '';
     linkPanelOpen = true;
     await tick();
     linkInput?.focus();
@@ -936,6 +949,10 @@
       status = tr('editorReadOnly');
       return;
     }
+    if (linkHrefInput.trim().startsWith('#') && !linkTargets.some((target) => `#${target.id}` === linkHrefInput.trim())) {
+      status = tr('linkInvalid');
+      return;
+    }
     const changed = setEditorLink(view, linkHrefInput, lastEditorSelection);
     if (changed) {
       linkPanelOpen = false;
@@ -944,6 +961,32 @@
     } else {
       status = tr('linkInvalid');
     }
+  }
+
+  function applyLinkTarget(targetId: string) {
+    selectedLinkTargetId = targetId;
+    linkHrefInput = targetId ? `#${targetId}` : '';
+  }
+
+  function addBookmarkToSelection() {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    const bookmarkId = activeFormatting.blockBookmarkId ?? createEditorBookmarkId();
+    const changed = setEditorBlockBookmark(view, bookmarkId, lastEditorSelection);
+    refreshSelectionFormatting();
+    status = changed ? tr('bookmarkAdded') : tr('paragraphUnchanged');
+  }
+
+  function removeBookmarkFromSelection() {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    const changed = removeEditorBlockBookmark(view, lastEditorSelection);
+    refreshSelectionFormatting();
+    status = changed ? tr('bookmarkRemoved') : tr('paragraphUnchanged');
   }
 
   function removeLinkFromSelection() {
@@ -1735,8 +1778,42 @@
       >
         {tr('unlink')}
       </button>
+      <button
+        aria-pressed={Boolean(activeFormatting.blockBookmarkId)}
+        class:active-format={Boolean(activeFormatting.blockBookmarkId)}
+        disabled={!editorEditable || !activeFormatting.blockType}
+        title={tr('bookmark')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, addBookmarkToSelection)}
+        onclick={(event) => runToolbarKeyboardCommand(event, addBookmarkToSelection)}
+      >
+        {tr('bookmark')}
+      </button>
+      <button
+        disabled={!editorEditable || !activeFormatting.blockBookmarkId}
+        title={tr('removeBookmark')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, removeBookmarkFromSelection)}
+        onclick={(event) => runToolbarKeyboardCommand(event, removeBookmarkFromSelection)}
+      >
+        {tr('removeBookmarkShort')}
+      </button>
       {#if linkPanelOpen}
         <div class="link-popover" role="dialog" aria-label={tr('linkTools')}>
+          {#if linkTargets.length > 0}
+            <select
+              aria-label={tr('linkTarget')}
+              bind:value={selectedLinkTargetId}
+              onchange={(event) => applyLinkTarget(event.currentTarget.value)}
+            >
+              <option value="">{tr('externalLink')}</option>
+              {#each linkTargets as target}
+                <option value={target.id}>
+                  {target.kind === 'heading' && target.level ? `H${target.level} ` : ''}{target.label}
+                </option>
+              {/each}
+            </select>
+          {/if}
           <input
             aria-label={tr('linkHref')}
             bind:this={linkInput}
@@ -1747,8 +1824,8 @@
                 applyLinkFromPanel();
               }
             }}
-            placeholder="https://example.invalid"
-            type="url"
+            placeholder="https://example.invalid or #bookmark"
+            type="text"
           />
           <button type="button" onpointerdown={(event) => event.preventDefault()} onclick={applyLinkFromPanel}>
             {tr('apply')}
