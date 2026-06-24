@@ -72,8 +72,28 @@ export interface EditorFormattingSnapshot {
     type: SupportedListName;
     level: number;
   } | null;
+  table: EditorTableSnapshot | null;
   image: SupportedImageAttrs | null;
   selectionWordCount: number;
+}
+
+export type SupportedTableEditAction =
+  | 'add_row_above'
+  | 'add_row_below'
+  | 'delete_row'
+  | 'add_column_left'
+  | 'add_column_right'
+  | 'delete_column'
+  | 'delete_table';
+
+export interface EditorTableSnapshot {
+  rows: number;
+  columns: number;
+  canAddRow: boolean;
+  canDeleteRow: boolean;
+  canAddColumn: boolean;
+  canDeleteColumn: boolean;
+  canDeleteTable: boolean;
 }
 
 export interface EditorSpellIssue {
@@ -97,6 +117,11 @@ interface CreateEditorOptions {
 interface SpellDecorationHolder {
   value: DecorationSet;
 }
+
+export const MIN_TABLE_ROWS = 1;
+export const MAX_TABLE_ROWS = 8;
+export const MIN_TABLE_COLUMNS = 1;
+export const MAX_TABLE_COLUMNS = 8;
 
 const spellDecorationStore = new WeakMap<EditorView, SpellDecorationHolder>();
 
@@ -204,6 +229,7 @@ export function editorStateSelectionFormatting(
   const textblock = selectedTextblock(transaction);
   const image = selectedImageAttrs(transaction, fallbackSelection);
   const list = selectedListContext(selection.$from);
+  const table = selectedTableSnapshot(transaction);
   const textStyle = compactTextStyleAttrs(
     textStyleAttrsNearSelection(transaction, supportedSchema.marks.textStyle)
   ) as SupportedTextStyleAttrs;
@@ -237,6 +263,7 @@ export function editorStateSelectionFormatting(
     linkHref: linkHrefNearSelection(transaction),
     blockBookmarkId: selectedBlockBookmarkId(transaction),
     list,
+    table,
     image,
     selectionWordCount: countSelectionWords(transaction)
   };
@@ -923,12 +950,21 @@ export function insertDefaultTable(
   view: EditorView | undefined,
   fallbackSelection?: EditorSelectionSnapshot
 ): boolean {
+  return insertTable(view, 2, 2, fallbackSelection);
+}
+
+export function insertTable(
+  view: EditorView | undefined,
+  rows: number,
+  columns: number,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
   if (!view) {
     return false;
   }
 
   restoreEditorSelection(view, fallbackSelection);
-  const transaction = insertDefaultTableTransaction(view.state, fallbackSelection);
+  const transaction = insertTableTransaction(view.state, rows, columns, fallbackSelection);
   if (!transaction) {
     return false;
   }
@@ -941,7 +977,16 @@ export function insertDefaultTableTransaction(
   state: EditorState,
   fallbackSelection?: EditorSelectionSnapshot
 ): Transaction | undefined {
-  const table = createDefaultTableNode();
+  return insertTableTransaction(state, 2, 2, fallbackSelection);
+}
+
+export function insertTableTransaction(
+  state: EditorState,
+  rows: number,
+  columns: number,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const table = createTableNode(rows, columns);
   if (!table) {
     return undefined;
   }
@@ -969,6 +1014,108 @@ export function insertDefaultTableTransaction(
     transaction = transaction.setSelection(TextSelection.create(transaction.doc, cursor));
   }
   return transaction;
+}
+
+export function editTableStructure(
+  view: EditorView | undefined,
+  action: SupportedTableEditAction,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = editTableStructureTransaction(view.state, action, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function editTableStructureTransaction(
+  state: EditorState,
+  action: SupportedTableEditAction,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const context = selectedEditableTableContext(transaction);
+  if (!context) {
+    return undefined;
+  }
+
+  if (action === 'delete_table') {
+    return deleteSelectedTable(transaction, context);
+  }
+
+  const { table, rowIndex, cellIndex } = context;
+  const rows = nodeChildren(table.node);
+  const rowCount = rows.length;
+  const columnCount = context.columns;
+
+  if (action === 'add_row_above' || action === 'add_row_below') {
+    if (rowCount >= MAX_TABLE_ROWS) {
+      return undefined;
+    }
+    const insertionIndex = action === 'add_row_above' ? rowIndex : rowIndex + 1;
+    const nextRows = [
+      ...rows.slice(0, insertionIndex),
+      createEmptyTableRow(columnCount),
+      ...rows.slice(insertionIndex)
+    ];
+    return replaceSelectedTable(transaction, context, nextRows, insertionIndex, cellIndex);
+  }
+
+  if (action === 'delete_row') {
+    if (rowCount <= MIN_TABLE_ROWS) {
+      return undefined;
+    }
+    const nextRows = rows.filter((_, index) => index !== rowIndex);
+    return replaceSelectedTable(
+      transaction,
+      context,
+      nextRows,
+      Math.min(rowIndex, nextRows.length - 1),
+      Math.min(cellIndex, columnCount - 1)
+    );
+  }
+
+  if (action === 'add_column_left' || action === 'add_column_right') {
+    if (columnCount >= MAX_TABLE_COLUMNS) {
+      return undefined;
+    }
+    const insertionIndex = action === 'add_column_left' ? cellIndex : cellIndex + 1;
+    const nextRows = rows.map((row) => {
+      const cells = nodeChildren(row);
+      return row.type.create(row.attrs, [
+        ...cells.slice(0, insertionIndex),
+        createEmptyTableCell(),
+        ...cells.slice(insertionIndex)
+      ], row.marks);
+    });
+    return replaceSelectedTable(transaction, context, nextRows, rowIndex, insertionIndex);
+  }
+
+  if (action === 'delete_column') {
+    if (columnCount <= MIN_TABLE_COLUMNS) {
+      return undefined;
+    }
+    const nextRows = rows.map((row) => {
+      const cells = nodeChildren(row).filter((_, index) => index !== cellIndex);
+      return row.type.create(row.attrs, cells, row.marks);
+    });
+    return replaceSelectedTable(
+      transaction,
+      context,
+      nextRows,
+      rowIndex,
+      Math.min(cellIndex, columnCount - 2)
+    );
+  }
+
+  return undefined;
 }
 
 export function continueListOnEnterTransaction(
@@ -1428,6 +1575,197 @@ function selectedListPositionContext($pos: ResolvedPos):
   };
 }
 
+function selectedTableSnapshot(transaction: Transaction): EditorTableSnapshot | null {
+  const context = selectedEditableTableContext(transaction);
+  if (!context) {
+    return null;
+  }
+
+  return {
+    rows: context.rows,
+    columns: context.columns,
+    canAddRow: context.rows < MAX_TABLE_ROWS,
+    canDeleteRow: context.rows > MIN_TABLE_ROWS,
+    canAddColumn: context.columns < MAX_TABLE_COLUMNS,
+    canDeleteColumn: context.columns > MIN_TABLE_COLUMNS,
+    canDeleteTable: true
+  };
+}
+
+function selectedEditableTableContext(transaction: Transaction):
+  | {
+      table: { node: ProseMirrorNode; pos: number };
+      row: { node: ProseMirrorNode; pos: number };
+      cell: { node: ProseMirrorNode; pos: number };
+      rowIndex: number;
+      cellIndex: number;
+      rows: number;
+      columns: number;
+    }
+  | undefined {
+  const fromContext = tablePositionContext(transaction.selection.$from);
+  const toContext = tablePositionContext(transaction.selection.$to);
+  if (!fromContext || !toContext || fromContext.table.pos !== toContext.table.pos) {
+    return undefined;
+  }
+  if (!editableRectangularTable(fromContext.table.node)) {
+    return undefined;
+  }
+
+  return {
+    ...fromContext,
+    rows: fromContext.table.node.childCount,
+    columns: fromContext.row.node.childCount
+  };
+}
+
+function tablePositionContext($pos: ResolvedPos):
+  | {
+      table: { node: ProseMirrorNode; pos: number };
+      row: { node: ProseMirrorNode; pos: number };
+      cell: { node: ProseMirrorNode; pos: number };
+      rowIndex: number;
+      cellIndex: number;
+    }
+  | undefined {
+  let tableDepth = -1;
+  let rowDepth = -1;
+  let cellDepth = -1;
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    const name = $pos.node(depth).type.name;
+    if (cellDepth < 0 && name === 'table_cell') {
+      cellDepth = depth;
+    } else if (rowDepth < 0 && name === 'table_row') {
+      rowDepth = depth;
+    } else if (tableDepth < 0 && name === 'table') {
+      tableDepth = depth;
+    }
+  }
+
+  if (tableDepth < 0 || rowDepth < 0 || cellDepth < 0) {
+    return undefined;
+  }
+
+  return {
+    table: { node: $pos.node(tableDepth), pos: $pos.before(tableDepth) },
+    row: { node: $pos.node(rowDepth), pos: $pos.before(rowDepth) },
+    cell: { node: $pos.node(cellDepth), pos: $pos.before(cellDepth) },
+    rowIndex: $pos.index(tableDepth),
+    cellIndex: $pos.index(rowDepth)
+  };
+}
+
+function editableRectangularTable(table: ProseMirrorNode): boolean {
+  if (table.type.name !== 'table' || table.childCount < MIN_TABLE_ROWS) {
+    return false;
+  }
+
+  const columns = table.child(0).childCount;
+  if (columns < MIN_TABLE_COLUMNS) {
+    return false;
+  }
+
+  let editable = true;
+  table.forEach((row) => {
+    if (row.type.name !== 'table_row' || row.childCount !== columns) {
+      editable = false;
+      return;
+    }
+    row.forEach((cell) => {
+      if (
+        cell.type.name !== 'table_cell' ||
+        cell.attrs.unsupported === true ||
+        cell.attrs.sourceEmpty === true
+      ) {
+        editable = false;
+      }
+    });
+  });
+  return editable;
+}
+
+function deleteSelectedTable(
+  transaction: Transaction,
+  context: NonNullable<ReturnType<typeof selectedEditableTableContext>>
+): Transaction {
+  const paragraph = supportedSchema.nodes.paragraph.create({ style: 'body' });
+  if (transaction.doc.childCount === 1) {
+    transaction = transaction.replaceWith(
+      context.table.pos,
+      context.table.pos + context.table.node.nodeSize,
+      paragraph
+    );
+    return transaction.setSelection(TextSelection.create(transaction.doc, context.table.pos + 1));
+  }
+
+  transaction = transaction.delete(context.table.pos, context.table.pos + context.table.node.nodeSize);
+  const cursor =
+    firstTextblockStartBetween(transaction.doc, context.table.pos, transaction.doc.content.size) ??
+    firstTextblockStartBetween(transaction.doc, 0, Math.min(context.table.pos, transaction.doc.content.size));
+  if (cursor !== undefined) {
+    transaction = transaction.setSelection(TextSelection.create(transaction.doc, cursor));
+  }
+  return transaction;
+}
+
+function replaceSelectedTable(
+  transaction: Transaction,
+  context: NonNullable<ReturnType<typeof selectedEditableTableContext>>,
+  rows: ProseMirrorNode[],
+  targetRowIndex: number,
+  targetCellIndex: number
+): Transaction | undefined {
+  const nextTable = context.table.node.type.create(context.table.node.attrs, rows, context.table.node.marks);
+  transaction = transaction.replaceWith(
+    context.table.pos,
+    context.table.pos + context.table.node.nodeSize,
+    nextTable
+  );
+
+  const cursor = tableCellTextblockStart(transaction.doc, context.table.pos, targetRowIndex, targetCellIndex);
+  return cursor === undefined ? undefined : transaction.setSelection(TextSelection.create(transaction.doc, cursor));
+}
+
+function tableCellTextblockStart(
+  doc: ProseMirrorNode,
+  tablePos: number,
+  rowIndex: number,
+  cellIndex: number
+): number | undefined {
+  const table = doc.nodeAt(tablePos);
+  if (!table || rowIndex < 0 || rowIndex >= table.childCount) {
+    return undefined;
+  }
+
+  let rowPos = tablePos + 1;
+  for (let index = 0; index < rowIndex; index += 1) {
+    rowPos += table.child(index).nodeSize;
+  }
+
+  const row = table.child(rowIndex);
+  if (cellIndex < 0 || cellIndex >= row.childCount) {
+    return undefined;
+  }
+
+  let cellPos = rowPos + 1;
+  for (let index = 0; index < cellIndex; index += 1) {
+    cellPos += row.child(index).nodeSize;
+  }
+
+  let found: number | undefined;
+  row.child(cellIndex).descendants((node, pos) => {
+    if (found !== undefined) {
+      return false;
+    }
+    if (node.isTextblock) {
+      found = cellPos + 1 + pos + 1;
+      return false;
+    }
+    return true;
+  });
+  return found;
+}
+
 function exitEmptyListItem(
   transaction: Transaction,
   context: NonNullable<ReturnType<typeof selectedListPositionContext>>
@@ -1492,24 +1830,40 @@ function nodeChildren(node: ProseMirrorNode): ProseMirrorNode[] {
   return children;
 }
 
-function createDefaultTableNode(): ProseMirrorNode | undefined {
+function createTableNode(rows: number, columns: number): ProseMirrorNode | undefined {
   const tableType = supportedSchema.nodes.table;
   const rowType = supportedSchema.nodes.table_row;
-  const cellType = supportedSchema.nodes.table_cell;
-  const paragraphType = supportedSchema.nodes.paragraph;
-  if (!tableType || !rowType || !cellType || !paragraphType) {
+  if (
+    !tableType ||
+    !rowType ||
+    !validTableDimension(rows, MIN_TABLE_ROWS, MAX_TABLE_ROWS) ||
+    !validTableDimension(columns, MIN_TABLE_COLUMNS, MAX_TABLE_COLUMNS)
+  ) {
     return undefined;
   }
 
-  const rows = Array.from({ length: 2 }, () =>
-    rowType.create(
-      null,
-      Array.from({ length: 2 }, () =>
-        cellType.create({ unsupported: false }, paragraphType.create({ style: 'body' }))
-      )
-    )
+  return tableType.create(
+    null,
+    Array.from({ length: rows }, () => createEmptyTableRow(columns))
   );
-  return tableType.create(null, rows);
+}
+
+function createEmptyTableRow(columns: number): ProseMirrorNode {
+  return supportedSchema.nodes.table_row.create(
+    null,
+    Array.from({ length: columns }, () => createEmptyTableCell())
+  );
+}
+
+function createEmptyTableCell(): ProseMirrorNode {
+  return supportedSchema.nodes.table_cell.create(
+    { unsupported: false, sourceEmpty: false },
+    supportedSchema.nodes.paragraph.create({ style: 'body' })
+  );
+}
+
+function validTableDimension(value: number, min: number, max: number): boolean {
+  return Number.isInteger(value) && value >= min && value <= max;
 }
 
 function isEmptyParagraphNode(node: ProseMirrorNode): boolean {
@@ -1603,6 +1957,7 @@ function emptyEditorFormattingSnapshot(): EditorFormattingSnapshot {
     linkHref: null,
     blockBookmarkId: null,
     list: null,
+    table: null,
     image: null,
     selectionWordCount: 0
   };

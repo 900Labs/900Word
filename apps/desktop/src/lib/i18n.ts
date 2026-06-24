@@ -4,6 +4,10 @@ export type UiStringKey =
   | 'about'
   | 'about900Word'
   | 'all'
+  | 'addColumnLeft'
+  | 'addColumnRight'
+  | 'addRowAbove'
+  | 'addRowBelow'
   | 'after'
   | 'alignCenter'
   | 'alignJustify'
@@ -31,9 +35,13 @@ export type UiStringKey =
   | 'clear'
   | 'clearFormatting'
   | 'close'
+  | 'columnsShort'
   | 'custom'
   | 'dateField'
   | 'decreaseIndent'
+  | 'deleteColumn'
+  | 'deleteRow'
+  | 'deleteTable'
   | 'dictionary'
   | 'differentFirstPage'
   | 'documentActions'
@@ -99,6 +107,7 @@ export type UiStringKey =
   | 'imageUpdated'
   | 'insertImage'
   | 'insertTable'
+  | 'insertTableShort'
   | 'ignoreAll'
   | 'ignoreOnce'
   | 'italic'
@@ -168,6 +177,7 @@ export type UiStringKey =
   | 'removeBookmarkShort'
   | 'removeLink'
   | 'right'
+  | 'rowsShort'
   | 'readingMinutes'
   | 'readingTime'
   | 'save'
@@ -198,7 +208,11 @@ export type UiStringKey =
   | 'subscript'
   | 'superscript'
   | 'telemetry'
+  | 'tableColumns'
+  | 'tableDeleted'
   | 'tableInserted'
+  | 'tableRows'
+  | 'tableUpdated'
   | 'tables'
   | 'templateLoaded'
   | 'templates'
@@ -235,6 +249,10 @@ const english: UiStrings = {
   about: 'About',
   about900Word: 'About 900Word',
   all: 'All',
+  addColumnLeft: 'Add column left',
+  addColumnRight: 'Add column right',
+  addRowAbove: 'Add row above',
+  addRowBelow: 'Add row below',
   after: 'After',
   alignCenter: 'Align center',
   alignJustify: 'Justify',
@@ -262,9 +280,13 @@ const english: UiStrings = {
   clear: 'Clear',
   clearFormatting: 'Clear formatting',
   close: 'Close',
+  columnsShort: 'C',
   custom: 'Custom',
   dateField: 'Date',
   decreaseIndent: 'Decrease indent',
+  deleteColumn: 'Delete column',
+  deleteRow: 'Delete row',
+  deleteTable: 'Delete table',
   dictionary: 'Dictionary',
   differentFirstPage: 'Different first page',
   documentActions: 'Document actions',
@@ -330,6 +352,7 @@ const english: UiStrings = {
   imageUpdated: 'Image updated',
   insertImage: 'Insert image',
   insertTable: 'Insert table',
+  insertTableShort: 'Insert',
   ignoreAll: 'Ignore all',
   ignoreOnce: 'Ignore once',
   italic: 'Italic',
@@ -401,6 +424,7 @@ const english: UiStrings = {
   readingMinutes: '{count} min',
   readingTime: 'Reading time',
   right: 'Right',
+  rowsShort: 'R',
   save: 'Save',
   saveAs: 'Save As...',
   saveSettings: 'Save Settings',
@@ -429,7 +453,11 @@ const english: UiStrings = {
   subscript: 'Sub',
   superscript: 'Sup',
   telemetry: 'Telemetry',
+  tableColumns: 'Table columns',
+  tableDeleted: 'Table deleted',
   tableInserted: 'Table inserted',
+  tableRows: 'Table rows',
+  tableUpdated: 'Table updated',
   tables: 'Tables',
   templateLoaded: 'Template loaded',
   templates: 'Templates',
