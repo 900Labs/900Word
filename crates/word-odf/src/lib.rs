@@ -5,15 +5,16 @@ use std::fmt::Display;
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    AssetRef, Block, Document, DocumentWarning, Heading, ImageBlock, Inline, InlineMark, ListBlock,
-    ListDefinition, ListItem, PageSetup, Paragraph, Section, Style, StyleId, StyleKind, Table,
-    TableCell, TableRow,
+    AssetRef, Block, Document, DocumentWarning, Heading, ImageBlock, Inline, InlineMark,
+    InlineStyle, ListBlock, ListDefinition, ListItem, PageSetup, Paragraph, ParagraphAlignment,
+    ParagraphFormat, Section, Style, StyleId, StyleKind, Table, TableCell, TableRow,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const ODT_MIME_TYPE: &str = "application/vnd.oasis.opendocument.text";
 const TEXT_STYLE_PREFIX: &str = "900w";
+const PARAGRAPH_STYLE_PREFIX: &str = "900wp";
 const ORDERED_LIST_STYLE: &str = "900w-ordered";
 const UNORDERED_LIST_STYLE: &str = "900w-unordered";
 const IMAGE_PARAGRAPH_STYLE: &str = "900w-image";
@@ -428,12 +429,16 @@ fn render_automatic_styles(document: &Document) -> String {
 
     for style in document.styles.values() {
         if style.kind == StyleKind::Paragraph && safe_style_name(style.id.as_str()) {
-            output.push_str(&format!(
-                "<style:style style:name=\"{}\" style:display-name=\"{}\" style:family=\"paragraph\"/>",
-                escape_xml(style.id.as_str()),
-                escape_xml(&style.name)
+            output.push_str(&render_paragraph_style(
+                style.id.as_str(),
+                Some(&style.name),
+                style.properties.paragraph.as_ref(),
             ));
         }
+    }
+
+    for (style_name, format) in collect_paragraph_direct_styles(document) {
+        output.push_str(&render_paragraph_style(&style_name, None, Some(&format)));
     }
 
     for name in collect_text_style_names(document) {
@@ -442,6 +447,55 @@ fn render_automatic_styles(document: &Document) -> String {
 
     output.push_str("</office:automatic-styles>");
     output
+}
+
+fn render_paragraph_style(
+    name: &str,
+    display_name: Option<&str>,
+    format: Option<&ParagraphFormat>,
+) -> String {
+    let display = display_name
+        .map(|value| format!(" style:display-name=\"{}\"", escape_xml(value)))
+        .unwrap_or_default();
+    let properties = format
+        .map(render_paragraph_properties)
+        .unwrap_or_else(|| "<style:paragraph-properties/>".to_string());
+    format!(
+        "<style:style style:name=\"{}\"{display} style:family=\"paragraph\">{properties}</style:style>",
+        escape_xml(name)
+    )
+}
+
+fn render_paragraph_properties(format: &ParagraphFormat) -> String {
+    let mut attrs = String::new();
+    if let Some(alignment) = format.alignment {
+        let value = match alignment {
+            ParagraphAlignment::Left => "left",
+            ParagraphAlignment::Center => "center",
+            ParagraphAlignment::Right => "right",
+            ParagraphAlignment::Justify => "justify",
+        };
+        attrs.push_str(&format!(" fo:text-align=\"{value}\""));
+    }
+    if let Some(line_spacing) = format.line_spacing_per_mille {
+        attrs.push_str(&format!(" fo:line-height=\"{}%\"", line_spacing / 10));
+    }
+    if let Some(spacing_before) = format.spacing_before_mm {
+        attrs.push_str(&format!(" fo:margin-top=\"{spacing_before}mm\""));
+    }
+    if let Some(spacing_after) = format.spacing_after_mm {
+        attrs.push_str(&format!(" fo:margin-bottom=\"{spacing_after}mm\""));
+    }
+    if let Some(indent_start) = format.indent_start_mm {
+        attrs.push_str(&format!(" fo:margin-left=\"{indent_start}mm\""));
+    }
+    if let Some(indent_end) = format.indent_end_mm {
+        attrs.push_str(&format!(" fo:margin-right=\"{indent_end}mm\""));
+    }
+    if let Some(first_line_indent) = format.first_line_indent_mm {
+        attrs.push_str(&format!(" fo:text-indent=\"{first_line_indent}mm\""));
+    }
+    format!("<style:paragraph-properties{attrs}/>")
 }
 
 fn render_page_layout_style(page: &PageSetup) -> String {
@@ -466,6 +520,7 @@ fn render_page_layout_style(page: &PageSetup) -> String {
 
 fn render_text_style(name: &str) -> String {
     let marks = marks_from_text_style(name);
+    let inline_style = inline_style_from_text_style(name);
     let mut properties = String::new();
     if marks.contains(&InlineMark::Bold) {
         properties.push_str(" fo:font-weight=\"bold\"");
@@ -486,6 +541,21 @@ fn render_text_style(name: &str) -> String {
     if marks.contains(&InlineMark::Subscript) {
         properties.push_str(" style:text-position=\"sub 58%\"");
     }
+    if let Some(font_family) = inline_style.font_family.as_deref() {
+        properties.push_str(&format!(" fo:font-family=\"{}\"", escape_xml(font_family)));
+    }
+    if let Some(font_size) = inline_style.font_size_pt {
+        properties.push_str(&format!(" fo:font-size=\"{font_size}pt\""));
+    }
+    if let Some(text_color) = inline_style.text_color.as_deref() {
+        properties.push_str(&format!(" fo:color=\"{}\"", escape_xml(text_color)));
+    }
+    if let Some(highlight_color) = inline_style.highlight_color.as_deref() {
+        properties.push_str(&format!(
+            " fo:background-color=\"{}\"",
+            escape_xml(highlight_color)
+        ));
+    }
 
     format!(
         "<style:style style:name=\"{}\" style:family=\"text\"><style:text-properties{properties}/></style:style>",
@@ -496,9 +566,14 @@ fn render_text_style(name: &str) -> String {
 fn render_block(block: &Block, document: &Document, output: &mut String) -> Result<(), OdtError> {
     match block {
         Block::Paragraph(paragraph) => {
+            let style_name = if paragraph.format.is_default() {
+                paragraph.style.as_str().to_string()
+            } else {
+                paragraph_style_name(paragraph.style.as_str(), &paragraph.format)
+            };
             output.push_str(&format!(
                 "<text:p text:style-name=\"{}\">",
-                escape_xml(paragraph.style.as_str())
+                escape_xml(&style_name)
             ));
             render_inlines(&paragraph.inlines, output);
             output.push_str("</text:p>");
@@ -538,7 +613,10 @@ fn render_list(list: &ListBlock, document: &Document, output: &mut String) -> Re
         escape_xml(style_name)
     ));
     for item in &list.items {
-        output.push_str("<text:list-item>");
+        output.push_str(&format!(
+            "<text:list-item text:level=\"{}\">",
+            item.level.clamp(1, 8)
+        ));
         for block in &item.blocks {
             render_block(block, document, output)?;
         }
@@ -593,7 +671,7 @@ fn render_image(
 fn render_inlines(inlines: &[Inline], output: &mut String) {
     for inline in inlines {
         let mut rendered = escape_xml(&inline.text);
-        if let Some(style_name) = text_style_name(&inline.marks) {
+        if let Some(style_name) = text_style_name(&inline.marks, &inline.style) {
             rendered = format!(
                 "<text:span text:style-name=\"{}\">{rendered}</text:span>",
                 escape_xml(&style_name)
@@ -729,6 +807,45 @@ fn collect_text_style_names(document: &Document) -> BTreeSet<String> {
     styles
 }
 
+fn collect_paragraph_direct_styles(document: &Document) -> BTreeMap<String, ParagraphFormat> {
+    let mut styles = BTreeMap::new();
+    for section in &document.sections {
+        collect_paragraph_styles_from_blocks(&section.blocks, &mut styles);
+    }
+    styles
+}
+
+fn collect_paragraph_styles_from_blocks(
+    blocks: &[Block],
+    styles: &mut BTreeMap<String, ParagraphFormat>,
+) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                if !paragraph.format.is_default() {
+                    styles.insert(
+                        paragraph_style_name(paragraph.style.as_str(), &paragraph.format),
+                        paragraph.format.clone(),
+                    );
+                }
+            }
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_paragraph_styles_from_blocks(&item.blocks, styles);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_paragraph_styles_from_blocks(&cell.blocks, styles);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn collect_text_styles_from_blocks(blocks: &[Block], styles: &mut BTreeSet<String>) {
     for block in blocks {
         match block {
@@ -755,7 +872,7 @@ fn collect_text_styles_from_blocks(blocks: &[Block], styles: &mut BTreeSet<Strin
 
 fn collect_text_styles_from_inlines(inlines: &[Inline], styles: &mut BTreeSet<String>) {
     for inline in inlines {
-        if let Some(style_name) = text_style_name(&inline.marks) {
+        if let Some(style_name) = text_style_name(&inline.marks, &inline.style) {
             styles.insert(style_name);
         }
     }
@@ -839,7 +956,7 @@ impl<'a> ParseState<'a> {
             styles: Document::new_untitled().styles,
             assets: BTreeMap::new(),
             asset_payloads,
-            lists: BTreeMap::new(),
+            lists: Document::new_untitled().lists,
             page: PageSetup::default(),
             warnings: Vec::new(),
             unsupported_elements: BTreeSet::new(),
@@ -861,9 +978,16 @@ impl<'a> ParseState<'a> {
             b"span" => self.start_span(start)?,
             b"a" => self.start_link(start)?,
             b"list" => self.start_list(start)?,
-            b"list-item" => self
-                .contexts
-                .push(ParseContext::ListItem { blocks: Vec::new() }),
+            b"list-item" => {
+                let level = attr_value(start, b"level")?
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .unwrap_or(1)
+                    .clamp(1, 8);
+                self.contexts.push(ParseContext::ListItem {
+                    level,
+                    blocks: Vec::new(),
+                });
+            }
             b"table" => self.contexts.push(ParseContext::Table { rows: Vec::new() }),
             b"table-row" => self
                 .contexts
@@ -875,6 +999,7 @@ impl<'a> ParseState<'a> {
             b"page-layout" => {}
             b"page-layout-properties" => self.read_page_layout_properties(start)?,
             b"text-properties"
+            | b"paragraph-properties"
             | b"list-style"
             | b"list-level-style-bullet"
             | b"list-level-style-number" => {}
@@ -930,6 +1055,7 @@ impl<'a> ParseState<'a> {
             | b"body"
             | b"text"
             | b"text-properties"
+            | b"paragraph-properties"
             | b"list-style"
             | b"list-level-style-bullet"
             | b"list-level-style-number" => {}
@@ -950,6 +1076,7 @@ impl<'a> ParseState<'a> {
                 if let Some(active) = self.active_text.as_mut() {
                     active.flush();
                     active.mark_stack.pop();
+                    active.style_stack.pop();
                 }
             }
             b"a" => {
@@ -999,6 +1126,8 @@ impl<'a> ParseState<'a> {
                 id: StyleId::from(style_name.as_str()),
                 name: display_name,
                 kind: StyleKind::Paragraph,
+                parent: None,
+                properties: Default::default(),
             },
         );
         Ok(())
@@ -1056,7 +1185,8 @@ impl<'a> ParseState<'a> {
             return Ok(());
         }
         let style = attr_value(start, b"style-name")?.unwrap_or_else(|| "body".to_string());
-        self.active_text = Some(ActiveText::paragraph(StyleId::from(style.as_str())));
+        let (style, format) = paragraph_style_from_name(&style);
+        self.active_text = Some(ActiveText::paragraph(StyleId::from(style.as_str()), format));
         Ok(())
     }
 
@@ -1076,10 +1206,17 @@ impl<'a> ParseState<'a> {
     fn start_span(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
         if let Some(active) = self.active_text.as_mut() {
             active.flush();
-            let marks = attr_value(start, b"style-name")?
-                .map(|value| marks_from_text_style(&value))
+            let style_name = attr_value(start, b"style-name")?;
+            let marks = style_name
+                .as_deref()
+                .map(marks_from_text_style)
+                .unwrap_or_default();
+            let inline_style = style_name
+                .as_deref()
+                .map(inline_style_from_text_style)
                 .unwrap_or_default();
             active.mark_stack.push(marks);
+            active.style_stack.push(inline_style);
         }
         Ok(())
     }
@@ -1154,7 +1291,7 @@ impl<'a> ParseState<'a> {
         let embedded = std::mem::take(&mut active.embedded_blocks);
         let is_image_paragraph = matches!(
             &active.kind,
-            ActiveTextKind::Paragraph { style } if style.as_str() == IMAGE_PARAGRAPH_STYLE
+            ActiveTextKind::Paragraph { style, .. } if style.as_str() == IMAGE_PARAGRAPH_STYLE
         );
         if is_image_paragraph {
             active
@@ -1170,8 +1307,9 @@ impl<'a> ParseState<'a> {
         }
 
         let block = match active.kind {
-            ActiveTextKind::Paragraph { style } => Block::Paragraph(Paragraph {
+            ActiveTextKind::Paragraph { style, format } => Block::Paragraph(Paragraph {
                 style,
+                format,
                 inlines: active.inlines,
             }),
             ActiveTextKind::Heading { level } => Block::Heading(Heading {
@@ -1186,12 +1324,12 @@ impl<'a> ParseState<'a> {
     }
 
     fn finish_list_item(&mut self) {
-        let Some(ParseContext::ListItem { blocks }) = self.contexts.pop() else {
+        let Some(ParseContext::ListItem { level, blocks }) = self.contexts.pop() else {
             self.warn("odt_misnested_list_item", "Misnested list item was ignored");
             return;
         };
         match self.contexts.last_mut() {
-            Some(ParseContext::List { items, .. }) => items.push(ListItem { level: 1, blocks }),
+            Some(ParseContext::List { items, .. }) => items.push(ListItem { level, blocks }),
             _ => self.warn(
                 "odt_misnested_list_item",
                 "List item outside a list was ignored",
@@ -1316,9 +1454,8 @@ impl<'a> ParseState<'a> {
 
     fn push_block(&mut self, block: Block) {
         match self.contexts.last_mut() {
-            Some(ParseContext::ListItem { blocks }) | Some(ParseContext::TableCell { blocks }) => {
-                blocks.push(block)
-            }
+            Some(ParseContext::ListItem { blocks, .. })
+            | Some(ParseContext::TableCell { blocks }) => blocks.push(block),
             Some(_) => self.warn(
                 "odt_unsupported_structure",
                 "Block appeared in an unsupported ODT container and was ignored",
@@ -1367,6 +1504,7 @@ enum ParseContext {
         items: Vec<ListItem>,
     },
     ListItem {
+        level: u8,
         blocks: Vec<Block>,
     },
     Table {
@@ -1389,8 +1527,13 @@ struct ImageFrame {
 
 #[derive(Debug)]
 enum ActiveTextKind {
-    Paragraph { style: StyleId },
-    Heading { level: u8 },
+    Paragraph {
+        style: StyleId,
+        format: ParagraphFormat,
+    },
+    Heading {
+        level: u8,
+    },
 }
 
 #[derive(Debug)]
@@ -1399,17 +1542,19 @@ struct ActiveText {
     text: String,
     inlines: Vec<Inline>,
     mark_stack: Vec<Vec<InlineMark>>,
+    style_stack: Vec<InlineStyle>,
     link_stack: Vec<Option<String>>,
     embedded_blocks: Vec<Block>,
 }
 
 impl ActiveText {
-    fn paragraph(style: StyleId) -> Self {
+    fn paragraph(style: StyleId, format: ParagraphFormat) -> Self {
         Self {
-            kind: ActiveTextKind::Paragraph { style },
+            kind: ActiveTextKind::Paragraph { style, format },
             text: String::new(),
             inlines: Vec::new(),
             mark_stack: Vec::new(),
+            style_stack: Vec::new(),
             link_stack: Vec::new(),
             embedded_blocks: Vec::new(),
         }
@@ -1421,6 +1566,7 @@ impl ActiveText {
             text: String::new(),
             inlines: Vec::new(),
             mark_stack: Vec::new(),
+            style_stack: Vec::new(),
             link_stack: Vec::new(),
             embedded_blocks: Vec::new(),
         }
@@ -1435,6 +1581,7 @@ impl ActiveText {
             text,
             marks: self.active_marks(),
             link: self.active_link(),
+            style: self.active_style(),
         });
     }
 
@@ -1450,6 +1597,25 @@ impl ActiveText {
 
     fn active_link(&self) -> Option<String> {
         self.link_stack.iter().rev().find_map(|href| href.clone())
+    }
+
+    fn active_style(&self) -> InlineStyle {
+        let mut style = InlineStyle::default();
+        for candidate in &self.style_stack {
+            if candidate.font_family.is_some() {
+                style.font_family = candidate.font_family.clone();
+            }
+            if candidate.font_size_pt.is_some() {
+                style.font_size_pt = candidate.font_size_pt;
+            }
+            if candidate.text_color.is_some() {
+                style.text_color = candidate.text_color.clone();
+            }
+            if candidate.highlight_color.is_some() {
+                style.highlight_color = candidate.highlight_color.clone();
+            }
+        }
+        style
     }
 }
 
@@ -1512,21 +1678,108 @@ fn local_name(name: &[u8]) -> &[u8] {
     name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
 
-fn text_style_name(marks: &[InlineMark]) -> Option<String> {
-    if marks.is_empty() {
+fn paragraph_style_name(base_style: &str, format: &ParagraphFormat) -> String {
+    let mut tokens = vec![format!("base-{}", encode_style_token(base_style))];
+    if let Some(alignment) = format.alignment {
+        tokens.push(format!(
+            "a-{}",
+            match alignment {
+                ParagraphAlignment::Left => "left",
+                ParagraphAlignment::Center => "center",
+                ParagraphAlignment::Right => "right",
+                ParagraphAlignment::Justify => "justify",
+            }
+        ));
+    }
+    if let Some(value) = format.line_spacing_per_mille {
+        tokens.push(format!("ls-{value}"));
+    }
+    if let Some(value) = format.spacing_before_mm {
+        tokens.push(format!("sb-{value}"));
+    }
+    if let Some(value) = format.spacing_after_mm {
+        tokens.push(format!("sa-{value}"));
+    }
+    if let Some(value) = format.indent_start_mm {
+        tokens.push(format!("is-{value}"));
+    }
+    if let Some(value) = format.indent_end_mm {
+        tokens.push(format!("ie-{value}"));
+    }
+    if let Some(value) = format.first_line_indent_mm {
+        tokens.push(format!("fi-{}", encode_signed_number(value)));
+    }
+    format!("{PARAGRAPH_STYLE_PREFIX}-{}", tokens.join("-"))
+}
+
+fn paragraph_style_from_name(style_name: &str) -> (String, ParagraphFormat) {
+    let Some(tokens) = style_name.strip_prefix(&format!("{PARAGRAPH_STYLE_PREFIX}-")) else {
+        return (style_name.to_string(), ParagraphFormat::default());
+    };
+
+    let mut base_style = "body".to_string();
+    let mut format = ParagraphFormat::default();
+    let parts: Vec<&str> = tokens.split('-').collect();
+    let mut index = 0;
+    while index + 1 < parts.len() {
+        match parts[index] {
+            "base" => base_style = decode_style_token(parts[index + 1]),
+            "a" => {
+                format.alignment = match parts[index + 1] {
+                    "left" => Some(ParagraphAlignment::Left),
+                    "center" => Some(ParagraphAlignment::Center),
+                    "right" => Some(ParagraphAlignment::Right),
+                    "justify" => Some(ParagraphAlignment::Justify),
+                    _ => None,
+                };
+            }
+            "ls" => format.line_spacing_per_mille = parts[index + 1].parse().ok(),
+            "sb" => format.spacing_before_mm = parts[index + 1].parse().ok(),
+            "sa" => format.spacing_after_mm = parts[index + 1].parse().ok(),
+            "is" => format.indent_start_mm = parts[index + 1].parse().ok(),
+            "ie" => format.indent_end_mm = parts[index + 1].parse().ok(),
+            "fi" => format.first_line_indent_mm = decode_signed_number(parts[index + 1]),
+            _ => {}
+        }
+        index += 2;
+    }
+    (base_style, format)
+}
+
+fn text_style_name(marks: &[InlineMark], inline_style: &InlineStyle) -> Option<String> {
+    if marks.is_empty() && inline_style.is_default() {
         return None;
     }
     let orders: BTreeSet<u8> = marks.iter().copied().map(mark_order).collect();
     let mut tokens = Vec::new();
     for order in orders.iter() {
-        tokens.push(match mark_from_order(*order) {
-            InlineMark::Bold => "b",
-            InlineMark::Italic => "i",
-            InlineMark::Underline => "u",
-            InlineMark::Strikethrough => "strike",
-            InlineMark::Superscript => "super",
-            InlineMark::Subscript => "sub",
-        });
+        tokens.push(
+            match mark_from_order(*order) {
+                InlineMark::Bold => "b",
+                InlineMark::Italic => "i",
+                InlineMark::Underline => "u",
+                InlineMark::Strikethrough => "strike",
+                InlineMark::Superscript => "super",
+                InlineMark::Subscript => "sub",
+            }
+            .to_string(),
+        );
+    }
+    if let Some(value) = inline_style.font_family.as_deref() {
+        tokens.push(format!("ff-{}", encode_style_token(value)));
+    }
+    if let Some(value) = inline_style.font_size_pt {
+        tokens.push(format!("fs-{value}"));
+    }
+    if let Some(value) = inline_style.text_color.as_deref().and_then(color_token) {
+        tokens.push(format!("tc-{value}"));
+    }
+    if let Some(value) = inline_style
+        .highlight_color
+        .as_deref()
+        .and_then(color_token)
+    {
+        tokens.push(format!("hc-{value}"));
     }
     Some(format!("{TEXT_STYLE_PREFIX}-{}", tokens.join("-")))
 }
@@ -1552,6 +1805,63 @@ fn marks_from_text_style(style_name: &str) -> Vec<InlineMark> {
         }
     }
     marks.into_iter().map(mark_from_order).collect()
+}
+
+fn inline_style_from_text_style(style_name: &str) -> InlineStyle {
+    let Some(tokens) = style_name.strip_prefix(&format!("{TEXT_STYLE_PREFIX}-")) else {
+        return InlineStyle::default();
+    };
+
+    let mut style = InlineStyle::default();
+    let parts: Vec<&str> = tokens.split('-').collect();
+    let mut index = 0;
+    while index + 1 < parts.len() {
+        match parts[index] {
+            "ff" => style.font_family = Some(decode_style_token(parts[index + 1])),
+            "fs" => style.font_size_pt = parts[index + 1].parse().ok(),
+            "tc" => style.text_color = Some(format!("#{}", parts[index + 1])),
+            "hc" => style.highlight_color = Some(format!("#{}", parts[index + 1])),
+            _ => {}
+        }
+        index += 1;
+    }
+    style
+}
+
+fn encode_style_token(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
+
+fn decode_style_token(value: &str) -> String {
+    value.replace('_', "-")
+}
+
+fn color_token(value: &str) -> Option<String> {
+    let stripped = value.strip_prefix('#')?;
+    if stripped.len() == 6 && stripped.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(stripped.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn encode_signed_number(value: i16) -> String {
+    if value < 0 {
+        format!("n{}", value.abs())
+    } else {
+        value.to_string()
+    }
+}
+
+fn decode_signed_number(value: &str) -> Option<i16> {
+    if let Some(rest) = value.strip_prefix('n') {
+        rest.parse::<i16>().ok().map(|number| -number)
+    } else {
+        value.parse::<i16>().ok()
+    }
 }
 
 fn mark_order(mark: InlineMark) -> u8 {
@@ -1642,7 +1952,7 @@ mod tests {
         let parsed = read_odt_bytes(&bytes).expect("read should succeed");
 
         assert_eq!(parsed.meta.title, "ODT MVP Sample");
-        assert!(parsed.warnings.is_empty());
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
         assert_eq!(parsed.sections[0].blocks.len(), 5);
         assert_eq!(
             parsed
@@ -1848,11 +2158,13 @@ mod tests {
         document.sections[0].blocks = vec![
             Block::Paragraph(Paragraph {
                 style: StyleId::from("body"),
+                format: Default::default(),
                 inlines: vec![Inline::text("Before")],
             }),
             Block::PageBreak,
             Block::Paragraph(Paragraph {
                 style: StyleId::from("body"),
+                format: Default::default(),
                 inlines: vec![Inline::text("After")],
             }),
         ];
@@ -1879,6 +2191,118 @@ mod tests {
         let parsed = read_odt_bytes(&bytes).expect("read should succeed");
 
         assert_eq!(parsed.sections[0].page, document.sections[0].page);
+    }
+
+    #[test]
+    fn authoring_formatting_round_trips_through_generated_odt_styles() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                style: StyleId::from("quote"),
+                format: ParagraphFormat {
+                    alignment: Some(ParagraphAlignment::Justify),
+                    line_spacing_per_mille: Some(1500),
+                    spacing_before_mm: Some(2),
+                    spacing_after_mm: Some(5),
+                    indent_start_mm: Some(8),
+                    indent_end_mm: None,
+                    first_line_indent_mm: Some(-4),
+                },
+                inlines: vec![Inline {
+                    text: "Formatted text".to_string(),
+                    marks: vec![InlineMark::Bold],
+                    link: None,
+                    style: InlineStyle {
+                        font_family: Some("serif".to_string()),
+                        font_size_pt: Some(14),
+                        text_color: Some("#1f2937".to_string()),
+                        highlight_color: Some("#fff3bf".to_string()),
+                    },
+                }],
+            }),
+            Block::List(ListBlock {
+                definition_id: "900w-ordered".to_string(),
+                items: vec![ListItem {
+                    level: 3,
+                    blocks: vec![Block::Paragraph(Paragraph {
+                        style: StyleId::from("body"),
+                        format: Default::default(),
+                        inlines: vec![Inline::text("Nested item")],
+                    })],
+                }],
+            }),
+        ];
+
+        let parsed =
+            read_odt_bytes(&write_odt_bytes(&document).expect("write should succeed")).unwrap();
+
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a paragraph");
+        };
+        assert_eq!(paragraph.style.as_str(), "quote");
+        assert_eq!(
+            paragraph.format.alignment,
+            Some(ParagraphAlignment::Justify)
+        );
+        assert_eq!(paragraph.format.line_spacing_per_mille, Some(1500));
+        assert_eq!(paragraph.format.first_line_indent_mm, Some(-4));
+        assert_eq!(paragraph.inlines[0].marks, vec![InlineMark::Bold]);
+        assert_eq!(
+            paragraph.inlines[0].style.font_family.as_deref(),
+            Some("serif")
+        );
+        assert_eq!(paragraph.inlines[0].style.font_size_pt, Some(14));
+        assert_eq!(
+            paragraph.inlines[0].style.text_color.as_deref(),
+            Some("#1f2937")
+        );
+        assert_eq!(
+            paragraph.inlines[0].style.highlight_color.as_deref(),
+            Some("#fff3bf")
+        );
+
+        let Block::List(list) = &parsed.sections[0].blocks[1] else {
+            panic!("second block should be a list");
+        };
+        assert_eq!(list.items[0].level, 3);
+    }
+
+    #[test]
+    fn parsed_documents_keep_default_list_definitions_for_new_lists() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              office:version="1.3">
+              <office:body><office:text><text:p>Imported body</text:p></office:text></office:body>
+            </office:document-content>"#;
+        let mut document =
+            read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+        document.sections[0].blocks.push(Block::List(ListBlock {
+            definition_id: "900w-ordered".to_string(),
+            items: vec![ListItem {
+                level: 1,
+                blocks: vec![Block::Paragraph(Paragraph {
+                    style: StyleId::from("body"),
+                    format: Default::default(),
+                    inlines: vec![Inline::text("Numbered")],
+                })],
+            }],
+        }));
+
+        let parsed =
+            read_odt_bytes(&write_odt_bytes(&document).expect("rewrite should succeed")).unwrap();
+
+        let Block::List(list) = parsed.sections[0].blocks.last().expect("list should exist") else {
+            panic!("last block should be a list");
+        };
+        assert_eq!(
+            parsed
+                .lists
+                .get(&list.definition_id)
+                .map(|definition| definition.ordered),
+            Some(true)
+        );
     }
 
     #[test]
@@ -1915,6 +2339,8 @@ mod tests {
                 id: StyleId::from("caption"),
                 name: "Caption".to_string(),
                 kind: StyleKind::Paragraph,
+                parent: None,
+                properties: Default::default(),
             })
             .expect("style should register");
         document.assets.insert(
@@ -1941,16 +2367,19 @@ mod tests {
             }),
             Block::Paragraph(Paragraph {
                 style: StyleId::from("caption"),
+                format: Default::default(),
                 inlines: vec![
                     Inline {
                         text: "Bold العربية 中文 ".to_string(),
                         marks: vec![InlineMark::Bold],
                         link: None,
+                        style: Default::default(),
                     },
                     Inline {
                         text: "linked text".to_string(),
                         marks: vec![InlineMark::Italic, InlineMark::Underline],
                         link: Some("https://example.invalid/reference".to_string()),
+                        style: Default::default(),
                     },
                 ],
             }),
@@ -1961,6 +2390,7 @@ mod tests {
                         level: 1,
                         blocks: vec![Block::Paragraph(Paragraph {
                             style: StyleId::from("body"),
+                            format: Default::default(),
                             inlines: vec![Inline::text("First item")],
                         })],
                     },
@@ -1968,6 +2398,7 @@ mod tests {
                         level: 1,
                         blocks: vec![Block::Paragraph(Paragraph {
                             style: StyleId::from("body"),
+                            format: Default::default(),
                             inlines: vec![Inline::text("Second item")],
                         })],
                     },
@@ -1980,12 +2411,14 @@ mod tests {
                             TableCell {
                                 blocks: vec![Block::Paragraph(Paragraph {
                                     style: StyleId::from("body"),
+                                    format: Default::default(),
                                     inlines: vec![Inline::text("A1")],
                                 })],
                             },
                             TableCell {
                                 blocks: vec![Block::Paragraph(Paragraph {
                                     style: StyleId::from("body"),
+                                    format: Default::default(),
                                     inlines: vec![Inline::text("B1")],
                                 })],
                             },
@@ -1995,6 +2428,7 @@ mod tests {
                         cells: vec![TableCell {
                             blocks: vec![Block::Paragraph(Paragraph {
                                 style: StyleId::from("body"),
+                                format: Default::default(),
                                 inlines: vec![Inline::text("A2")],
                             })],
                         }],

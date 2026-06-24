@@ -151,7 +151,9 @@ fn push_heading_text(heading: &Heading, output: &mut String) {
 fn push_block_html(block: &Block, lists: &BTreeMap<String, ListDefinition>, output: &mut String) {
     match block {
         Block::Paragraph(paragraph) => {
-            output.push_str("<p>");
+            output.push_str("<p");
+            output.push_str(&paragraph_html_attrs(paragraph));
+            output.push('>');
             push_inlines_html(&paragraph.inlines, output);
             output.push_str("</p>");
         }
@@ -229,6 +231,32 @@ fn push_inline_html(inline: &Inline, output: &mut String) {
         output.push_str("\">");
     }
 
+    let styled_span = !inline.style.is_default();
+    if styled_span {
+        output.push_str("<span style=\"");
+        if let Some(font_family) = inline.style.font_family.as_deref() {
+            output.push_str("font-family:");
+            output.push_str(&escape_html(font_family));
+            output.push(';');
+        }
+        if let Some(font_size) = inline.style.font_size_pt {
+            output.push_str("font-size:");
+            output.push_str(&font_size.to_string());
+            output.push_str("pt;");
+        }
+        if let Some(text_color) = inline.style.text_color.as_deref() {
+            output.push_str("color:");
+            output.push_str(&escape_html(text_color));
+            output.push(';');
+        }
+        if let Some(highlight_color) = inline.style.highlight_color.as_deref() {
+            output.push_str("background-color:");
+            output.push_str(&escape_html(highlight_color));
+            output.push(';');
+        }
+        output.push_str("\">");
+    }
+
     let mut opened_marks = Vec::new();
     for mark in &inline.marks {
         let tag = mark_html_tag(*mark);
@@ -246,9 +274,72 @@ fn push_inline_html(inline: &Inline, output: &mut String) {
         output.push('>');
     }
 
+    if styled_span {
+        output.push_str("</span>");
+    }
+
     if safe_href.is_some() {
         output.push_str("</a>");
     }
+}
+
+fn paragraph_html_attrs(paragraph: &Paragraph) -> String {
+    let mut attrs = String::new();
+    attrs.push_str(" data-style=\"");
+    attrs.push_str(&escape_html(paragraph.style.as_str()));
+    attrs.push('"');
+    if paragraph.format.is_default() {
+        return attrs;
+    }
+
+    let mut style = String::new();
+    if let Some(alignment) = paragraph.format.alignment {
+        let value = match alignment {
+            word_core::ParagraphAlignment::Left => "left",
+            word_core::ParagraphAlignment::Center => "center",
+            word_core::ParagraphAlignment::Right => "right",
+            word_core::ParagraphAlignment::Justify => "justify",
+        };
+        style.push_str("text-align:");
+        style.push_str(value);
+        style.push(';');
+    }
+    if let Some(line_spacing) = paragraph.format.line_spacing_per_mille {
+        style.push_str("line-height:");
+        style.push_str(&(line_spacing as f32 / 1000.0).to_string());
+        style.push(';');
+    }
+    if let Some(spacing_before) = paragraph.format.spacing_before_mm {
+        style.push_str("margin-top:");
+        style.push_str(&spacing_before.to_string());
+        style.push_str("mm;");
+    }
+    if let Some(spacing_after) = paragraph.format.spacing_after_mm {
+        style.push_str("margin-bottom:");
+        style.push_str(&spacing_after.to_string());
+        style.push_str("mm;");
+    }
+    if let Some(indent_start) = paragraph.format.indent_start_mm {
+        style.push_str("margin-left:");
+        style.push_str(&indent_start.to_string());
+        style.push_str("mm;");
+    }
+    if let Some(indent_end) = paragraph.format.indent_end_mm {
+        style.push_str("margin-right:");
+        style.push_str(&indent_end.to_string());
+        style.push_str("mm;");
+    }
+    if let Some(first_line_indent) = paragraph.format.first_line_indent_mm {
+        style.push_str("text-indent:");
+        style.push_str(&first_line_indent.to_string());
+        style.push_str("mm;");
+    }
+    if !style.is_empty() {
+        attrs.push_str(" style=\"");
+        attrs.push_str(&escape_html(&style));
+        attrs.push('"');
+    }
+    attrs
 }
 
 fn mark_html_tag(mark: InlineMark) -> &'static str {
@@ -421,6 +512,7 @@ mod tests {
                     level: 0,
                     blocks: vec![Block::Paragraph(Paragraph {
                         style: "body".into(),
+                        format: Default::default(),
                         inlines: vec![Inline::text("List item")],
                     })],
                 }],
@@ -430,6 +522,7 @@ mod tests {
                     cells: vec![TableCell {
                         blocks: vec![Block::Paragraph(Paragraph {
                             style: "body".into(),
+                            format: Default::default(),
                             inlines: vec![Inline::text("Cell text")],
                         })],
                     }],
@@ -460,10 +553,12 @@ mod tests {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
             style: "body".into(),
+            format: Default::default(),
             inlines: vec![Inline {
                 text: "unsafe".to_string(),
                 marks: vec![InlineMark::Bold],
                 link: Some("javascript:alert(1)".to_string()),
+                style: Default::default(),
             }],
         })];
 
@@ -472,6 +567,42 @@ mod tests {
         assert!(html.contains("<strong>unsafe</strong>"));
         assert!(!html.contains("javascript:"));
         assert!(!html.contains("<script"));
+    }
+
+    #[test]
+    fn html_export_preserves_authoring_direct_formatting() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            style: "quote".into(),
+            format: word_core::ParagraphFormat {
+                alignment: Some(word_core::ParagraphAlignment::Center),
+                line_spacing_per_mille: Some(1500),
+                spacing_before_mm: None,
+                spacing_after_mm: Some(4),
+                indent_start_mm: None,
+                indent_end_mm: None,
+                first_line_indent_mm: None,
+            },
+            inlines: vec![Inline {
+                text: "Styled".to_string(),
+                marks: vec![],
+                link: None,
+                style: word_core::InlineStyle {
+                    font_family: Some("serif".to_string()),
+                    font_size_pt: Some(14),
+                    text_color: Some("#1f2937".to_string()),
+                    highlight_color: Some("#fff3bf".to_string()),
+                },
+            }],
+        })];
+
+        let html = export_html(&document).expect("html export should succeed");
+
+        assert!(html.contains("data-style=\"quote\""));
+        assert!(html.contains("text-align:center"));
+        assert!(html.contains("line-height:1.5"));
+        assert!(html.contains("font-family:serif"));
+        assert!(html.contains("background-color:#fff3bf"));
     }
 
     #[test]
@@ -490,6 +621,7 @@ mod tests {
                 level: 0,
                 blocks: vec![Block::Paragraph(Paragraph {
                     style: "body".into(),
+                    format: Default::default(),
                     inlines: vec![Inline::text("First")],
                 })],
             }],
@@ -497,7 +629,7 @@ mod tests {
 
         let html = export_html(&document).expect("html export should succeed");
 
-        assert!(html.contains("<ol><li><p>First</p></li></ol>"));
+        assert!(html.contains("<ol><li><p data-style=\"body\">First</p></li></ol>"));
     }
 
     #[test]

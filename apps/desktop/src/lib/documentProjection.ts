@@ -4,12 +4,31 @@ export interface Inline {
   text: string;
   marks?: string[];
   link?: string | null;
+  style?: InlineStyle;
+}
+
+export interface InlineStyle {
+  font_family?: string | null;
+  font_size_pt?: number | null;
+  text_color?: string | null;
+  highlight_color?: string | null;
+}
+
+export interface ParagraphFormat {
+  alignment?: 'left' | 'center' | 'right' | 'justify' | null;
+  line_spacing_per_mille?: number | null;
+  spacing_before_mm?: number | null;
+  spacing_after_mm?: number | null;
+  indent_start_mm?: number | null;
+  indent_end_mm?: number | null;
+  first_line_indent_mm?: number | null;
 }
 
 export interface ParagraphBlock {
   type: 'Paragraph';
   value: {
     style?: string;
+    format?: ParagraphFormat;
     inlines: Inline[];
   };
 }
@@ -22,7 +41,26 @@ export interface HeadingBlock {
   };
 }
 
-export type Block = ParagraphBlock | HeadingBlock | { type: string; value?: unknown };
+export interface ListDefinition {
+  ordered: boolean;
+  marker?: string | null;
+}
+
+export interface ListItem {
+  level: number;
+  blocks: Array<ParagraphBlock | HeadingBlock>;
+}
+
+export interface ListBlock {
+  type: 'List';
+  value: {
+    definition_id: string;
+    items: ListItem[];
+  };
+}
+
+export type EditableBlock = ParagraphBlock | HeadingBlock | ListBlock;
+export type Block = EditableBlock | { type: string; value?: unknown };
 
 export interface PageSetup {
   width_mm: number;
@@ -37,6 +75,7 @@ export interface DocumentState {
   meta: {
     title: string;
   };
+  lists?: Record<string, ListDefinition>;
   sections: Array<{
     blocks: Block[];
     page?: PageSetup;
@@ -50,17 +89,51 @@ export interface DocumentState {
 export interface EditorTextNode {
   type: 'text';
   text: string;
-  marks?: Array<{ type: string; attrs?: Record<string, string> }>;
+  marks?: Array<{ type: string; attrs?: Record<string, string | number | null> }>;
 }
 
-export interface EditorBlockNode {
-  type: 'paragraph' | 'heading';
+export interface EditorParagraphNode {
+  type: 'paragraph';
+  attrs?: EditorParagraphAttrs;
+  content?: EditorTextNode[];
+}
+
+export interface EditorHeadingNode {
+  type: 'heading';
   attrs?: {
     level?: number;
-    style?: string;
   };
   content?: EditorTextNode[];
 }
+
+export interface EditorListItemNode {
+  type: 'list_item';
+  attrs?: {
+    level?: number;
+  };
+  content?: Array<EditorParagraphNode | EditorHeadingNode>;
+}
+
+export interface EditorListNode {
+  type: 'bullet_list' | 'ordered_list';
+  attrs?: {
+    definitionId?: string;
+  };
+  content: EditorListItemNode[];
+}
+
+export interface EditorParagraphAttrs {
+  style?: string;
+  align?: 'left' | 'center' | 'right' | 'justify' | null;
+  lineSpacing?: number | null;
+  spacingBefore?: number | null;
+  spacingAfter?: number | null;
+  indentStart?: number | null;
+  indentEnd?: number | null;
+  firstLineIndent?: number | null;
+}
+
+export type EditorBlockNode = EditorParagraphNode | EditorHeadingNode | EditorListNode;
 
 export interface EditorDoc {
   type: 'doc';
@@ -69,7 +142,7 @@ export interface EditorDoc {
 
 export interface EditorProjectedChange {
   text: string;
-  blocks: Array<ParagraphBlock | HeadingBlock>;
+  blocks: EditableBlock[];
 }
 
 export type DocumentCommand =
@@ -77,13 +150,13 @@ export type DocumentCommand =
       type: 'replace_block';
       section_index: number;
       block_index: number;
-      block: ParagraphBlock | HeadingBlock;
+      block: EditableBlock;
     }
   | {
       type: 'insert_block';
       section_index: number;
       block_index: number;
-      block: ParagraphBlock | HeadingBlock;
+      block: EditableBlock;
     }
   | {
       type: 'delete_block';
@@ -102,12 +175,12 @@ export function documentToText(document: DocumentState): string {
 export function documentProjectionWarnings(document: DocumentState): string[] {
   const warnings = [];
   if (document.sections.length !== 1) {
-    warnings.push('Multiple sections are preserved but read-only in the Sprint 002 editor projection.');
+    warnings.push('Multiple sections are preserved but read-only in the current editor projection.');
   }
   for (const section of document.sections) {
     for (const block of section.blocks) {
-      if (!hasInlineContent(block)) {
-        warnings.push(`${block.type} blocks are preserved but read-only in the Sprint 002 editor projection.`);
+      if (!hasInlineContent(block) && !isListBlock(block)) {
+        warnings.push(`${block.type} blocks are preserved but read-only in the editor projection.`);
       }
     }
   }
@@ -122,7 +195,7 @@ export function documentToEditorDoc(document: DocumentState): EditorDoc {
   const content: EditorBlockNode[] = [];
   for (const section of document.sections) {
     for (const block of section.blocks) {
-      const node = blockToEditorNode(block);
+      const node = blockToEditorNode(block, document.lists);
       content.push(node);
     }
   }
@@ -133,10 +206,13 @@ export function documentToEditorDoc(document: DocumentState): EditorDoc {
   };
 }
 
-export function editorDocToWordCoreBlocks(editorDoc: EditorDoc): Array<ParagraphBlock | HeadingBlock> {
+export function editorDocToWordCoreBlocks(editorDoc: EditorDoc): EditableBlock[] {
   return editorDoc.content.map((block) => {
-    const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
+    if (block.type === 'bullet_list' || block.type === 'ordered_list') {
+      return editorListToWordCoreBlock(block);
+    }
     if (block.type === 'heading') {
+      const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
       return {
         type: 'Heading',
         value: {
@@ -146,10 +222,16 @@ export function editorDocToWordCoreBlocks(editorDoc: EditorDoc): Array<Paragraph
       };
     }
 
+    if (block.type !== 'paragraph') {
+      return { type: 'Paragraph', value: { style: 'body', inlines: [] } };
+    }
+    const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
+    const format = editorParagraphAttrsToFormat(block.attrs);
     return {
       type: 'Paragraph',
       value: {
         style: block.attrs?.style || 'body',
+        ...(format ? { format } : {}),
         inlines
       }
     };
@@ -158,7 +240,7 @@ export function editorDocToWordCoreBlocks(editorDoc: EditorDoc): Array<Paragraph
 
 export function buildEditorSyncCommands(
   document: DocumentState,
-  nextBlocks: Array<ParagraphBlock | HeadingBlock>
+  nextBlocks: EditableBlock[]
 ): DocumentCommand[] {
   if (!canEditProjectedDocument(document)) {
     return [];
@@ -195,13 +277,19 @@ export function buildEditorSyncCommands(
   return commands;
 }
 
-function blocksEqual(left: Block, right: ParagraphBlock | HeadingBlock): boolean {
+function blocksEqual(left: Block, right: EditableBlock): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function blockToText(block: Block): string {
   if (hasInlineContent(block)) {
     return block.value.inlines.map((inline) => inline.text).join('');
+  }
+  if (isListBlock(block)) {
+    return block.value.items
+      .map((item) => item.blocks.map(blockToText).filter(Boolean).join(' '))
+      .filter(Boolean)
+      .join('\n');
   }
   return '';
 }
@@ -210,7 +298,15 @@ function hasInlineContent(block: Block): block is ParagraphBlock | HeadingBlock 
   return block.type === 'Paragraph' || block.type === 'Heading';
 }
 
-function blockToEditorNode(block: Block): EditorBlockNode {
+function isListBlock(block: Block): block is ListBlock {
+  return block.type === 'List' && typeof block.value === 'object' && block.value !== null && 'items' in block.value;
+}
+
+function blockToEditorNode(block: Block, lists?: Record<string, ListDefinition>): EditorBlockNode {
+  if (isListBlock(block)) {
+    return wordCoreListToEditorNode(block, lists);
+  }
+
   if (!hasInlineContent(block)) {
     return {
       type: 'paragraph',
@@ -234,7 +330,7 @@ function blockToEditorNode(block: Block): EditorBlockNode {
 
   return {
     type: 'paragraph',
-    attrs: { style: block.value.style || 'body' },
+    attrs: paragraphAttrsFromFormat(block.value.style || 'body', block.value.format),
     content
   };
 }
@@ -242,21 +338,40 @@ function blockToEditorNode(block: Block): EditorBlockNode {
 function editorTextToInline(textNode: EditorTextNode): Inline {
   const marks: string[] = [];
   let link: string | null = null;
+  const style: InlineStyle = {};
   for (const mark of textNode.marks ?? []) {
     const mapped = mapEditorMark(mark.type);
     if (mapped) {
       marks.push(mapped);
     }
     if (mark.type === 'link' && mark.attrs?.href) {
-      link = sanitizeEditorHref(mark.attrs.href) ?? null;
+      link = sanitizeEditorHref(String(mark.attrs.href)) ?? null;
+    }
+    if (mark.type === 'textStyle') {
+      if (typeof mark.attrs?.fontFamily === 'string') {
+        style.font_family = mark.attrs.fontFamily;
+      }
+      if (typeof mark.attrs?.fontSizePt === 'number') {
+        style.font_size_pt = mark.attrs.fontSizePt;
+      }
+      if (typeof mark.attrs?.textColor === 'string') {
+        style.text_color = mark.attrs.textColor;
+      }
+      if (typeof mark.attrs?.highlightColor === 'string') {
+        style.highlight_color = mark.attrs.highlightColor;
+      }
     }
   }
 
-  return {
+  const inline: Inline = {
     text: textNode.text,
     marks,
     link
   };
+  if (!inlineStyleIsEmpty(style)) {
+    inline.style = style;
+  }
+  return inline;
 }
 
 function inlineToEditorText(inline: Inline): EditorTextNode {
@@ -272,6 +387,17 @@ function inlineToEditorText(inline: Inline): EditorTextNode {
     if (href) {
       marks.push({ type: 'link', attrs: { href } });
     }
+  }
+  if (inline.style && !inlineStyleIsEmpty(inline.style)) {
+    marks.push({
+      type: 'textStyle',
+      attrs: {
+        fontFamily: inline.style.font_family ?? null,
+        fontSizePt: inline.style.font_size_pt ?? null,
+        textColor: inline.style.text_color ?? null,
+        highlightColor: inline.style.highlight_color ?? null
+      }
+    });
   }
 
   return {
@@ -291,6 +417,109 @@ function mapEditorMark(mark: string): string | undefined {
     subscript: 'Subscript'
   };
   return supportedMarks[mark];
+}
+
+function wordCoreListToEditorNode(block: ListBlock, lists?: Record<string, ListDefinition>): EditorListNode {
+  const registryOrdered = lists?.[block.value.definition_id]?.ordered;
+  const ordered =
+    registryOrdered ?? (block.value.definition_id === '900w-ordered' || block.value.definition_id.endsWith('-ol'));
+  return {
+    type: ordered ? 'ordered_list' : 'bullet_list',
+    attrs: { definitionId: block.value.definition_id },
+    content: block.value.items.map((item) => ({
+      type: 'list_item',
+      attrs: { level: clampListLevel(item.level) },
+      content:
+        item.blocks.length > 0
+          ? item.blocks.map((child): EditorParagraphNode | EditorHeadingNode => {
+              const node = blockToEditorNode(child, lists);
+              if (node.type === 'paragraph' || node.type === 'heading') {
+                return node;
+              }
+              return {
+                type: 'paragraph' as const,
+                attrs: { style: 'body' },
+                content: [{ type: 'text' as const, text: '[Nested list preserved read-only]' }]
+              };
+            })
+          : [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }]
+    }))
+  };
+}
+
+function editorListToWordCoreBlock(block: EditorListNode): ListBlock {
+  const definitionId =
+    block.attrs?.definitionId || (block.type === 'ordered_list' ? '900w-ordered' : '900w-unordered');
+  return {
+    type: 'List',
+    value: {
+      definition_id: definitionId,
+      items: block.content.map((item) => ({
+        level: clampListLevel(item.attrs?.level ?? 1),
+        blocks: (item.content ?? [])
+          .map((child) => editorChildBlockToWordCore(child))
+          .filter((child): child is ParagraphBlock | HeadingBlock => child !== undefined)
+      }))
+    }
+  };
+}
+
+function editorChildBlockToWordCore(
+  block: EditorParagraphNode | EditorHeadingNode
+): ParagraphBlock | HeadingBlock | undefined {
+  const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
+  if (block.type === 'heading') {
+    return {
+      type: 'Heading',
+      value: { level: clampHeadingLevel(block.attrs?.level ?? 1), inlines }
+    };
+  }
+  const format = editorParagraphAttrsToFormat(block.attrs);
+  return {
+    type: 'Paragraph',
+    value: {
+      style: block.attrs?.style || 'body',
+      ...(format ? { format } : {}),
+      inlines
+    }
+  };
+}
+
+function paragraphAttrsFromFormat(style: string, format: ParagraphFormat | undefined): EditorParagraphAttrs {
+  const attrs: EditorParagraphAttrs = { style };
+  if (format?.alignment) attrs.align = format.alignment;
+  if (format?.line_spacing_per_mille) attrs.lineSpacing = format.line_spacing_per_mille;
+  if (format?.spacing_before_mm) attrs.spacingBefore = format.spacing_before_mm;
+  if (format?.spacing_after_mm) attrs.spacingAfter = format.spacing_after_mm;
+  if (format?.indent_start_mm) attrs.indentStart = format.indent_start_mm;
+  if (format?.indent_end_mm) attrs.indentEnd = format.indent_end_mm;
+  if (format?.first_line_indent_mm) attrs.firstLineIndent = format.first_line_indent_mm;
+  return attrs;
+}
+
+function editorParagraphAttrsToFormat(attrs: EditorParagraphAttrs | undefined): ParagraphFormat | undefined {
+  const format: ParagraphFormat = {};
+  if (attrs?.align) format.alignment = attrs.align;
+  if (attrs?.lineSpacing) format.line_spacing_per_mille = attrs.lineSpacing;
+  if (attrs?.spacingBefore) format.spacing_before_mm = attrs.spacingBefore;
+  if (attrs?.spacingAfter) format.spacing_after_mm = attrs.spacingAfter;
+  if (attrs?.indentStart) format.indent_start_mm = attrs.indentStart;
+  if (attrs?.indentEnd) format.indent_end_mm = attrs.indentEnd;
+  if (attrs?.firstLineIndent) format.first_line_indent_mm = attrs.firstLineIndent;
+  return Object.keys(format).length > 0 ? format : undefined;
+}
+
+function inlineStyleIsEmpty(style: InlineStyle): boolean {
+  return (
+    !style.font_family &&
+    !style.font_size_pt &&
+    !style.text_color &&
+    !style.highlight_color
+  );
+}
+
+function clampListLevel(level: number): number {
+  return Math.min(8, Math.max(1, Math.trunc(level)));
 }
 
 function mapInlineMark(mark: string): string | undefined {

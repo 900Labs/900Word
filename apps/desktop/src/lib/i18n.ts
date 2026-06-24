@@ -4,18 +4,29 @@ export type UiStringKey =
   | 'about'
   | 'about900Word'
   | 'all'
+  | 'after'
+  | 'alignCenter'
+  | 'alignJustify'
+  | 'alignLeft'
+  | 'alignRight'
   | 'applyPage'
   | 'autosave'
   | 'autosaveUpdated'
+  | 'before'
   | 'blockFormatting'
   | 'blocks'
   | 'bold'
   | 'bottom'
+  | 'bulletList'
+  | 'bulletListApplied'
   | 'case'
   | 'characters'
   | 'checkSpelling'
+  | 'clear'
+  | 'clearFormatting'
   | 'close'
   | 'custom'
+  | 'decreaseIndent'
   | 'dictionary'
   | 'documentActions'
   | 'documentFormat'
@@ -42,18 +53,30 @@ export type UiStringKey =
   | 'file'
   | 'find'
   | 'findAndReplace'
+  | 'firstLine'
+  | 'firstLineIndent'
+  | 'fontControls'
+  | 'fontFamily'
+  | 'fontSize'
+  | 'formattingCleared'
   | 'heading1'
   | 'heading2'
+  | 'heading3'
   | 'headingApplied'
   | 'headingUnchanged'
   | 'height'
   | 'highContrast'
+  | 'highlightColor'
   | 'html'
   | 'history'
+  | 'increaseIndent'
   | 'italic'
   | 'language'
   | 'left'
   | 'license'
+  | 'lineSpacing'
+  | 'listLevelChanged'
+  | 'lists'
   | 'matchCount'
   | 'matchReplaced'
   | 'matchesReplaced'
@@ -65,6 +88,8 @@ export type UiStringKey =
   | 'noIssues'
   | 'noMatches'
   | 'no'
+  | 'numberedList'
+  | 'numberedListApplied'
   | 'off'
   | 'offlineDictionaryFallback'
   | 'open'
@@ -72,6 +97,8 @@ export type UiStringKey =
   | 'page'
   | 'paragraph'
   | 'paragraphApplied'
+  | 'paragraphControls'
+  | 'paragraphFormatApplied'
   | 'paragraphUnchanged'
   | 'pageSetupUpdated'
   | 'pageSize'
@@ -103,6 +130,11 @@ export type UiStringKey =
   | 'startWriting'
   | 'statusNoSpellingIssues'
   | 'stats'
+  | 'styleApplied'
+  | 'styleUnchanged'
+  | 'styles'
+  | 'spacingAfter'
+  | 'spacingBefore'
   | 'strikethrough'
   | 'subscript'
   | 'superscript'
@@ -110,6 +142,7 @@ export type UiStringKey =
   | 'templateLoaded'
   | 'templates'
   | 'textFormatting'
+  | 'textColor'
   | 'top'
   | 'txt'
   | 'uiLocale'
@@ -138,18 +171,29 @@ const english: UiStrings = {
   about: 'About',
   about900Word: 'About 900Word',
   all: 'All',
+  after: 'After',
+  alignCenter: 'Align center',
+  alignJustify: 'Justify',
+  alignLeft: 'Align left',
+  alignRight: 'Align right',
   applyPage: 'Apply Page',
   autosave: 'Autosave',
   autosaveUpdated: 'Recovery draft updated',
+  before: 'Before',
   blockFormatting: 'Block formatting',
   blocks: 'Blocks',
   bold: 'Bold',
   bottom: 'Bottom',
+  bulletList: 'Bullet list',
+  bulletListApplied: 'Bullet list applied',
   case: 'Case',
   characters: 'Characters',
   checkSpelling: 'Check Spelling',
+  clear: 'Clear',
+  clearFormatting: 'Clear formatting',
   close: 'Close',
   custom: 'Custom',
+  decreaseIndent: 'Decrease indent',
   dictionary: 'Dictionary',
   documentActions: 'Document actions',
   documentFormat: 'Document format',
@@ -176,18 +220,30 @@ const english: UiStrings = {
   file: 'File',
   find: 'Find',
   findAndReplace: 'Find and replace',
+  firstLine: 'First',
+  firstLineIndent: 'First-line indent',
+  fontControls: 'Font controls',
+  fontFamily: 'Font family',
+  fontSize: 'Font size',
+  formattingCleared: 'Formatting cleared',
   heading1: 'H1',
   heading2: 'H2',
+  heading3: 'H3',
   headingApplied: 'Heading {level} applied',
   headingUnchanged: 'Heading {level} unchanged',
   height: 'Height',
   highContrast: 'High contrast',
+  highlightColor: 'Highlight color',
   html: 'HTML',
   history: 'History',
+  increaseIndent: 'Increase indent',
   italic: 'Italic',
   language: 'Language',
   left: 'Left',
   license: 'License',
+  lineSpacing: 'Line spacing',
+  listLevelChanged: 'List level changed',
+  lists: 'Lists',
   matchCount: '{current}/{total}',
   matchReplaced: 'Match replaced',
   matchesReplaced: '{count} match(es) replaced',
@@ -199,6 +255,8 @@ const english: UiStrings = {
   no: 'No',
   noIssues: 'No issues.',
   noMatches: 'No matches',
+  numberedList: 'Numbered list',
+  numberedListApplied: 'Numbered list applied',
   off: 'Off',
   offlineDictionaryFallback: 'Dictionary fallback used',
   open: 'Open',
@@ -206,6 +264,8 @@ const english: UiStrings = {
   page: 'Page',
   paragraph: 'P',
   paragraphApplied: 'Paragraph applied',
+  paragraphControls: 'Paragraph controls',
+  paragraphFormatApplied: '{label} applied',
   paragraphUnchanged: 'Paragraph unchanged',
   pageSetupUpdated: 'Page setup updated',
   pageSize: 'Page size',
@@ -237,6 +297,11 @@ const english: UiStrings = {
   startWriting: 'Start writing...',
   statusNoSpellingIssues: 'No spelling issues found',
   stats: 'Stats',
+  styleApplied: '{style} applied',
+  styleUnchanged: 'Style unchanged',
+  styles: 'Styles',
+  spacingAfter: 'Spacing after',
+  spacingBefore: 'Spacing before',
   strikethrough: 'Strike',
   subscript: 'Sub',
   superscript: 'Sup',
@@ -244,6 +309,7 @@ const english: UiStrings = {
   templateLoaded: 'Template loaded',
   templates: 'Templates',
   textFormatting: 'Text formatting',
+  textColor: 'Text color',
   top: 'Top',
   txt: 'TXT',
   uiLocale: 'UI language',

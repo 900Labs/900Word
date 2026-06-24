@@ -22,6 +22,24 @@ export type SupportedMarkName =
   | 'subscript';
 
 export type SupportedBlockName = 'paragraph' | 'heading';
+export type SupportedListName = 'bullet_list' | 'ordered_list';
+
+export interface SupportedTextStyleAttrs {
+  fontFamily?: string | null;
+  fontSizePt?: number | null;
+  textColor?: string | null;
+  highlightColor?: string | null;
+}
+
+export interface SupportedParagraphAttrs {
+  align?: 'left' | 'center' | 'right' | 'justify' | null;
+  lineSpacing?: number | null;
+  spacingBefore?: number | null;
+  spacingAfter?: number | null;
+  indentStart?: number | null;
+  indentEnd?: number | null;
+  firstLineIndent?: number | null;
+}
 
 export interface EditorFindMatch extends FindRange {
   from: number;
@@ -52,6 +70,10 @@ export function createEditor(
 
   const view = new EditorView(host, {
     state,
+    attributes: {
+      spellcheck: 'true',
+      autocapitalize: 'sentences'
+    },
     editable: () => options.editable,
     handleDOMEvents: {
       focus() {
@@ -260,6 +282,288 @@ export function setEditorBlockTypeTransaction(
   return transaction;
 }
 
+export function setEditorTextStyle(
+  view: EditorView | undefined,
+  attrs: SupportedTextStyleAttrs,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = setEditorTextStyleTransaction(view.state, attrs, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function setEditorTextStyleTransaction(
+  state: EditorState,
+  attrs: SupportedTextStyleAttrs,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const markType = supportedSchema.marks.textStyle;
+  if (!markType) {
+    return undefined;
+  }
+
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { empty, from, to } = transaction.selection;
+  const normalized = compactTextStyleAttrs(attrs);
+  if (Object.keys(normalized).length === 0) {
+    return undefined;
+  }
+  const currentAttrs = textStyleAttrsNearSelection(transaction, markType);
+  const nextAttrs = { ...currentAttrs, ...normalized };
+
+  if (empty) {
+    const current = markType.isInSet(transaction.storedMarks ?? transaction.selection.$from.marks());
+    transaction = current ? transaction.removeStoredMark(markType) : transaction;
+    transaction = transaction.addStoredMark(markType.create(nextAttrs));
+  } else {
+    transaction = transaction.removeMark(from, to, markType).addMark(from, to, markType.create(nextAttrs));
+  }
+
+  return transaction;
+}
+
+export function setEditorParagraphFormat(
+  view: EditorView | undefined,
+  attrs: SupportedParagraphAttrs,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = setEditorParagraphFormatTransaction(view.state, attrs, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function setEditorParagraphFormatTransaction(
+  state: EditorState,
+  attrs: SupportedParagraphAttrs,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { from, to } = selectedTextblockRange(transaction);
+  let changed = false;
+
+  transaction.doc.nodesBetween(from, to, (node, pos) => {
+    if (node.type.name !== 'paragraph') {
+      return true;
+    }
+    const nextAttrs = { ...node.attrs, ...compactParagraphAttrs(attrs) };
+    if (JSON.stringify(node.attrs) !== JSON.stringify(nextAttrs)) {
+      transaction = transaction.setNodeMarkup(pos, node.type, nextAttrs, node.marks);
+      changed = true;
+    }
+    return false;
+  });
+
+  return changed ? transaction : undefined;
+}
+
+export function clearEditorDirectFormatting(
+  view: EditorView | undefined,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = clearEditorDirectFormattingTransaction(view.state, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function clearEditorDirectFormattingTransaction(
+  state: EditorState,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { from, to } = transaction.selection;
+  let changed = false;
+
+  if (transaction.selection.empty) {
+    for (const markType of Object.values(supportedSchema.marks)) {
+      if (markType.name === 'link') {
+        continue;
+      }
+      transaction = transaction.removeStoredMark(markType);
+    }
+  } else {
+    for (const markType of Object.values(supportedSchema.marks)) {
+      if (markType.name === 'link') {
+        continue;
+      }
+      transaction = transaction.removeMark(from, to, markType);
+    }
+    changed = true;
+  }
+
+  const blockRange = selectedTextblockRange(transaction);
+  transaction.doc.nodesBetween(blockRange.from, blockRange.to, (node, pos) => {
+    if (node.type.name !== 'paragraph') {
+      return true;
+    }
+    const nextAttrs = {
+      style: node.attrs.style || 'body',
+      align: null,
+      lineSpacing: null,
+      spacingBefore: null,
+      spacingAfter: null,
+      indentStart: null,
+      indentEnd: null,
+      firstLineIndent: null
+    };
+    if (JSON.stringify(node.attrs) !== JSON.stringify(nextAttrs)) {
+      transaction = transaction.setNodeMarkup(pos, node.type, nextAttrs, node.marks);
+      changed = true;
+    }
+    return false;
+  });
+
+  return changed ? transaction : undefined;
+}
+
+export function toggleEditorList(
+  view: EditorView | undefined,
+  listName: SupportedListName,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = toggleEditorListTransaction(view.state, listName, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function toggleEditorListTransaction(
+  state: EditorState,
+  listName: SupportedListName,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const listType = supportedSchema.nodes[listName];
+  const itemType = supportedSchema.nodes.list_item;
+  const paragraphType = supportedSchema.nodes.paragraph;
+  if (!listType || !itemType || !paragraphType) {
+    return undefined;
+  }
+
+  const { from, to } = selectedTopLevelRange(transaction);
+  const topLevelNodes: Array<{ node: ProseMirrorNode; pos: number }> = [];
+  transaction.doc.nodesBetween(from, to, (node, pos, parent) => {
+    if (parent === transaction.doc) {
+      topLevelNodes.push({ node, pos });
+      return false;
+    }
+    return true;
+  });
+
+  if (topLevelNodes.length === 0) {
+    return undefined;
+  }
+
+  if (topLevelNodes.length === 1 && topLevelNodes[0].node.type === listType) {
+    const blocks: ProseMirrorNode[] = [];
+    topLevelNodes[0].node.forEach((item) => {
+      item.forEach((child) => {
+        blocks.push(child.isTextblock ? child : paragraphType.create({ style: 'body' }, child.content));
+      });
+    });
+    if (blocks.length === 0) {
+      return undefined;
+    }
+    return transaction.replaceWith(from, to, blocks);
+  }
+
+  const items = topLevelNodes
+    .filter(({ node }) => node.isTextblock)
+    .map(({ node }) =>
+      itemType.create(
+        { level: 1 },
+        paragraphType.create(
+          {
+            style: node.type.name === 'paragraph' ? node.attrs.style || 'body' : 'body'
+          },
+          node.content
+        )
+      )
+    );
+  if (items.length === 0) {
+    return undefined;
+  }
+
+  const definitionId = listName === 'ordered_list' ? '900w-ordered' : '900w-unordered';
+  return transaction.replaceWith(from, to, listType.create({ definitionId }, items));
+}
+
+export function adjustSelectedListLevel(
+  view: EditorView | undefined,
+  delta: number,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = adjustSelectedListLevelTransaction(view.state, delta, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function adjustSelectedListLevelTransaction(
+  state: EditorState,
+  delta: number,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { from, to } = transaction.selection;
+  let changed = false;
+  transaction.doc.nodesBetween(from, to, (node, pos) => {
+    if (node.type.name !== 'list_item') {
+      return true;
+    }
+    const nextLevel = Math.min(8, Math.max(1, Number(node.attrs.level || 1) + delta));
+    if (nextLevel !== node.attrs.level) {
+      transaction = transaction.setNodeMarkup(pos, node.type, { ...node.attrs, level: nextLevel }, node.marks);
+      changed = true;
+    }
+    return false;
+  });
+
+  return changed ? transaction : undefined;
+}
+
 export function findEditorTextMatches(
   view: EditorView | undefined,
   query: string,
@@ -397,6 +701,64 @@ function selectedTextblockRange(transaction: Transaction): { from: number; to: n
     from: transaction.selection.$from.before(fromDepth),
     to: transaction.selection.$to.after(toDepth)
   };
+}
+
+function selectedTopLevelRange(transaction: Transaction): { from: number; to: number } {
+  const fromDepth = transaction.selection.$from.depth;
+  const toDepth = transaction.selection.$to.depth;
+  const from = fromDepth === 0 ? 0 : transaction.selection.$from.before(1);
+  const to = toDepth === 0 ? transaction.doc.content.size : transaction.selection.$to.after(1);
+  return { from, to };
+}
+
+function compactTextStyleAttrs(attrs: SupportedTextStyleAttrs): Record<string, string | number> {
+  const output: Record<string, string | number> = {};
+  if (attrs.fontFamily) {
+    output.fontFamily = attrs.fontFamily;
+  }
+  if (attrs.fontSizePt) {
+    output.fontSizePt = attrs.fontSizePt;
+  }
+  if (attrs.textColor) {
+    output.textColor = attrs.textColor;
+  }
+  if (attrs.highlightColor) {
+    output.highlightColor = attrs.highlightColor;
+  }
+  return output;
+}
+
+function compactParagraphAttrs(attrs: SupportedParagraphAttrs): Record<string, string | number | null> {
+  const output: Record<string, string | number | null> = {};
+  for (const [key, value] of Object.entries(attrs)) {
+    output[key] = value ?? null;
+  }
+  return output;
+}
+
+function textStyleAttrsNearSelection(
+  transaction: Transaction,
+  markType: (typeof supportedSchema.marks)['textStyle']
+): Record<string, string | number> {
+  const active = markType.isInSet(transaction.storedMarks ?? transaction.selection.$from.marks());
+  if (active) {
+    return compactTextStyleAttrs(active.attrs as SupportedTextStyleAttrs);
+  }
+
+  const { from, to } = transaction.selection;
+  let found: Record<string, string | number> = {};
+  transaction.doc.nodesBetween(from, to, (node) => {
+    if (!node.isText) {
+      return true;
+    }
+    const mark = markType.isInSet(node.marks);
+    if (mark) {
+      found = compactTextStyleAttrs(mark.attrs as SupportedTextStyleAttrs);
+      return false;
+    }
+    return true;
+  });
+  return found;
 }
 
 function mapTextRangeInsideTextblock(

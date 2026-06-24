@@ -545,6 +545,7 @@ fn build_template_document(template_id: &str) -> Result<Document, String> {
 fn paragraph_block(text: &str) -> Block {
     Block::Paragraph(Paragraph {
         style: StyleId::from("body"),
+        format: Default::default(),
         inlines: vec![Inline::text(text)],
     })
 }

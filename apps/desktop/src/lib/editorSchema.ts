@@ -14,27 +14,57 @@ const nodes: Record<string, NodeSpec> = {
             throw new RangeError('unsupported paragraph style');
           }
         }
-      }
+      },
+      align: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !['left', 'center', 'right', 'justify'].includes(String(value))) {
+            throw new RangeError('unsupported paragraph alignment');
+          }
+        }
+      },
+      lineSpacing: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && ![1000, 1150, 1500, 2000].includes(Number(value))) {
+            throw new RangeError('unsupported paragraph line spacing');
+          }
+        }
+      },
+      spacingBefore: { default: null },
+      spacingAfter: { default: null },
+      indentStart: { default: null },
+      indentEnd: { default: null },
+      firstLineIndent: { default: null }
     },
-    content: 'text*',
+    content: 'inline*',
     group: 'block',
     parseDOM: [
       {
         tag: 'p',
         getAttrs(node) {
-          return { style: node.getAttribute('data-style') || 'body' };
+          return {
+            style: node.getAttribute('data-style') || 'body',
+            align: node.getAttribute('data-align'),
+            lineSpacing: numberAttr(node, 'data-line-spacing'),
+            spacingBefore: numberAttr(node, 'data-spacing-before'),
+            spacingAfter: numberAttr(node, 'data-spacing-after'),
+            indentStart: numberAttr(node, 'data-indent-start'),
+            indentEnd: numberAttr(node, 'data-indent-end'),
+            firstLineIndent: numberAttr(node, 'data-first-line-indent')
+          };
         }
       }
     ],
     toDOM(node) {
-      return ['p', { 'data-style': node.attrs.style }, 0];
+      return ['p', paragraphDomAttrs(node.attrs), 0];
     }
   },
   heading: {
     attrs: {
       level: { default: 1 }
     },
-    content: 'text*',
+    content: 'inline*',
     defining: true,
     group: 'block',
     parseDOM: [
@@ -47,6 +77,68 @@ const nodes: Record<string, NodeSpec> = {
     ],
     toDOM(node) {
       return [`h${node.attrs.level}`, 0];
+    }
+  },
+  bullet_list: {
+    attrs: {
+      definitionId: { default: '900w-unordered' }
+    },
+    content: 'list_item+',
+    group: 'block',
+    parseDOM: [
+      {
+        tag: 'ul',
+        getAttrs(node) {
+          return { definitionId: node.getAttribute('data-definition-id') || '900w-unordered' };
+        }
+      }
+    ],
+    toDOM(node) {
+      return ['ul', { 'data-definition-id': node.attrs.definitionId }, 0];
+    }
+  },
+  ordered_list: {
+    attrs: {
+      definitionId: { default: '900w-ordered' }
+    },
+    content: 'list_item+',
+    group: 'block',
+    parseDOM: [
+      {
+        tag: 'ol',
+        getAttrs(node) {
+          return { definitionId: node.getAttribute('data-definition-id') || '900w-ordered' };
+        }
+      }
+    ],
+    toDOM(node) {
+      return ['ol', { 'data-definition-id': node.attrs.definitionId }, 0];
+    }
+  },
+  list_item: {
+    attrs: {
+      level: {
+        default: 1,
+        validate(value: unknown) {
+          const level = Number(value);
+          if (!Number.isInteger(level) || level < 1 || level > 8) {
+            throw new RangeError('unsupported list level');
+          }
+        }
+      }
+    },
+    content: 'paragraph block*',
+    defining: true,
+    parseDOM: [
+      {
+        tag: 'li',
+        getAttrs(node) {
+          return { level: numberAttr(node, 'data-level') ?? 1 };
+        }
+      }
+    ],
+    toDOM(node) {
+      return ['li', { 'data-level': node.attrs.level }, 0];
     }
   },
   text: {
@@ -101,6 +193,65 @@ const marks: Record<string, MarkSpec> = {
       return ['sub', 0];
     }
   },
+  textStyle: {
+    attrs: {
+      fontFamily: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !safeTextStyleValue(String(value))) {
+            throw new RangeError('unsupported font family');
+          }
+        }
+      },
+      fontSizePt: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && ![9, 10, 11, 12, 14, 16, 18, 24, 32].includes(Number(value))) {
+            throw new RangeError('unsupported font size');
+          }
+        }
+      },
+      textColor: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !safeColor(String(value))) {
+            throw new RangeError('unsupported text color');
+          }
+        }
+      },
+      highlightColor: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !safeColor(String(value))) {
+            throw new RangeError('unsupported highlight color');
+          }
+        }
+      }
+    },
+    parseDOM: [
+      {
+        tag: 'span[data-text-style]',
+        getAttrs(node) {
+          return {
+            fontFamily: safeTextStyleValue(node.getAttribute('data-font-family') ?? '')
+              ? node.getAttribute('data-font-family')
+              : null,
+            fontSizePt: numberAttr(node, 'data-font-size-pt'),
+            textColor: safeColor(node.getAttribute('data-text-color') ?? '')
+              ? node.getAttribute('data-text-color')
+              : null,
+            highlightColor: safeColor(node.getAttribute('data-highlight-color') ?? '')
+              ? node.getAttribute('data-highlight-color')
+              : null
+          };
+        }
+      }
+    ],
+    toDOM(mark) {
+      const attrs = textStyleDomAttrs(mark.attrs);
+      return ['span', attrs, 0];
+    }
+  },
   link: {
     attrs: {
       href: {
@@ -133,6 +284,7 @@ export const supportedSchema = new Schema({
 });
 
 export const supportedBlockTypes = ['paragraph', 'heading'] as const;
+export const supportedListNodeTypes = ['bullet_list', 'ordered_list', 'list_item'] as const;
 export const supportedMarkTypes = [
   'bold',
   'italic',
@@ -140,5 +292,99 @@ export const supportedMarkTypes = [
   'strikethrough',
   'superscript',
   'subscript',
+  'textStyle',
   'link'
 ] as const;
+
+function numberAttr(node: Element, name: string): number | null {
+  const value = node.getAttribute(name);
+  if (value === null || value.trim() === '') {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function paragraphDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
+  const domAttrs: Record<string, string> = { 'data-style': String(attrs.style || 'body') };
+  setStringAttr(domAttrs, 'data-align', attrs.align);
+  setNumberAttr(domAttrs, 'data-line-spacing', attrs.lineSpacing);
+  setNumberAttr(domAttrs, 'data-spacing-before', attrs.spacingBefore);
+  setNumberAttr(domAttrs, 'data-spacing-after', attrs.spacingAfter);
+  setNumberAttr(domAttrs, 'data-indent-start', attrs.indentStart);
+  setNumberAttr(domAttrs, 'data-indent-end', attrs.indentEnd);
+  setNumberAttr(domAttrs, 'data-first-line-indent', attrs.firstLineIndent);
+
+  const css: string[] = [];
+  if (attrs.align) {
+    css.push(`text-align: ${attrs.align}`);
+  }
+  if (attrs.lineSpacing) {
+    css.push(`line-height: ${Number(attrs.lineSpacing) / 1000}`);
+  }
+  if (attrs.spacingBefore) {
+    css.push(`margin-top: ${attrs.spacingBefore}mm`);
+  }
+  if (attrs.spacingAfter) {
+    css.push(`margin-bottom: ${attrs.spacingAfter}mm`);
+  }
+  if (attrs.indentStart) {
+    css.push(`margin-left: ${attrs.indentStart}mm`);
+  }
+  if (attrs.indentEnd) {
+    css.push(`margin-right: ${attrs.indentEnd}mm`);
+  }
+  if (attrs.firstLineIndent) {
+    css.push(`text-indent: ${attrs.firstLineIndent}mm`);
+  }
+  if (css.length > 0) {
+    domAttrs.style = css.join('; ');
+  }
+  return domAttrs;
+}
+
+function textStyleDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
+  const domAttrs: Record<string, string> = { 'data-text-style': 'true' };
+  setStringAttr(domAttrs, 'data-font-family', attrs.fontFamily);
+  setNumberAttr(domAttrs, 'data-font-size-pt', attrs.fontSizePt);
+  setStringAttr(domAttrs, 'data-text-color', attrs.textColor);
+  setStringAttr(domAttrs, 'data-highlight-color', attrs.highlightColor);
+
+  const css: string[] = [];
+  if (attrs.fontFamily) {
+    css.push(`font-family: ${attrs.fontFamily}`);
+  }
+  if (attrs.fontSizePt) {
+    css.push(`font-size: ${attrs.fontSizePt}pt`);
+  }
+  if (attrs.textColor) {
+    css.push(`color: ${attrs.textColor}`);
+  }
+  if (attrs.highlightColor) {
+    css.push(`background-color: ${attrs.highlightColor}`);
+  }
+  if (css.length > 0) {
+    domAttrs.style = css.join('; ');
+  }
+  return domAttrs;
+}
+
+function setStringAttr(output: Record<string, string>, name: string, value: unknown) {
+  if (typeof value === 'string' && value.trim().length > 0) {
+    output[name] = value;
+  }
+}
+
+function setNumberAttr(output: Record<string, string>, name: string, value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    output[name] = String(value);
+  }
+}
+
+function safeColor(value: string): boolean {
+  return /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+function safeTextStyleValue(value: string): boolean {
+  return /^[A-Za-z0-9 ,.'"-]{1,80}$/.test(value);
+}

@@ -22,3 +22,5 @@ Sprint 004 backend tests verify that recent-document summaries use generic label
 Sprint 006 keeps dictionary discovery local. The app creates `{APP_DATA_DIR}/dictionaries` for user-provided Hunspell `.aff`/`.dic` pairs and does not expose that local path to frontend state, logs, docs examples, or release artifacts.
 
 Sprint 007 keeps exports local. TXT, HTML, and PDF export commands write only to user-entered paths after backend extension and traversal validation. Export status exposed to the frontend includes only the export format and byte length, not private filenames or local paths.
+
+Sprint 009 enables native WebView spellcheck attributes as a low-cost editor hint while keeping the explicit Hunspell check workflow local. 900Word does not add remote dictionary lookup, telemetry, or document-text upload paths.

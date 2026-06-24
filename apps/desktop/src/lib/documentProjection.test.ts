@@ -71,7 +71,7 @@ describe('documentToText', () => {
       ]
     });
     expect(documentProjectionWarnings(document)).toEqual([
-      'PageBreak blocks are preserved but read-only in the Sprint 002 editor projection.'
+      'PageBreak blocks are preserved but read-only in the editor projection.'
     ]);
   });
 
@@ -128,6 +128,135 @@ describe('documentToText', () => {
         }
       }
     ]);
+  });
+
+  it('projects paragraph direct formatting and inline style to word-core JSON', () => {
+    expect(
+      editorDocToWordCoreBlocks({
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            attrs: {
+              style: 'quote',
+              align: 'justify',
+              lineSpacing: 1500,
+              spacingBefore: 2,
+              spacingAfter: 5,
+              indentStart: 10,
+              firstLineIndent: 4
+            },
+            content: [
+              {
+                type: 'text',
+                text: 'Formatted',
+                marks: [
+                  {
+                    type: 'textStyle',
+                    attrs: {
+                      fontFamily: 'serif',
+                      fontSizePt: 14,
+                      textColor: '#1f2937',
+                      highlightColor: '#fff3bf'
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      })
+    ).toEqual([
+      {
+        type: 'Paragraph',
+        value: {
+          style: 'quote',
+          format: {
+            alignment: 'justify',
+            line_spacing_per_mille: 1500,
+            spacing_before_mm: 2,
+            spacing_after_mm: 5,
+            indent_start_mm: 10,
+            first_line_indent_mm: 4
+          },
+          inlines: [
+            {
+              text: 'Formatted',
+              marks: [],
+              link: null,
+              style: {
+                font_family: 'serif',
+                font_size_pt: 14,
+                text_color: '#1f2937',
+                highlight_color: '#fff3bf'
+              }
+            }
+          ]
+        }
+      }
+    ]);
+  });
+
+  it('projects word-core lists to editable list nodes and back', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'List',
+              value: {
+                definition_id: '900w-ordered',
+                items: [
+                  {
+                    level: 1,
+                    blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'One', marks: [], link: null }] } }]
+                  },
+                  {
+                    level: 2,
+                    blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'Two', marks: [], link: null }] } }]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+    expect(editorDoc.content[0].type).toBe('ordered_list');
+    expect(editorDocToWordCoreBlocks(editorDoc)).toEqual(document.sections[0].blocks);
+    expect(documentProjectionWarnings(document)).toEqual([]);
+  });
+
+  it('projects default unordered lists as bullet lists, not ordered lists', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      lists: {
+        '900w-unordered': { ordered: false }
+      },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'List',
+              value: {
+                definition_id: '900w-unordered',
+                items: [
+                  {
+                    level: 1,
+                    blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'Bullet', marks: [], link: null }] } }]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(documentToEditorDoc(document).content[0].type).toBe('bullet_list');
   });
 
   it('builds document commands for editable projection changes', () => {

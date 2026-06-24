@@ -61,3 +61,12 @@ Status: complete.
 Status: complete.
 
 - Add performance smoke, bundle-size budget, package privacy scan, runtime offline scan, SBOM, and release checklist.
+
+## Sprint 009: Authoring Foundation
+
+Status: in progress.
+
+- Expand the durable style registry, paragraph formatting, inline text style, list definitions, and editor projection.
+- Add toolbar controls for styles, font controls, paragraph controls, lists, and clear formatting.
+- Add generated ODT and sanitized HTML handling for 900Word-authored direct formatting.
+- Keep full style editing, Hunspell-backed red underline suggestions, update-style-from-selection, and advanced list continuation behavior open until their implementation and tests are complete.

@@ -78,16 +78,100 @@
   "styles": {
     "body": {
       "id": "body",
-      "name": "Body",
+      "name": "Normal",
       "kind": "Paragraph"
+    },
+    "caption": {
+      "id": "caption",
+      "name": "Caption",
+      "kind": "Paragraph"
+    },
+    "code": {
+      "id": "code",
+      "name": "Code",
+      "kind": "Paragraph"
+    },
+    "default-page": {
+      "id": "default-page",
+      "name": "Default Page",
+      "kind": "Page"
+    },
+    "emphasis": {
+      "id": "emphasis",
+      "name": "Emphasis",
+      "kind": "Character"
+    },
+    "first-page": {
+      "id": "first-page",
+      "name": "First Page",
+      "kind": "Page"
     },
     "heading-1": {
       "id": "heading-1",
       "name": "Heading 1",
       "kind": "Paragraph"
+    },
+    "heading-2": {
+      "id": "heading-2",
+      "name": "Heading 2",
+      "kind": "Paragraph"
+    },
+    "heading-3": {
+      "id": "heading-3",
+      "name": "Heading 3",
+      "kind": "Paragraph"
+    },
+    "highlight": {
+      "id": "highlight",
+      "name": "Highlight",
+      "kind": "Character"
+    },
+    "landscape": {
+      "id": "landscape",
+      "name": "Landscape",
+      "kind": "Page"
+    },
+    "letterhead": {
+      "id": "letterhead",
+      "name": "Letterhead",
+      "kind": "Page"
+    },
+    "link": {
+      "id": "link",
+      "name": "Link",
+      "kind": "Character"
+    },
+    "quote": {
+      "id": "quote",
+      "name": "Quote",
+      "kind": "Paragraph"
+    },
+    "strong": {
+      "id": "strong",
+      "name": "Strong",
+      "kind": "Character"
+    },
+    "subtitle": {
+      "id": "subtitle",
+      "name": "Subtitle",
+      "kind": "Paragraph"
+    },
+    "title": {
+      "id": "title",
+      "name": "Title",
+      "kind": "Paragraph"
     }
   },
-  "lists": {},
+  "lists": {
+    "900w-ordered": {
+      "ordered": true,
+      "marker": "decimal"
+    },
+    "900w-unordered": {
+      "ordered": false,
+      "marker": "bullet"
+    }
+  },
   "assets": {},
   "warnings": []
 }
