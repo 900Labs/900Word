@@ -98,7 +98,6 @@ struct AssetPayload {
     id: String,
     media_type: String,
     bytes: Vec<u8>,
-    original_name: String,
 }
 
 pub fn write_odt_bytes(document: &Document) -> Result<Vec<u8>, OdtError> {
@@ -181,19 +180,13 @@ pub fn read_odt_bytes_with_limits(
                 file.read_to_end(&mut bytes)?;
                 let media_type = detect_image_media_type(&bytes)
                     .ok_or_else(|| OdtError::UnsupportedImageType { name: name.clone() })?;
-                let id = name
-                    .rsplit('/')
-                    .next()
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or("image.bin")
-                    .to_string();
+                let id = generic_imported_image_id(asset_payloads.len() + 1, media_type);
                 asset_payloads.insert(
                     name.clone(),
                     AssetPayload {
                         id,
                         media_type: media_type.to_string(),
                         bytes,
-                        original_name: name,
                     },
                 );
             }
@@ -1731,7 +1724,7 @@ impl<'a> ParseState<'a> {
         let name = attr_value(start, b"name")?;
         let alt_text = attr_value(start, b"title")?;
         self.active_frame = Some(ImageFrame {
-            name,
+            _name: name,
             alt_text,
             href: None,
         });
@@ -1892,7 +1885,7 @@ impl<'a> ParseState<'a> {
             return;
         };
 
-        let asset_id = frame.name.unwrap_or_else(|| payload.id.clone());
+        let asset_id = payload.id.clone();
         self.assets.insert(
             asset_id.clone(),
             AssetRef {
@@ -1900,7 +1893,7 @@ impl<'a> ParseState<'a> {
                 media_type: payload.media_type.clone(),
                 byte_len: payload.bytes.len(),
                 bytes: payload.bytes.clone(),
-                original_name: Some(payload.original_name.clone()),
+                original_name: None,
             },
         );
 
@@ -1984,7 +1977,7 @@ enum ParseContext {
 
 #[derive(Debug)]
 struct ImageFrame {
-    name: Option<String>,
+    _name: Option<String>,
     alt_text: Option<String>,
     href: Option<String>,
 }
@@ -2447,6 +2440,17 @@ fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+fn generic_imported_image_id(index: usize, media_type: &str) -> String {
+    let extension = match media_type {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "bin",
+    };
+    format!("image-{index}.{extension}")
+}
+
 fn escape_xml(input: &str) -> String {
     input
         .replace('&', "&amp;")
@@ -2544,8 +2548,11 @@ mod tests {
             .assets
             .get(&image.asset_id)
             .expect("image asset should be present");
+        assert_eq!(image.asset_id, "image-1.png");
         assert_eq!(asset.media_type, "image/png");
         assert_eq!(asset.bytes, SAMPLE_PNG);
+        assert_eq!(asset.original_name, None);
+        assert!(!parsed.assets.contains_key("sample.png"));
 
         let reparsed =
             read_odt_bytes(&write_odt_bytes(&parsed).expect("rewrite should succeed")).unwrap();

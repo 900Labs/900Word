@@ -22,6 +22,8 @@ OpenDocument Text (`.odt`) is the native saved format.
 - Sprint 011 exposes desktop hyperlink authoring for the existing safe link subset. Links are limited to `http`, `https`, and `mailto`; bookmarks and internal anchors remain deferred.
 - Sprint 012 exposes desktop editing for table cells that contain paragraphs, headings, or lists. Row/column structural editing, merged cells, table styles, and unsupported nested cell content remain deferred.
 - Sprint 013 stores simple section-level header/footer regions in `word-core`, persists 900Word-authored page regions through ODT `styles.xml`, and supports page-number, page-count, and date fields. External header/footer structures beyond the simple paragraph/field subset import with warnings and read-only state instead of silent rewrite. Export renders page numbers and total page count as `1` and date as the document modified date because deterministic pagination remains deferred.
+- Sprint 014 adds local image insertion for PNG, JPEG, GIF, and WebP files. Imported images are copied into `document.assets` and saved as embedded ODT package entries; source paths and source filenames are not stored. The desktop editor projects images as non-editable image atoms with generic alt text. Dedicated alt text editing remains deferred.
+- Sprint 014 HTML and print HTML export include allowlisted in-document image assets as `data:image/...;base64,...` URLs under the offline CSP. The basic PDF exporter remains text-oriented and includes image alt/caption text only.
 - Unsupported ODT elements import with warnings.
 - Unsupported or unsafe image references import with warnings instead of remote loading.
 - Unsupported image payload types are rejected instead of embedded.

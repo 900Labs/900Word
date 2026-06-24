@@ -32,3 +32,5 @@ Sprint 011 adds a heading navigator and hyperlink editor. The navigator is deriv
 Sprint 012 adds editable table projection for supported local document content. Table editing does not add telemetry, cloud sync, remote resource fetching, or document-content logging.
 
 Sprint 013 adds local header/footer editing and typed page fields. Page field values are generated from the document model and exporter context only; they do not read usernames, hostnames, absolute paths, accounts, network state, or external services.
+
+Sprint 014 adds local image insertion. Image files selected through the native dialog are treated as untrusted local input and validated in Rust for traversal, extension, type, byte size, and magic bytes. Accepted bytes are copied into embedded document assets under generated generic asset names. Source local paths and source filenames are not stored in frontend state, document assets, exports, docs, logs, or fixtures. HTML export emits only embedded `data:` URLs for allowlisted in-document assets and never remote or `file:` image URLs.

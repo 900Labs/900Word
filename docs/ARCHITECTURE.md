@@ -24,7 +24,7 @@ Rust workspace crates
 
 `word-core` owns durable document truth. ProseMirror is an editing projection, and ODT is the persisted package format.
 
-The editor schema accepts only nodes and marks with matching `word-core` semantics. Sprint 009 adds editable ordered/unordered list nodes, paragraph direct-format attributes, and inline text-style attributes on top of the original paragraph, heading, text, and inline mark projection. Sprint 010 adds selection-derived toolbar state, list-aware Enter/paste behavior, and a durable update-style-from-selection command for selected paragraph style properties. Sprint 011 adds a live Heading 1/2/3 navigator derived from projected `word-core` blocks and exposes insert/edit/remove hyperlink UI for the existing safe link mark. Sprint 012 adds an editable table projection for table cells containing paragraphs, headings, or lists, plus a default 2x2 insert-table toolbar command. Sprint 013 adds section-level header/footer page regions and typed page fields in `word-core`, while the desktop editor keeps them in Settings as a simple text-backed surface rather than projecting them into the ProseMirror body editor. Broader ProseMirror nodes remain unavailable until `word-core` has matching durable semantics and import/export tests. Documents that contain modeled-but-unprojected blocks, such as images or unsupported nested table-cell content, open in a read-only editor projection with warnings until those blocks have complete projection support.
+The editor schema accepts only nodes and marks with matching `word-core` semantics. Sprint 009 adds editable ordered/unordered list nodes, paragraph direct-format attributes, and inline text-style attributes on top of the original paragraph, heading, text, and inline mark projection. Sprint 010 adds selection-derived toolbar state, list-aware Enter/paste behavior, and a durable update-style-from-selection command for selected paragraph style properties. Sprint 011 adds a live Heading 1/2/3 navigator derived from projected `word-core` blocks and exposes insert/edit/remove hyperlink UI for the existing safe link mark. Sprint 012 adds an editable table projection for table cells containing paragraphs, headings, or lists, plus a default 2x2 insert-table toolbar command. Sprint 013 adds section-level header/footer page regions and typed page fields in `word-core`, while the desktop editor keeps them in Settings as a simple text-backed surface rather than projecting them into the ProseMirror body editor. Sprint 014 adds a non-editable ProseMirror image atom that round-trips to `ImageBlock` and displays only embedded `AssetRef` bytes as offline data URLs. Broader ProseMirror nodes remain unavailable until `word-core` has matching durable semantics and import/export tests. Documents that contain unsupported nested table-cell content or other modeled-but-unprojected blocks open in a read-only editor projection with warnings until those blocks have complete projection support.
 
 Import flow:
 
@@ -41,6 +41,15 @@ Editor sync flow:
 4. Tauri commands validate the request.
 5. `word-core` applies changes and remains the durable source of truth.
 6. `word-odf` writes the supported ODT subset when a save command runs.
+
+Image insertion flow:
+
+1. The desktop UI opens a native file dialog filtered to PNG, JPEG, GIF, and WebP.
+2. The selected path is passed directly to Rust IPC and is not stored in frontend state.
+3. Rust validates traversal, extension, file kind, byte size, and image magic bytes.
+4. Rust copies bytes into `document.assets` under a generated `image-<uuid>.<ext>` asset id.
+5. Rust inserts an `ImageBlock` at the requested top-level position or appends safely.
+6. The frontend receives the updated document model with embedded asset bytes, not a source path or private source filename.
 
 ## ODT Boundary
 

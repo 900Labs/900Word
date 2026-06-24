@@ -107,3 +107,14 @@ Status: complete.
 - Add simple Settings-panel editing for headers, footers, first-page variants, and page-field insertion.
 - Persist 900Word-authored page regions and fields through ODT and include them in TXT, HTML, print HTML, and basic PDF exports.
 - Keep deterministic pagination, rich region editing, and complex external header/footer fidelity deferred.
+
+## Sprint 014: Local Image Insertion
+
+Status: complete.
+
+- Add a native desktop Insert Image command for local PNG, JPEG, GIF, and WebP files.
+- Validate local image paths, extensions, byte size, and magic bytes in Rust before import.
+- Store accepted bytes as embedded `word-core` assets and insert `ImageBlock` references without preserving source paths or private source filenames.
+- Project images as non-editable ProseMirror image atoms so text editing does not silently drop image blocks.
+- Persist inserted images through ODT save/reopen and include allowlisted embedded image assets in offline HTML export as data URLs.
+- Keep dedicated alt text editing, image resizing/cropping, and raster PDF embedding deferred.

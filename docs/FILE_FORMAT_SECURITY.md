@@ -29,6 +29,10 @@ All external files are untrusted.
 - Warning-based import for unsupported ODT elements.
 - Warning-based stripping of unsafe text links and unsafe or remote image references.
 
+## Local Image Import Policy
+
+Sprint 014 treats user-selected local images as untrusted input. The Rust desktop command rejects traversal-shaped paths, unsupported extensions, non-regular files, empty files, files over 8 MiB, and files whose magic bytes do not match the allowlisted PNG, JPEG, GIF, or WebP media type. Accepted image bytes are copied into embedded document assets under generated generic asset names. Source paths and source filenames are not stored.
+
 ## HTML Import Policy
 
 HTML import must strip scripts, event handlers, unsafe CSS URLs, `javascript:`, unexpected `file:`, unsafe SVG, iframe, object, embed, and remote loads by default.
@@ -37,7 +41,7 @@ HTML import must strip scripts, event handlers, unsafe CSS URLs, `javascript:`, 
 
 Sprint 007 exporters write only to user-entered paths with validated `.txt`, `.html`, or `.pdf` extensions and no traversal components. Export command results expose only the format and byte length to the frontend.
 
-HTML export is generated from `word-core`, escapes document text, strips unsafe link schemes, does not emit scripts, event handlers, iframe/object/embed content, remote images, local file references, or raw imported HTML, and includes a restrictive offline CSP meta tag. Print HTML uses the same sanitizer and adds page setup CSS for WebView print.
+HTML export is generated from `word-core`, escapes document text, strips unsafe link schemes, does not emit scripts, event handlers, iframe/object/embed content, remote images, local file references, or raw imported HTML, and includes a restrictive offline CSP meta tag. Sprint 014 allows only embedded `data:image/png`, `data:image/jpeg`, `data:image/gif`, and `data:image/webp` URLs generated from in-document asset bytes. Print HTML uses the same sanitizer and adds page setup CSS for WebView print.
 
 PDF export is a minimal generated document for smoke testing and simple sharing. It contains no local paths, hostnames, usernames, embedded files, remote references, scripts, or macros. Non-ASCII text is degraded in the bootstrap PDF adapter until a font/layout strategy is accepted.
 

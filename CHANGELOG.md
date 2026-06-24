@@ -14,3 +14,4 @@ All notable changes to 900Word are tracked here.
 - Heading navigator sidebar and safe hyperlink insert/edit/remove workflows.
 - Editable table projection for supported table cells and a default 2x2 insert-table command.
 - Section-level header/footer MVP with simple page fields for page number, total page count, and date.
+- Local image insertion MVP for PNG, JPEG, GIF, and WebP files with embedded document assets, ODT round-trip support, and offline HTML data-URL export.

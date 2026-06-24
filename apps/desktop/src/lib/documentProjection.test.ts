@@ -147,6 +147,67 @@ describe('documentToText', () => {
     ]);
   });
 
+  it('projects image blocks as atom nodes without making the whole document read-only', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      assets: {
+        'image-1.png': {
+          id: 'image-1.png',
+          media_type: 'image/png',
+          byte_len: 8,
+          bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+          original_name: null
+        }
+      },
+      sections: [
+        {
+          blocks: [
+            { type: 'Paragraph', value: { inlines: [{ text: 'Before' }] } },
+            { type: 'Image', value: { asset_id: 'image-1.png', alt_text: 'Image' } },
+            { type: 'Paragraph', value: { inlines: [{ text: 'After' }] } }
+          ]
+        }
+      ]
+    };
+
+    expect(documentProjectionWarnings(document)).toEqual([]);
+    expect(canEditProjectedDocument(document)).toBe(true);
+    expect(documentToEditorDoc(document).content[1]).toEqual({
+      type: 'image',
+      attrs: {
+        assetId: 'image-1.png',
+        altText: 'Image',
+        src: 'data:image/png;base64,iVBORw0KGgo='
+      }
+    });
+  });
+
+  it('round-trips image atom nodes back to word-core image blocks', () => {
+    expect(
+      editorDocToWordCoreBlocks({
+        type: 'doc',
+        content: [
+          {
+            type: 'image',
+            attrs: {
+              assetId: 'image-1.png',
+              altText: 'Image',
+              src: 'data:image/png;base64,iVBORw0KGgo='
+            }
+          }
+        ]
+      })
+    ).toEqual([
+      {
+        type: 'Image',
+        value: {
+          asset_id: 'image-1.png',
+          alt_text: 'Image'
+        }
+      }
+    ]);
+  });
+
   it('builds a navigator outline from non-empty Heading 1-3 blocks', () => {
     const document: DocumentState = {
       meta: { title: 'Generated test' },
@@ -193,7 +254,9 @@ describe('documentToText', () => {
       ]
     };
 
-    expect(documentToEditorDoc(document).content[0].content).toEqual([
+    const firstBlock = documentToEditorDoc(document).content[0];
+    expect(firstBlock.type).toBe('paragraph');
+    expect(firstBlock.type === 'paragraph' ? firstBlock.content : undefined).toEqual([
       { type: 'text', text: 'Unsafe link' }
     ]);
   });
