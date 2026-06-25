@@ -33,6 +33,7 @@ export type UiStringKey =
   | 'bottom'
   | 'bulletList'
   | 'bulletListApplied'
+  | 'capitalizeSentences'
   | 'case'
   | 'characters'
   | 'charactersNoSpaces'
@@ -232,6 +233,10 @@ export type UiStringKey =
   | 'settingsUpdated'
   | 'selectionWords'
   | 'showRulers'
+  | 'smartDashes'
+  | 'smartListTriggers'
+  | 'smartQuotes'
+  | 'smartTyping'
   | 'spellAddedToDictionary'
   | 'spellIgnoredAll'
   | 'spellIgnoredOnce'
@@ -259,6 +264,7 @@ export type UiStringKey =
   | 'trackedChangeAccepted'
   | 'trackedChangeRejected'
   | 'trackedChangeSelected'
+  | 'typoReplacements'
   | 'tableColumns'
   | 'tableDeleted'
   | 'tableInserted'
@@ -334,6 +340,7 @@ const english: UiStrings = {
   bottom: 'Bottom',
   bulletList: 'Bullet list',
   bulletListApplied: 'Bullet list applied',
+  capitalizeSentences: 'Capitalize sentences',
   case: 'Case',
   characters: 'Characters',
   charactersNoSpaces: 'Characters without spaces',
@@ -533,6 +540,10 @@ const english: UiStrings = {
   settingsUpdated: 'Settings updated',
   selectionWords: 'Selection words',
   showRulers: 'Rulers',
+  smartDashes: 'Convert -- to em dash',
+  smartListTriggers: 'Turn - and 1. starters into lists',
+  smartQuotes: 'Use smart quotes',
+  smartTyping: 'Smart typing',
   spellAddedToDictionary: 'Added "{word}" to the personal dictionary',
   spellIgnoredAll: 'Word ignored for this session',
   spellIgnoredOnce: 'Spelling issue ignored once',
@@ -560,6 +571,7 @@ const english: UiStrings = {
   trackedChangeAccepted: 'Tracked change accepted',
   trackedChangeRejected: 'Tracked change rejected',
   trackedChangeSelected: 'Tracked change selected',
+  typoReplacements: 'Replace common typos',
   tableColumns: 'Table columns',
   tableDeleted: 'Table deleted',
   tableInserted: 'Table inserted',
@@ -604,6 +616,7 @@ const spanish: Partial<UiStrings> = {
   blocks: 'Bloques',
   bold: 'Negrita',
   bottom: 'Inferior',
+  capitalizeSentences: 'Poner mayuscula al iniciar oraciones',
   case: 'Mayusculas',
   characters: 'Caracteres',
   checkSpelling: 'Revisar ortografia',
@@ -675,12 +688,17 @@ const spanish: Partial<UiStrings> = {
   saved: 'Guardado',
   settings: 'Ajustes',
   settingsUpdated: 'Ajustes guardados',
+  smartDashes: 'Convertir -- en raya',
+  smartListTriggers: 'Convertir - y 1. en listas',
+  smartQuotes: 'Usar comillas tipograficas',
+  smartTyping: 'Escritura inteligente',
   spelling: 'Ortografia',
   starting: 'Iniciando...',
   startWriting: 'Empieza a escribir...',
   statusNoSpellingIssues: 'No se encontraron problemas de ortografia',
   stats: 'Estadisticas',
   telemetry: 'Telemetria',
+  typoReplacements: 'Corregir errores comunes',
   templateLoaded: 'Plantilla cargada',
   templates: 'Plantillas',
   top: 'Superior',

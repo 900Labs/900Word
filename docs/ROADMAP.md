@@ -231,3 +231,13 @@ Status: complete.
 - Promote bounded ODT notes with matching safe `word900` metadata into local notes, and degrade missing, unsafe, mismatched, over-limit, duplicate, or unanchored note structures to visible text with generic warnings.
 - Export note references and note body text conservatively in TXT, sanitized HTML, print HTML, and basic PDF.
 - Keep deterministic pagination, page-bottom footnote placement, PDF note layout fidelity, DOCX notes, cross-reference management, and rich note editing deferred.
+
+## Sprint 026: Autocorrect And Smart Typing MVP
+
+Status: complete.
+
+- Add local disabled-by-default settings for smart typing behavior without adding cloud sync, accounts, telemetry, network access, or document metadata.
+- Add typed-input transforms for sentence capitalization, smart quotes, double-hyphen em dashes, and a small allowlisted typo replacement map.
+- Add simple `- ` and `1. ` list triggers at the start of an otherwise empty top-level paragraph.
+- Keep transforms deterministic, bounded to collapsed typed input, and avoid URL-like tokens.
+- Keep imported-document cleanup, rich autocorrect dictionaries, locale-specific quote styles, persistent settings storage, and smart typing while track-changes recording deferred.

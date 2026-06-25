@@ -30,6 +30,8 @@ Sprint 024 table-of-contents entries are stored as generated local document cont
 
 Sprint 025 footnotes and endnotes are stored as bounded local document content. Note IDs are compact generated document-local identifiers, labels are bounded visible reference strings, and bodies are bounded text. Stored note bodies appear in the desktop Notes sidebar when local notes are present, including notes promoted from bounded safe ODT metadata. The feature does not read operating-system usernames, hostnames, account identifiers, contact records, local paths, source filenames, cloud identity, network state, or external services.
 
+Sprint 026 smart typing settings are local UI settings and are not written into document metadata. The typed-input transforms operate on the active editor text around the cursor only and use a small bundled typo replacement map. The feature does not read operating-system usernames, hostnames, account identifiers, contact records, local paths, source filenames, cloud identity, network state, or external services.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -51,6 +53,8 @@ Sprint 023 stores 900Word-authored tracked changes in ODT with `word900` metadat
 Sprint 024 stores 900Word-authored table-of-contents metadata in ODT with `word900:block-type="table-of-contents"` and safe generated bookmark targets. TXT/basic PDF exports render TOCs as ordinary text, and HTML/print HTML exports render safe local fragment links without deterministic page-number claims or local/private build metadata.
 
 Sprint 025 stores 900Word-authored footnotes and endnotes in ODT with ODF note elements and bounded `word900` metadata for local note ID and kind. Notes imported as local note metadata are visible in the desktop Notes sidebar, while malformed or unsupported note structures fall back to ordinary visible text with generic warnings. TXT/basic PDF exports render notes as ordinary text, and HTML/print HTML exports render sanitized local note sections without deterministic page-bottom placement, active PDF annotations, local usernames, hostnames, absolute paths, account metadata, or private build metadata.
+
+Sprint 026 does not add ODT, TXT, HTML, print HTML, or PDF metadata. Text produced by smart typing is ordinary user-authored document text after the user types it.
 
 ## Network
 

@@ -69,6 +69,22 @@ pub struct Settings {
     pub language_tag: String,
     pub ui_locale: String,
     pub high_contrast: bool,
+    #[serde(default)]
+    pub smart_typing: SmartTypingSettings,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SmartTypingSettings {
+    #[serde(default)]
+    pub capitalize_sentences: bool,
+    #[serde(default)]
+    pub smart_quotes: bool,
+    #[serde(default)]
+    pub smart_dashes: bool,
+    #[serde(default)]
+    pub typo_replacements: bool,
+    #[serde(default)]
+    pub list_triggers: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +138,7 @@ impl Default for Settings {
             language_tag: FALLBACK_LANGUAGE_TAG.to_string(),
             ui_locale: "en-US".to_string(),
             high_contrast: false,
+            smart_typing: SmartTypingSettings::default(),
         }
     }
 }
@@ -458,6 +475,7 @@ fn update_settings(settings: Settings) -> Settings {
         language_tag: normalize_language_setting(&settings.language_tag),
         ui_locale: normalize_ui_locale(&settings.ui_locale),
         high_contrast: settings.high_contrast,
+        smart_typing: settings.smart_typing,
     }
 }
 
@@ -1715,11 +1733,24 @@ mod tests {
             language_tag: "en".to_string(),
             ui_locale: "unknown".to_string(),
             high_contrast: true,
+            smart_typing: SmartTypingSettings {
+                capitalize_sentences: true,
+                smart_quotes: true,
+                smart_dashes: true,
+                typo_replacements: true,
+                list_triggers: true,
+            },
         });
 
         assert!(!settings.telemetry_enabled);
         assert_eq!(settings.language_tag, "en");
         assert_eq!(settings.ui_locale, "en-US");
+        assert!(settings.high_contrast);
+        assert!(settings.smart_typing.capitalize_sentences);
+        assert!(settings.smart_typing.smart_quotes);
+        assert!(settings.smart_typing.smart_dashes);
+        assert!(settings.smart_typing.typo_replacements);
+        assert!(settings.smart_typing.list_triggers);
     }
 
     #[test]
