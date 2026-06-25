@@ -7,12 +7,15 @@
     createEditor,
     createEditorBookmarkId,
     createEditorCommentId,
+    createEditorNoteId,
     editorTopLevelInsertionIndex,
     editTableStructure,
     findEditorTextMatches,
+    insertEditorNoteReference,
     insertTable as insertEditorTable,
     replaceAllEditorText,
     replaceEditorTextRange,
+    removeEditorNoteReferenceFromDocument,
     removeEditorLink,
     removeEditorBlockBookmark,
     removeEditorCommentFromDocument,
@@ -56,6 +59,8 @@
     documentOutlineFromEditableBlocks,
     documentProjectionWarnings,
     documentToText,
+    nextNoteLabelInDocument,
+    noteSummariesInDocument,
     pageFieldTokens,
     pageRegionIsReadOnly,
     pageRegionTextToBlocks,
@@ -68,8 +73,10 @@
     type CommentThread,
     type DocumentLinkTarget,
     type DocumentOutlineEntry,
+    type NoteSummary,
     type TrackedChangeSummary,
     type ListBlock,
+    type NoteKind,
     type PageField,
     type PageRegionKind,
     type PageSetup
@@ -213,6 +220,7 @@
   const localCommentAuthor = 'Local User';
   const localTrackedChangeAuthor = 'Local User';
   const maxCommentBodyChars = 2000;
+  const maxNoteBodyChars = 4000;
 
   let title = $state('900Word');
   let status = $state(translate('en-US', 'starting'));
@@ -275,6 +283,7 @@
   let selectedLinkTargetId = $state('');
   let commentsPanelOpen = $state(false);
   let reviewPanelOpen = $state(false);
+  let notesPanelOpen = $state(false);
   let newCommentBody = $state('');
   let selectedCommentText = $state('');
   let activeCommentId = $state<string | null>(null);
@@ -294,6 +303,7 @@
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
   let commentThreads = $derived(sortedCommentThreads(documentState));
+  let noteSummaries = $derived(noteSummariesInDocument(documentState));
   let trackedChanges = $derived(trackedChangesInDocument(documentState));
   let trackChangesRecording = $derived(Boolean(documentState?.track_changes?.recording));
   let unresolvedCommentCount = $derived(commentThreads.filter((comment) => !comment.resolved).length);
@@ -309,6 +319,7 @@
   let editorSurfaceStyle = $derived(editorViewportStyle(pageSetup, effectiveZoomPercent));
   let showWorkspaceSidebar = $derived(
     commentsPanelOpen ||
+    notesPanelOpen ||
     reviewPanelOpen ||
     navigatorHeadings.length > 0 ||
     fileState.recent_documents.length > 0 ||
@@ -357,6 +368,9 @@
     }
     if (Object.keys(document.comments ?? {}).length > 0) {
       commentsPanelOpen = true;
+    }
+    if (noteSummariesInDocument(document).length > 0) {
+      notesPanelOpen = true;
     }
     if (trackedChangesInDocument(document).length > 0 || document.track_changes?.recording) {
       reviewPanelOpen = true;
@@ -1132,6 +1146,61 @@
     linkPanelOpen = false;
     refreshSelectionFormatting();
     status = changed ? tr('linkRemoved') : tr('linkUnchanged');
+  }
+
+  async function insertNote(kind: NoteKind) {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    captureToolbarSelection(false);
+    const promptLabel = kind === 'footnote' ? tr('footnotePrompt') : tr('endnotePrompt');
+    const body = globalThis.prompt?.(promptLabel, '')?.trim();
+    if (body === undefined) {
+      return;
+    }
+    if (body.length === 0) {
+      status = tr('noteBodyRequired');
+      return;
+    }
+    if (Array.from(body).length > maxNoteBodyChars) {
+      status = tr('noteBodyTooLong', { max: maxNoteBodyChars });
+      return;
+    }
+
+    const id = createEditorNoteId();
+    const label = nextNoteLabel(kind);
+    if (!insertEditorNoteReference(view, id, kind, label, lastEditorSelection)) {
+      status = tr('noteInsertionUnavailable');
+      return;
+    }
+
+    try {
+      await waitForEditorSync();
+      const document = await invoke<DocumentState>('apply_document_command', {
+        command: {
+          type: 'add_note',
+          id,
+          kind,
+          body
+        }
+      });
+      await loadDocumentIntoEditor(document, kind === 'footnote' ? tr('footnoteInserted') : tr('endnoteInserted'));
+      await refreshFileState();
+    } catch (error) {
+      if (removeEditorNoteReferenceFromDocument(view, id)) {
+        await waitForEditorSync().catch(() => undefined);
+      }
+      setStatusFromError(error);
+    }
+  }
+
+  function nextNoteLabel(kind: NoteKind) {
+    return nextNoteLabelInDocument(documentState, kind);
+  }
+
+  function noteKindLabel(note: NoteSummary) {
+    return note.kind === 'footnote' ? tr('insertFootnote') : tr('insertEndnote');
   }
 
   async function addCommentToSelection() {
@@ -2320,6 +2389,34 @@
       >
         {tr('comments')}{unresolvedCommentCount > 0 ? ` ${unresolvedCommentCount}` : ''}
       </button>
+      <button
+        aria-expanded={notesPanelOpen}
+        class:active-format={notesPanelOpen}
+        disabled={noteSummaries.length === 0}
+        title={tr('notes')}
+        type="button"
+        onclick={() => (notesPanelOpen = !notesPanelOpen)}
+      >
+        {tr('notes')}{noteSummaries.length > 0 ? ` ${noteSummaries.length}` : ''}
+      </button>
+      <button
+        disabled={!editorEditable}
+        title={tr('insertFootnote')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => void insertNote('footnote'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => void insertNote('footnote'))}
+      >
+        {tr('insertFootnote')}
+      </button>
+      <button
+        disabled={!editorEditable}
+        title={tr('insertEndnote')}
+        type="button"
+        onpointerdown={(event) => runToolbarPointerCommand(event, () => void insertNote('endnote'))}
+        onclick={(event) => runToolbarKeyboardCommand(event, () => void insertNote('endnote'))}
+      >
+        {tr('insertEndnote')}
+      </button>
     </div>
 
     <div class="tool-group font-tools" role="group" aria-label={tr('fontControls')}>
@@ -2865,6 +2962,30 @@
               </ul>
             {:else}
               <p class="empty-sidebar-note">{tr('noComments')}</p>
+            {/if}
+          </section>
+        {/if}
+
+        {#if notesPanelOpen}
+          <section class="notes-panel" aria-label={tr('notes')}>
+            <div class="sidebar-section-heading">
+              <h2>{tr('notes')}</h2>
+              <span>{noteSummaries.length}</span>
+            </div>
+            {#if noteSummaries.length > 0}
+              <ul class="notes-list">
+                {#each noteSummaries as note}
+                  <li>
+                    <span class="note-heading">
+                      <span class="note-kind">{noteKindLabel(note)}</span>
+                      <span class="note-label">[{note.label}]</span>
+                    </span>
+                    <span class="note-body">{note.body}</span>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="empty-sidebar-note">{tr('noNotes')}</p>
             {/if}
           </section>
         {/if}

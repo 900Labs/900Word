@@ -219,3 +219,15 @@ Status: complete.
 - Preserve 900Word-authored TOCs through ODT save/reopen with `word900` metadata while rendering visible text and safe internal links.
 - Export TOCs as ordinary text in TXT/basic PDF and as safe fragment links in HTML/print HTML.
 - Keep deterministic page numbers, live pagination, automatic external ODT TOC interoperability, DOCX TOCs, and PDF link annotations deferred.
+
+## Sprint 025: Footnotes And Endnotes MVP
+
+Status: complete.
+
+- Add bounded local footnote/endnote metadata to `word-core` with durable inline note references and undo/redo command coverage.
+- Preserve note references through the desktop ProseMirror projection as local inline atoms instead of plain text.
+- Add compact toolbar controls to insert a footnote or endnote with simple local body entry, plus a Notes sidebar that surfaces stored note bodies.
+- Save and reopen 900Word-authored notes through ODT `text:note`, `text:note-citation`, and `text:note-body` elements with bounded `word900` metadata.
+- Promote bounded ODT notes with matching safe `word900` metadata into local notes, and degrade missing, unsafe, mismatched, over-limit, duplicate, or unanchored note structures to visible text with generic warnings.
+- Export note references and note body text conservatively in TXT, sanitized HTML, print HTML, and basic PDF.
+- Keep deterministic pagination, page-bottom footnote placement, PDF note layout fidelity, DOCX notes, cross-reference management, and rich note editing deferred.

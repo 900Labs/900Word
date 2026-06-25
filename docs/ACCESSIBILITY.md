@@ -21,4 +21,6 @@ Sprint 023 adds a track changes toolbar toggle and review sidebar using native c
 
 Sprint 024 adds the table-of-contents insert/update command inside the existing File menu as a native button. Generated TOC blocks render in the editor as a visible document block with normal focusable internal links where safe bookmark targets exist; the command and links are not hover-only.
 
+Sprint 025 adds footnote and endnote insert buttons to the existing review/comments toolbar group plus a compact Notes sidebar for stored note bodies. The controls are native buttons with stable labels and are not hover-only. Inserted references render as visible inline superscript atoms with screen-reader labels for the note kind and visible label; note body entry uses a simple local prompt in this MVP, and existing note bodies are readable through keyboard-focusable sidebar content.
+
 Accessibility smoke checks are part of the release hardening roadmap.

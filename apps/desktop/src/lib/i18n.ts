@@ -129,6 +129,8 @@ export type UiStringKey =
   | 'imageUpdated'
   | 'insertion'
   | 'insertImage'
+  | 'insertFootnote'
+  | 'insertEndnote'
   | 'insertOrUpdateTableOfContents'
   | 'insertTable'
   | 'insertTableShort'
@@ -164,6 +166,15 @@ export type UiStringKey =
   | 'no'
   | 'noComments'
   | 'noTrackedChanges'
+  | 'notes'
+  | 'noNotes'
+  | 'noteBodyRequired'
+  | 'noteBodyTooLong'
+  | 'noteInsertionUnavailable'
+  | 'footnoteInserted'
+  | 'footnotePrompt'
+  | 'endnoteInserted'
+  | 'endnotePrompt'
   | 'numberedList'
   | 'numberedListApplied'
   | 'off'
@@ -418,6 +429,8 @@ const english: UiStrings = {
   imageScale: 'Scale',
   imageUpdated: 'Image updated',
   insertion: 'Insertion',
+  insertFootnote: 'Footnote',
+  insertEndnote: 'Endnote',
   insertImage: 'Insert image',
   insertOrUpdateTableOfContents: 'Insert/update contents',
   insertTable: 'Insert table',
@@ -451,6 +464,15 @@ const english: UiStrings = {
   no: 'No',
   noComments: 'No comments',
   noTrackedChanges: 'No tracked changes',
+  notes: 'Notes',
+  noNotes: 'No footnotes or endnotes',
+  noteBodyRequired: 'Enter note text before inserting it.',
+  noteBodyTooLong: 'Note is too long. Keep it under {max} characters.',
+  noteInsertionUnavailable: 'Place the cursor in editable text before inserting a note.',
+  footnoteInserted: 'Footnote inserted',
+  footnotePrompt: 'Footnote text',
+  endnoteInserted: 'Endnote inserted',
+  endnotePrompt: 'Endnote text',
   noIssues: 'No issues.',
   noMatches: 'No matches',
   noSuggestions: 'No suggestions',

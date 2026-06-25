@@ -3,6 +3,7 @@ import { sanitizeEditorHref } from './editorSecurity';
 import {
   supportedBlockTypes,
   supportedImageNodeTypes,
+  supportedInlineNodeTypes,
   supportedListNodeTypes,
   supportedMarkTypes,
   supportedSchema,
@@ -17,6 +18,7 @@ describe('supportedSchema', () => {
       'heading',
       'image',
       'list_item',
+      'note_reference',
       'ordered_list',
       'paragraph',
       'table',
@@ -29,6 +31,7 @@ describe('supportedSchema', () => {
     expect(supportedListNodeTypes).toEqual(['bullet_list', 'ordered_list', 'list_item']);
     expect(supportedTableNodeTypes).toEqual(['table', 'table_row', 'table_cell']);
     expect(supportedImageNodeTypes).toEqual(['image']);
+    expect(supportedInlineNodeTypes).toEqual(['note_reference']);
   });
 
   it('contains only word-core inline mark projections', () => {
@@ -108,6 +111,38 @@ describe('supportedSchema', () => {
         ]
       })
     ).toThrow('unsupported comment id');
+  });
+
+  it('accepts only bounded local note reference atoms', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            { type: 'text', text: 'Claim' },
+            { type: 'note_reference', attrs: { id: 'note-source', kind: 'footnote', label: '1' } }
+          ]
+        }
+      ]
+    });
+
+    expect(doc.firstChild?.child(1).type.name).toBe('note_reference');
+    expect(doc.textBetween(0, doc.content.size, '\n')).toBe('Claim1');
+
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            attrs: { style: 'body' },
+            content: [{ type: 'note_reference', attrs: { id: '../bad', kind: 'footnote', label: '1' } }]
+          }
+        ]
+      })
+    ).toThrow('unsupported note id');
   });
 
   it('preserves list nodes and direct text style attrs', () => {

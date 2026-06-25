@@ -28,6 +28,8 @@ Sprint 023 tracked changes are stored as local document metadata on inline text 
 
 Sprint 024 table-of-contents entries are stored as generated local document content. Entry text is copied from supported document headings, and generated bookmark IDs are compact document-local identifiers. The feature does not read operating-system usernames, hostnames, account identifiers, contact records, local paths, source filenames, cloud identity, network state, or external services.
 
+Sprint 025 footnotes and endnotes are stored as bounded local document content. Note IDs are compact generated document-local identifiers, labels are bounded visible reference strings, and bodies are bounded text. Stored note bodies appear in the desktop Notes sidebar when local notes are present, including notes promoted from bounded safe ODT metadata. The feature does not read operating-system usernames, hostnames, account identifiers, contact records, local paths, source filenames, cloud identity, network state, or external services.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -47,6 +49,8 @@ Sprint 022 stores 900Word-authored comments in ODT with ODF annotation elements 
 Sprint 023 stores 900Word-authored tracked changes in ODT with `word900` metadata on inline text spans for local change ID, kind, author, and timestamp, plus document-level recording state. This is a 900Word-authored text-only compatibility boundary, not a claim of DOCX/PDF track changes or full external ODT change-tracking fidelity.
 
 Sprint 024 stores 900Word-authored table-of-contents metadata in ODT with `word900:block-type="table-of-contents"` and safe generated bookmark targets. TXT/basic PDF exports render TOCs as ordinary text, and HTML/print HTML exports render safe local fragment links without deterministic page-number claims or local/private build metadata.
+
+Sprint 025 stores 900Word-authored footnotes and endnotes in ODT with ODF note elements and bounded `word900` metadata for local note ID and kind. Notes imported as local note metadata are visible in the desktop Notes sidebar, while malformed or unsupported note structures fall back to ordinary visible text with generic warnings. TXT/basic PDF exports render notes as ordinary text, and HTML/print HTML exports render sanitized local note sections without deterministic page-bottom placement, active PDF annotations, local usernames, hostnames, absolute paths, account metadata, or private build metadata.
 
 ## Network
 
