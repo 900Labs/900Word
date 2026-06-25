@@ -9,11 +9,12 @@ use word_core::{
     sanitize_table_cell_background_color, sanitize_table_column_widths, validate_comment_body,
     validate_comment_id, validate_note_body, validate_note_id, validate_note_reference,
     validate_tracked_change_id, AssetRef, Block, CommentThread, Document, DocumentWarning, Heading,
-    ImageBlock, ImagePresentation, Inline, InlineMark, InlineNoteReference, ListBlock, ListItem,
-    Note, NoteKind, PageField, PageRegion, PageRegionBlock, PageRegionParagraph, PageRegions,
-    Paragraph, ParagraphAlignment, ParagraphFormat, StyleId, Table, TableCell, TableCellBorder,
-    TableCellPresentation, TableOfContents, TableOfContentsEntry, TableRow, TrackedChange,
-    TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES, MAX_TABLE_WIDTH_COLUMNS,
+    ImageBlock, ImagePresentation, Inline, InlineMark, InlineNoteReference, InlineStyle, ListBlock,
+    ListItem, Note, NoteKind, PageField, PageRegion, PageRegionBlock, PageRegionParagraph,
+    PageRegions, Paragraph, ParagraphAlignment, ParagraphFormat, StyleId, Table, TableCell,
+    TableCellBorder, TableCellPresentation, TableOfContents, TableOfContentsEntry, TableRow,
+    TrackedChange, TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES,
+    MAX_TABLE_WIDTH_COLUMNS,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -58,6 +59,7 @@ const MAX_DOCX_PARAGRAPH_INDENT_MM: u16 = 100;
 const MAX_DOCX_FIRST_LINE_INDENT_MM: i16 = 100;
 const MIN_DOCX_LINE_SPACING_PER_MILLE: u16 = 500;
 const MAX_DOCX_LINE_SPACING_PER_MILLE: u16 = 3000;
+const SUPPORTED_DOCX_INLINE_FONT_SIZES_PT: &[u16] = &[9, 10, 11, 12, 14, 16, 18, 24, 32];
 const IMPORTED_DOCX_REVISION_AUTHOR: &str = "External Reviewer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -457,6 +459,11 @@ struct RunProperties {
     bold: bool,
     italic: bool,
     underline: bool,
+    strike: bool,
+    double_strike: bool,
+    superscript: bool,
+    subscript: bool,
+    style: InlineStyle,
 }
 
 impl RunProperties {
@@ -470,6 +477,14 @@ impl RunProperties {
         }
         if self.underline {
             marks.push(InlineMark::Underline);
+        }
+        if self.strike || self.double_strike {
+            marks.push(InlineMark::Strikethrough);
+        }
+        if self.superscript {
+            marks.push(InlineMark::Superscript);
+        } else if self.subscript {
+            marks.push(InlineMark::Subscript);
         }
         marks
     }
@@ -2424,6 +2439,66 @@ fn per_mille_to_docx_line_spacing(per_mille: u16) -> u32 {
     ((u32::from(per_mille) * DOCX_LINE_SPACING_BASE) + 500) / 1000
 }
 
+fn docx_run_font_size_pt(start: &BytesStart<'_>, name: &str) -> Result<Option<u16>, DocxError> {
+    let Some(value) = attr_value(start, b"val", name)? else {
+        return Ok(None);
+    };
+    let Ok(half_points) = value.parse::<u16>() else {
+        return Ok(None);
+    };
+    if half_points == 0 || half_points % 2 != 0 {
+        return Ok(None);
+    }
+    let points = half_points / 2;
+    if SUPPORTED_DOCX_INLINE_FONT_SIZES_PT.contains(&points) {
+        Ok(Some(points))
+    } else {
+        Ok(None)
+    }
+}
+
+fn docx_run_text_color(start: &BytesStart<'_>, name: &str) -> Result<Option<String>, DocxError> {
+    if attr_value(start, b"themeColor", name)?.is_some() {
+        return Ok(None);
+    }
+    let Some(value) = attr_value(start, b"val", name)? else {
+        return Ok(None);
+    };
+    Ok(docx_hex_color(&value))
+}
+
+fn docx_hex_color(value: &str) -> Option<String> {
+    if value.len() == 6 && value.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(format!("#{}", value.to_ascii_lowercase()))
+    } else {
+        None
+    }
+}
+
+fn docx_highlight_color(value: &str) -> Option<&'static str> {
+    match value {
+        "yellow" => Some("#fff3bf"),
+        "cyan" => Some("#dbeafe"),
+        "green" => Some("#dcfce7"),
+        "lightGray" => Some("#f1f5f9"),
+        _ => None,
+    }
+}
+
+fn docx_highlight_value(color: &str) -> Option<&'static str> {
+    match color.trim().to_ascii_lowercase().as_str() {
+        "#fff3bf" => Some("yellow"),
+        "#dbeafe" => Some("cyan"),
+        "#dcfce7" => Some("green"),
+        "#f1f5f9" => Some("lightGray"),
+        _ => None,
+    }
+}
+
+fn docx_text_color_value(color: &str) -> Option<String> {
+    docx_hex_color(color.strip_prefix('#')?).map(|value| value[1..].to_ascii_uppercase())
+}
+
 fn parse_docx_i32_attr(start: &BytesStart<'_>, attr: &[u8]) -> Result<Option<i32>, DocxError> {
     let Some(value) = attr_value(start, attr, DOCUMENT_XML)? else {
         return Ok(None);
@@ -3393,10 +3468,12 @@ fn push_docx_note_reference_content(
     )? {
         let mut inline = Inline::note_reference(reference);
         inline.marks = properties.marks();
+        inline.style = properties.style.clone();
         content.push(ParagraphContent::Inline(Box::new(inline)));
     } else {
         let mut inline = Inline::text(docx_note_reference_fallback_text(kind));
         inline.marks = properties.marks();
+        inline.style = properties.style.clone();
         content.push(ParagraphContent::Inline(Box::new(inline)));
     }
     Ok(())
@@ -3622,7 +3699,7 @@ fn flush_run_text_content(
         marks: properties.marks(),
         link,
         comment_ids,
-        style: Default::default(),
+        style: properties.style.clone(),
         field: None,
         note_reference: None,
         tracked_change: tracked_change.cloned(),
@@ -3739,7 +3816,7 @@ fn parse_run(
         marks: properties.marks(),
         link,
         comment_ids: Vec::new(),
-        style: Default::default(),
+        style: properties.style,
         field: None,
         note_reference: None,
         tracked_change: None,
@@ -3768,6 +3845,55 @@ fn parse_run_properties(
                 if local_name(start.name().as_ref()) == b"u" =>
             {
                 properties.underline = attr_value(&start, b"val", name)?.as_deref() != Some("none");
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"strike" =>
+            {
+                properties.strike = truthy_word_bool(&start, name)?;
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"dstrike" =>
+            {
+                properties.double_strike = truthy_word_bool(&start, name)?;
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"vertAlign" =>
+            {
+                match attr_value(&start, b"val", name)?.as_deref() {
+                    Some("superscript") => {
+                        properties.superscript = true;
+                        properties.subscript = false;
+                    }
+                    Some("subscript") => {
+                        properties.subscript = true;
+                        properties.superscript = false;
+                    }
+                    _ => {}
+                }
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"sz" =>
+            {
+                if let Some(font_size) = docx_run_font_size_pt(&start, name)? {
+                    properties.style.font_size_pt = Some(font_size);
+                }
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"color" =>
+            {
+                if let Some(color) = docx_run_text_color(&start, name)? {
+                    properties.style.text_color = Some(color);
+                }
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"highlight" =>
+            {
+                if let Some(highlight) = attr_value(&start, b"val", name)?
+                    .as_deref()
+                    .and_then(docx_highlight_color)
+                {
+                    properties.style.highlight_color = Some(highlight.to_string());
+                }
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"rPr" => break,
             Event::Start(start)
@@ -3806,14 +3932,27 @@ fn parse_simple_field(
     name: &str,
 ) -> Result<Vec<Inline>, DocxError> {
     if let Some(field) = field {
-        skip_element(reader, b"fldSimple", name)?;
-        return Ok(vec![Inline::field(field)]);
+        let inlines = parse_simple_field_inlines(reader, warnings, name)?;
+        let mut inline = Inline::field(field);
+        if let Some((marks, style)) = common_inline_format(&inlines) {
+            inline.marks = marks;
+            inline.style = style;
+        }
+        return Ok(vec![inline]);
     }
 
     warnings.warn(
         "docx_field_degraded",
         "Unsupported DOCX fields were imported as visible text when available",
     );
+    parse_simple_field_inlines(reader, warnings, name)
+}
+
+fn parse_simple_field_inlines(
+    reader: &mut Reader<&[u8]>,
+    warnings: &mut WarningSink,
+    name: &str,
+) -> Result<Vec<Inline>, DocxError> {
     let mut inlines = Vec::new();
     loop {
         match reader.read_event().map_err(|err| xml_error(name, err))? {
@@ -3831,6 +3970,16 @@ fn parse_simple_field(
         }
     }
     Ok(inlines)
+}
+
+fn common_inline_format(inlines: &[Inline]) -> Option<(Vec<InlineMark>, InlineStyle)> {
+    let mut formatted = inlines.iter().filter(|inline| !inline.text.is_empty());
+    let first = formatted.next()?;
+    if formatted.all(|inline| inline.marks == first.marks && inline.style == first.style) {
+        Some((first.marks.clone(), first.style.clone()))
+    } else {
+        None
+    }
 }
 
 fn page_field_from_instruction(instruction: Option<&str>) -> Option<PageField> {
@@ -5604,7 +5753,7 @@ fn render_note_reference_xml(
     output: &mut String,
 ) {
     output.push_str("<w:r>");
-    render_run_properties_xml(&inline.marks, output);
+    render_run_properties_xml(inline, output);
     output.push_str(match kind {
         NoteKind::Footnote => "<w:footnoteReference w:id=\"",
         NoteKind::Endnote => "<w:endnoteReference w:id=\"",
@@ -5658,6 +5807,7 @@ fn render_run_xml_with_text_element(inline: &Inline, text_element: &str, output:
         output.push_str("\">");
         let mut fallback = Inline::text(field.fallback_text());
         fallback.marks = inline.marks.clone();
+        fallback.style = inline.style.clone();
         render_run_xml_with_text_element(&fallback, text_element, output);
         output.push_str("</w:fldSimple>");
         return;
@@ -5666,7 +5816,7 @@ fn render_run_xml_with_text_element(inline: &Inline, text_element: &str, output:
         return;
     }
     output.push_str("<w:r>");
-    render_run_properties_xml(&inline.marks, output);
+    render_run_properties_xml(inline, output);
 
     let mut text_buffer = String::new();
     for ch in inline.text.chars() {
@@ -5686,8 +5836,9 @@ fn render_run_xml_with_text_element(inline: &Inline, text_element: &str, output:
     output.push_str("</w:r>");
 }
 
-fn render_run_properties_xml(marks: &[InlineMark], output: &mut String) {
-    if !marks.is_empty() {
+fn render_run_properties_xml(inline: &Inline, output: &mut String) {
+    let marks = &inline.marks;
+    if !marks.is_empty() || has_exportable_docx_inline_style(&inline.style) {
         output.push_str("<w:rPr>");
         if marks.contains(&InlineMark::Bold) {
             output.push_str("<w:b/>");
@@ -5698,8 +5849,61 @@ fn render_run_properties_xml(marks: &[InlineMark], output: &mut String) {
         if marks.contains(&InlineMark::Underline) {
             output.push_str("<w:u w:val=\"single\"/>");
         }
+        if marks.contains(&InlineMark::Strikethrough) {
+            output.push_str("<w:strike/>");
+        }
+        if marks.contains(&InlineMark::Superscript) {
+            output.push_str("<w:vertAlign w:val=\"superscript\"/>");
+        } else if marks.contains(&InlineMark::Subscript) {
+            output.push_str("<w:vertAlign w:val=\"subscript\"/>");
+        }
+        if let Some(font_size) = inline
+            .style
+            .font_size_pt
+            .filter(|value| SUPPORTED_DOCX_INLINE_FONT_SIZES_PT.contains(value))
+        {
+            output.push_str("<w:sz w:val=\"");
+            output.push_str(&(font_size * 2).to_string());
+            output.push_str("\"/>");
+        }
+        if let Some(color) = inline
+            .style
+            .text_color
+            .as_deref()
+            .and_then(docx_text_color_value)
+        {
+            output.push_str("<w:color w:val=\"");
+            output.push_str(&color);
+            output.push_str("\"/>");
+        }
+        if let Some(highlight) = inline
+            .style
+            .highlight_color
+            .as_deref()
+            .and_then(docx_highlight_value)
+        {
+            output.push_str("<w:highlight w:val=\"");
+            output.push_str(highlight);
+            output.push_str("\"/>");
+        }
         output.push_str("</w:rPr>");
     }
+}
+
+fn has_exportable_docx_inline_style(style: &InlineStyle) -> bool {
+    style
+        .font_size_pt
+        .is_some_and(|value| SUPPORTED_DOCX_INLINE_FONT_SIZES_PT.contains(&value))
+        || style
+            .text_color
+            .as_deref()
+            .and_then(docx_text_color_value)
+            .is_some()
+        || style
+            .highlight_color
+            .as_deref()
+            .and_then(docx_highlight_value)
+            .is_some()
 }
 
 fn flush_text_run(text: &mut String, text_element: &str, output: &mut String) {
@@ -6837,6 +7041,105 @@ mod tests {
     }
 
     #[test]
+    fn imports_docx_inline_formatting_from_safe_subset() {
+        let bytes = synthetic_docx(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r><w:rPr><w:strike/><w:vertAlign w:val="superscript"/><w:sz w:val="28"/><w:color w:val="1F2937"/><w:highlight w:val="yellow"/></w:rPr><w:t>Styled</w:t></w:r>
+    <w:r><w:rPr><w:dstrike/><w:vertAlign w:val="subscript"/><w:sz w:val="18"/><w:color w:val="0066CC"/><w:highlight w:val="cyan"/></w:rPr><w:t> small</w:t></w:r>
+  </w:p>
+</w:body></w:document>"##,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("formatted inline content should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(
+            paragraph.inlines[0].marks,
+            vec![InlineMark::Strikethrough, InlineMark::Superscript]
+        );
+        assert_eq!(
+            paragraph.inlines[0].style,
+            InlineStyle {
+                font_family: None,
+                font_size_pt: Some(14),
+                text_color: Some("#1f2937".to_string()),
+                highlight_color: Some("#fff3bf".to_string()),
+            }
+        );
+        assert_eq!(
+            paragraph.inlines[1].marks,
+            vec![InlineMark::Strikethrough, InlineMark::Subscript]
+        );
+        assert_eq!(paragraph.inlines[1].style.font_size_pt, Some(9));
+        assert_eq!(
+            paragraph.inlines[1].style.text_color.as_deref(),
+            Some("#0066cc")
+        );
+        assert_eq!(
+            paragraph.inlines[1].style.highlight_color.as_deref(),
+            Some("#dbeafe")
+        );
+    }
+
+    #[test]
+    fn ignores_unsupported_docx_inline_formatting_values() {
+        let bytes = synthetic_docx(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r><w:rPr><w:strike w:val="false"/><w:vertAlign w:val="baseline"/><w:sz w:val="27"/><w:color w:val="auto"/><w:highlight w:val="red"/></w:rPr><w:t>Unsupported</w:t></w:r>
+    <w:r><w:rPr><w:color w:val="1F2937" w:themeColor="accent1"/><w:highlight w:val="darkYellow"/></w:rPr><w:t> themed</w:t></w:r>
+  </w:p>
+</w:body></w:document>"##,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("unsupported inline content should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(paragraph.inlines.len(), 1);
+        assert_eq!(paragraph.inlines[0].text, "Unsupported themed");
+        assert!(paragraph.inlines[0].marks.is_empty());
+        assert!(paragraph.inlines[0].style.is_default());
+    }
+
+    #[test]
+    fn imports_docx_strike_and_double_strike_independently() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r><w:rPr><w:strike/><w:dstrike w:val="false"/></w:rPr><w:t>Strike</w:t></w:r>
+    <w:r><w:rPr><w:strike w:val="false"/><w:dstrike/></w:rPr><w:t>Double</w:t></w:r>
+    <w:r><w:rPr><w:strike w:val="false"/><w:dstrike w:val="false"/></w:rPr><w:t>Plain</w:t></w:r>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("strike variants should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(paragraph.inlines.len(), 2);
+        assert_eq!(paragraph.inlines[0].text, "StrikeDouble");
+        assert_eq!(paragraph.inlines[0].marks, vec![InlineMark::Strikethrough]);
+        assert_eq!(paragraph.inlines[1].text, "Plain");
+        assert!(paragraph.inlines[1].marks.is_empty());
+    }
+
+    #[test]
     fn imports_docx_paragraph_formatting_from_safe_subset() {
         let bytes = synthetic_docx(
             r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -7951,7 +8254,7 @@ mod tests {
             &[
                 (
                     "word/header1.xml",
-                    r#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Page </w:t></w:r><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p></w:hdr>"#,
+                    r#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Page </w:t></w:r><w:fldSimple w:instr=" PAGE "><w:r><w:rPr><w:b/><w:sz w:val="28"/><w:color w:val="1F2937"/><w:highlight w:val="yellow"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple></w:p></w:hdr>"#,
                 ),
                 (
                     "word/footer1.xml",
@@ -7975,6 +8278,16 @@ mod tests {
         let PageRegionBlock::Paragraph(header) = &regions.header.blocks[0];
         assert_eq!(header.inlines[0].text, "Page ");
         assert_eq!(header.inlines[1].field, Some(PageField::PageNumber));
+        assert_eq!(header.inlines[1].marks, vec![InlineMark::Bold]);
+        assert_eq!(header.inlines[1].style.font_size_pt, Some(14));
+        assert_eq!(
+            header.inlines[1].style.text_color.as_deref(),
+            Some("#1f2937")
+        );
+        assert_eq!(
+            header.inlines[1].style.highlight_color.as_deref(),
+            Some("#fff3bf")
+        );
         let PageRegionBlock::Paragraph(footer) = &regions.footer.blocks[0];
         assert_eq!(footer.inlines[1].field, Some(PageField::PageCount));
         let PageRegionBlock::Paragraph(first_header) = &regions.first_header.blocks[0];
@@ -8058,6 +8371,90 @@ mod tests {
         assert_eq!(footer.inlines[1].field, Some(PageField::PageCount));
         let PageRegionBlock::Paragraph(first_header) = &regions.first_header.blocks[0];
         assert_eq!(first_header.inlines[1].field, Some(PageField::Date));
+    }
+
+    #[test]
+    fn exports_and_imports_docx_field_inline_formatting() {
+        let mut body_field = Inline::field(PageField::PageNumber);
+        body_field.marks = vec![InlineMark::Bold, InlineMark::Strikethrough];
+        body_field.style = InlineStyle {
+            font_family: None,
+            font_size_pt: Some(14),
+            text_color: Some("#1f2937".to_string()),
+            highlight_color: Some("#fff3bf".to_string()),
+        };
+        let mut header_field = Inline::field(PageField::Date);
+        header_field.marks = vec![InlineMark::Italic, InlineMark::Superscript];
+        header_field.style = InlineStyle {
+            font_family: None,
+            font_size_pt: Some(9),
+            text_color: Some("#0066cc".to_string()),
+            highlight_color: Some("#dbeafe".to_string()),
+        };
+
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: ParagraphFormat::default(),
+            inlines: vec![Inline::text("Page "), body_field],
+        })];
+        document.sections[0].page_regions.header.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![Inline::text("Updated "), header_field],
+            })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write styled fields");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+        let header_xml = read_zip_text_part(&bytes, "word/header1.xml");
+
+        assert!(document_xml.contains(r#"<w:fldSimple w:instr=" PAGE ">"#));
+        assert!(document_xml.contains("<w:b/>"));
+        assert!(document_xml.contains("<w:strike/>"));
+        assert!(document_xml.contains(r#"<w:sz w:val="28"/>"#));
+        assert!(document_xml.contains(r#"<w:color w:val="1F2937"/>"#));
+        assert!(document_xml.contains(r#"<w:highlight w:val="yellow"/>"#));
+        assert!(header_xml.contains(r#"<w:fldSimple w:instr=" DATE ">"#));
+        assert!(header_xml.contains("<w:i/>"));
+        assert!(header_xml.contains(r#"<w:vertAlign w:val="superscript"/>"#));
+        assert!(header_xml.contains(r#"<w:sz w:val="18"/>"#));
+        assert!(header_xml.contains(r#"<w:color w:val="0066CC"/>"#));
+        assert!(header_xml.contains(r#"<w:highlight w:val="cyan"/>"#));
+
+        let parsed = read_docx_bytes(&bytes).expect("styled fields should import");
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("body paragraph should import");
+        };
+        assert_eq!(paragraph.inlines[1].field, Some(PageField::PageNumber));
+        assert_eq!(
+            paragraph.inlines[1].marks,
+            vec![InlineMark::Bold, InlineMark::Strikethrough]
+        );
+        assert_eq!(paragraph.inlines[1].style.font_size_pt, Some(14));
+        assert_eq!(
+            paragraph.inlines[1].style.text_color.as_deref(),
+            Some("#1f2937")
+        );
+        assert_eq!(
+            paragraph.inlines[1].style.highlight_color.as_deref(),
+            Some("#fff3bf")
+        );
+
+        let PageRegionBlock::Paragraph(header) = &parsed.sections[0].page_regions.header.blocks[0];
+        assert_eq!(header.inlines[1].field, Some(PageField::Date));
+        assert_eq!(
+            header.inlines[1].marks,
+            vec![InlineMark::Italic, InlineMark::Superscript]
+        );
+        assert_eq!(header.inlines[1].style.font_size_pt, Some(9));
+        assert_eq!(
+            header.inlines[1].style.text_color.as_deref(),
+            Some("#0066cc")
+        );
+        assert_eq!(
+            header.inlines[1].style.highlight_color.as_deref(),
+            Some("#dbeafe")
+        );
     }
 
     #[test]
@@ -8169,6 +8566,108 @@ mod tests {
         assert_eq!(
             paragraph.inlines[0].link.as_deref(),
             Some("https://example.invalid/export")
+        );
+    }
+
+    #[test]
+    fn exports_and_imports_docx_inline_formatting() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: ParagraphFormat::default(),
+            inlines: vec![
+                Inline {
+                    text: "Styled".to_string(),
+                    marks: vec![
+                        InlineMark::Bold,
+                        InlineMark::Italic,
+                        InlineMark::Underline,
+                        InlineMark::Strikethrough,
+                        InlineMark::Superscript,
+                    ],
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: InlineStyle {
+                        font_family: Some("serif".to_string()),
+                        font_size_pt: Some(14),
+                        text_color: Some("#1f2937".to_string()),
+                        highlight_color: Some("#fff3bf".to_string()),
+                    },
+                    field: None,
+                    note_reference: None,
+                    tracked_change: None,
+                },
+                Inline {
+                    text: " small".to_string(),
+                    marks: vec![InlineMark::Subscript],
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: InlineStyle {
+                        font_family: None,
+                        font_size_pt: Some(9),
+                        text_color: Some("#0066cc".to_string()),
+                        highlight_color: Some("#dbeafe".to_string()),
+                    },
+                    field: None,
+                    note_reference: None,
+                    tracked_change: None,
+                },
+            ],
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write formatted inline text");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+
+        assert!(document_xml.contains("<w:b/>"));
+        assert!(document_xml.contains("<w:i/>"));
+        assert!(document_xml.contains(r#"<w:u w:val="single"/>"#));
+        assert!(document_xml.contains("<w:strike/>"));
+        assert!(document_xml.contains(r#"<w:vertAlign w:val="superscript"/>"#));
+        assert!(document_xml.contains(r#"<w:vertAlign w:val="subscript"/>"#));
+        assert!(document_xml.contains(r#"<w:sz w:val="28"/>"#));
+        assert!(document_xml.contains(r#"<w:sz w:val="18"/>"#));
+        assert!(document_xml.contains(r#"<w:color w:val="1F2937"/>"#));
+        assert!(document_xml.contains(r#"<w:color w:val="0066CC"/>"#));
+        assert!(document_xml.contains(r#"<w:highlight w:val="yellow"/>"#));
+        assert!(document_xml.contains(r#"<w:highlight w:val="cyan"/>"#));
+        assert!(!document_xml.contains("w:rFonts"));
+
+        let parsed = read_docx_bytes(&bytes).expect("formatted inline text should import");
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("formatted inline text should round-trip through docx converter");
+        };
+
+        assert_eq!(
+            paragraph.inlines[0].marks,
+            vec![
+                InlineMark::Bold,
+                InlineMark::Italic,
+                InlineMark::Underline,
+                InlineMark::Strikethrough,
+                InlineMark::Superscript,
+            ]
+        );
+        assert_eq!(paragraph.inlines[0].style.font_family, None);
+        assert_eq!(paragraph.inlines[0].style.font_size_pt, Some(14));
+        assert_eq!(
+            paragraph.inlines[0].style.text_color.as_deref(),
+            Some("#1f2937")
+        );
+        assert_eq!(
+            paragraph.inlines[0].style.highlight_color.as_deref(),
+            Some("#fff3bf")
+        );
+        assert_eq!(paragraph.inlines[1].marks, vec![InlineMark::Subscript]);
+        assert_eq!(paragraph.inlines[1].style.font_size_pt, Some(9));
+        assert_eq!(
+            paragraph.inlines[1].style.text_color.as_deref(),
+            Some("#0066cc")
+        );
+        assert_eq!(
+            paragraph.inlines[1].style.highlight_color.as_deref(),
+            Some("#dbeafe")
         );
     }
 
