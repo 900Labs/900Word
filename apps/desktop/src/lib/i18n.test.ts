@@ -32,6 +32,14 @@ describe('i18n', () => {
     expect(translate('es-ES', 'accessibilityAndPerformance')).toBe('Accesibilidad y rendimiento');
   });
 
+  it('labels settings reset actions in supported locales', () => {
+    expect(translate('en-US', 'resetSettings')).toBe('Reset Settings');
+    expect(translate('en-US', 'settingsReset')).toBe('Settings reset to defaults');
+    expect(translate('es-ES', 'resetSettings')).toBe('Restablecer ajustes');
+    expect(translate('es-ES', 'settingsReset')).toBe('Ajustes restablecidos');
+    expect(translate('ar', 'resetSettings')).toBe('Reset Settings');
+  });
+
   it('labels the offline dictionary manager in supported locales', () => {
     expect(translate('en-US', 'dictionaryManager')).toBe('Dictionary manager');
     expect(translate('en-US', 'dictionaryOfflineState')).toContain('Offline/local only');

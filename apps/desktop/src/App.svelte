@@ -661,6 +661,15 @@
     }
   }
 
+  async function resetSettings() {
+    try {
+      settings = await invoke<Settings>('reset_settings');
+      status = tr('settingsReset');
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
   async function exportText() {
     try {
       await waitForEditorSync();
@@ -3598,7 +3607,10 @@
           {tr('telemetry')}
         </label>
 
-        <button type="button" onclick={saveSettings}>{tr('saveSettings')}</button>
+        <div class="field-button-row">
+          <button type="button" onclick={saveSettings}>{tr('saveSettings')}</button>
+          <button type="button" onclick={resetSettings}>{tr('resetSettings')}</button>
+        </div>
       </div>
     </div>
 

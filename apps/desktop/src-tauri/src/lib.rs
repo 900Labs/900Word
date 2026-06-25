@@ -225,6 +225,7 @@ pub fn run() {
             list_dictionaries,
             get_settings,
             update_settings,
+            reset_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running 900Word");
@@ -552,6 +553,12 @@ fn update_settings(settings: Settings, app: tauri::AppHandle) -> Result<Settings
     save_settings_to_path(&path, settings)
 }
 
+#[tauri::command]
+fn reset_settings(app: tauri::AppHandle) -> Result<Settings, String> {
+    let path = settings_path(&app)?;
+    reset_settings_at_path(&path)
+}
+
 fn sanitize_settings(settings: Settings) -> Settings {
     Settings {
         telemetry_enabled: false,
@@ -603,6 +610,10 @@ fn save_settings_to_path(path: &Path, settings: Settings) -> Result<Settings, St
     write_bytes_atomically(path, &bytes, true)
         .map_err(|_| "settings could not be saved".to_string())?;
     Ok(settings)
+}
+
+fn reset_settings_at_path(path: &Path) -> Result<Settings, String> {
+    save_settings_to_path(path, Settings::default())
 }
 
 fn ensure_private_settings_parent(path: &Path) -> Result<(), String> {
@@ -2562,6 +2573,127 @@ mod tests {
         assert!(!loaded.smart_typing.smart_dashes);
         assert!(loaded.smart_typing.typo_replacements);
         assert!(!loaded.smart_typing.list_triggers);
+    }
+
+    #[test]
+    fn reset_settings_rewrites_sanitized_defaults() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("settings.json");
+        save_settings_to_path(
+            &path,
+            Settings {
+                telemetry_enabled: true,
+                language_tag: "de-DE".to_string(),
+                ui_locale: "es-ES".to_string(),
+                high_contrast: true,
+                large_toolbar: true,
+                reduced_motion: true,
+                low_resource: true,
+                smart_typing: SmartTypingSettings {
+                    capitalize_sentences: true,
+                    smart_quotes: true,
+                    smart_dashes: true,
+                    typo_replacements: true,
+                    list_triggers: true,
+                },
+            },
+        )
+        .expect("settings should save");
+
+        let reset = reset_settings_at_path(&path).expect("settings should reset");
+        let loaded = load_settings_from_path(&path);
+        let raw = std::fs::read_to_string(&path).expect("settings should be readable");
+
+        assert!(!reset.telemetry_enabled);
+        assert_eq!(reset.language_tag, FALLBACK_LANGUAGE_TAG);
+        assert_eq!(reset.ui_locale, "en-US");
+        assert!(!reset.high_contrast);
+        assert!(!reset.large_toolbar);
+        assert!(!reset.reduced_motion);
+        assert!(!reset.low_resource);
+        assert!(!reset.smart_typing.capitalize_sentences);
+        assert!(!reset.smart_typing.smart_quotes);
+        assert!(!reset.smart_typing.smart_dashes);
+        assert!(!reset.smart_typing.typo_replacements);
+        assert!(!reset.smart_typing.list_triggers);
+        assert!(!loaded.telemetry_enabled);
+        assert_eq!(loaded.language_tag, FALLBACK_LANGUAGE_TAG);
+        assert_eq!(loaded.ui_locale, "en-US");
+        assert!(raw.contains("\"telemetry_enabled\": false"));
+        assert!(!raw.contains("de-DE"));
+        assert!(!raw.contains("es-ES"));
+    }
+
+    #[test]
+    fn reset_settings_handles_missing_file() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("settings.json");
+
+        let reset = reset_settings_at_path(&path).expect("missing settings should reset");
+
+        assert!(path.exists());
+        assert!(!reset.telemetry_enabled);
+        assert_eq!(reset.language_tag, FALLBACK_LANGUAGE_TAG);
+        assert_eq!(reset.ui_locale, "en-US");
+        assert!(!reset.high_contrast);
+    }
+
+    #[test]
+    fn reset_settings_failure_does_not_leak_path_details() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("private-client-settings.json");
+        std::fs::create_dir(&path).expect("settings directory should be created");
+
+        let err = reset_settings_at_path(&path).expect_err("directory target should fail");
+
+        assert_eq!(err, "settings could not be saved");
+        assert!(!err.contains(dir.path().to_string_lossy().as_ref()));
+        assert!(!err.contains("private-client-settings"));
+        assert!(!err.contains("settings.json"));
+    }
+
+    #[test]
+    fn reset_settings_unsafe_parent_does_not_leak_path_details() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let parent = dir.path().join("private-client-home");
+        std::fs::write(&parent, b"not a directory").expect("parent file should write");
+        let path = parent.join("settings.json");
+
+        let err = reset_settings_at_path(&path).expect_err("unsafe parent should fail");
+
+        assert_eq!(err, "settings storage is unavailable");
+        assert!(!err.contains(dir.path().to_string_lossy().as_ref()));
+        assert!(!err.contains("private-client-home"));
+        assert!(!err.contains("settings.json"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reset_settings_rewrite_uses_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, b"{\"telemetry_enabled\":true}").expect("settings seed should write");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("dir permissions should apply");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("file permissions should apply");
+
+        reset_settings_at_path(&path).expect("settings should reset");
+
+        let dir_mode = std::fs::metadata(dir.path())
+            .expect("dir metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&path)
+            .expect("settings metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
     }
 
     #[test]

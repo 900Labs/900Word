@@ -291,6 +291,8 @@ export type UiStringKey =
   | 'savedLocation'
   | 'savedStatus'
   | 'settings'
+  | 'resetSettings'
+  | 'settingsReset'
   | 'settingsUpdated'
   | 'selectionWords'
   | 'showRulers'
@@ -664,6 +666,8 @@ const english: UiStrings = {
   savedLocation: 'Saved location',
   savedStatus: 'Saved status',
   settings: 'Settings',
+  resetSettings: 'Reset Settings',
+  settingsReset: 'Settings reset to defaults',
   settingsUpdated: 'Settings updated',
   selectionWords: 'Selection words',
   showRulers: 'Rulers',
@@ -847,6 +851,8 @@ const spanish: Partial<UiStrings> = {
   saveSettings: 'Guardar ajustes',
   saved: 'Guardado',
   settings: 'Ajustes',
+  resetSettings: 'Restablecer ajustes',
+  settingsReset: 'Ajustes restablecidos',
   settingsUpdated: 'Ajustes guardados',
   smartDashes: 'Convertir -- en raya',
   smartListTriggers: 'Convertir - y 1. en listas',
