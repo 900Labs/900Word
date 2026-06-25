@@ -334,3 +334,12 @@ Status: complete.
 - Read only safe relationship-resolved `word/comments.xml` or `word/comments*.xml` package parts that pass existing preflight, and keep warnings generic.
 - Export valid 900Word-authored anchored comments as generated `word/comments.xml`, a generated document relationship, a content-type override, and simple range/reference markers around supported inline text.
 - Keep ODT canonical, with DOCX replies, threaded comments, resolved-state fidelity, tracked changes, notes, full review fidelity, cloud, telemetry, accounts, network behavior, external converters, heavyweight dependencies, and full DOCX comments fidelity deferred.
+
+## Sprint 036: PDF Table And Image Rendering
+
+Status: complete.
+
+- Extend the lightweight PDF export body projection with text lines, simple table rows/cells, and image figure placeholders.
+- Render simple PDF tables as vector cell boxes with wrapped cell text while preserving generated page objects and page ranges.
+- Render image blocks as bounded visible figure placeholders using alt text, captions, alignment, and scale metadata without embedding raster image bytes or emitting asset IDs, source names, local paths, usernames, or hostnames as image metadata.
+- Keep ODT canonical and keep raster PDF image embedding, merged cells, table resizing, rich table styling, formulas, complex nested table layout, embedded/subset fonts, active PDF link annotations, complex script shaping, and full layout fidelity deferred.
