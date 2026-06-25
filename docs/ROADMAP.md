@@ -117,7 +117,7 @@ Status: complete.
 - Store accepted bytes as embedded `word-core` assets and insert `ImageBlock` references without preserving source paths or private source filenames.
 - Project images as non-editable ProseMirror image atoms so text editing does not silently drop image blocks.
 - Persist inserted images through ODT save/reopen and include allowlisted embedded image assets in offline HTML export as data URLs.
-- Keep dedicated alt text editing, image resizing/cropping, and raster PDF embedding deferred.
+- Keep dedicated alt text editing, image resizing/cropping, and PDF image embedding deferred to later scoped sprints.
 
 ## Sprint 015: Image Polish MVP
 
@@ -127,7 +127,7 @@ Status: complete.
 - Add compact contextual desktop controls for the selected image atom without introducing a custom image editor framework.
 - Preserve image metadata through ProseMirror projection/text sync and 900Word-authored ODT save/reopen using the existing `word900` metadata namespace.
 - Reflect image alt/caption/alignment/scale in sanitized HTML and print HTML export.
-- Keep cropping, drag resize handles, richer external ODT image-layout fidelity, and raster PDF image embedding deferred.
+- Keep cropping, drag resize handles, richer external ODT image-layout fidelity, and PDF image embedding deferred to later scoped sprints.
 
 ## Sprint 016: Bookmarks And Internal Links MVP
 
@@ -342,7 +342,7 @@ Status: complete.
 - Extend the lightweight PDF export body projection with text lines, simple table rows/cells, and image figure placeholders.
 - Render simple PDF tables as vector cell boxes with wrapped cell text while preserving generated page objects and page ranges.
 - Render image blocks as bounded visible figure placeholders using alt text, captions, alignment, and scale metadata without embedding raster image bytes or emitting asset IDs, source names, local paths, usernames, or hostnames as image metadata.
-- Keep ODT canonical and keep raster PDF image embedding, merged cells, table resizing, rich table styling, formulas, complex nested table layout, embedded/subset fonts, internal PDF destinations, exact glyph-level PDF link geometry, complex script shaping, and full layout fidelity deferred.
+- Keep ODT canonical. Sprint 038 later adds bounded JPEG embedding; PNG/GIF/WebP PDF embedding, merged cells, table resizing, rich table styling, formulas, complex nested table layout, embedded/subset fonts, internal PDF destinations, exact glyph-level PDF link geometry, complex script shaping, and full layout fidelity remain deferred.
 
 ## Sprint 037: PDF Link Annotations
 
@@ -353,3 +353,13 @@ Status: complete.
 - Place annotations over approximate text-run rectangles from the existing lightweight line layout without creating page-wide clickable areas.
 - Degrade over-budget links to visible rendered text without annotation objects using per-page and per-export caps.
 - Keep ODT canonical and keep active internal PDF destinations, exact glyph-level link geometry, PDF comment/note annotations, remote fetching, telemetry, accounts, cloud behavior, and full layout fidelity deferred.
+
+## Sprint 038: PDF JPEG Image Embedding
+
+Status: complete.
+
+- Embed safe in-document baseline JPEG/JPG assets in generated PDFs as bounded `/DCTDecode` image XObjects after APP/COM JPEG metadata marker stripping.
+- Keep PNG, GIF, WebP, malformed JPEG, oversized JPEG, unsupported component-count, post-scan metadata-marker, and over-cap cases on the visible figure-placeholder fallback path with alt/caption text when present.
+- Bound JPEG embedding to 32 images per generated PDF, 8 MiB per embedded JPEG, 8192 px per side, 20,000,000 pixels, and grayscale/RGB component counts.
+- Preserve page size, margins, image alignment, bounded scale metadata, and page-range selection behavior without adding a heavy PDF or image-processing dependency.
+- Keep ODT canonical and keep PNG/GIF/WebP PDF embedding, progressive JPEG embedding, JPEG decoding, downsampling/recompression, crop/rotation, EXIF interpretation/selective preservation, color-management precision, rich PDF image metadata, remote fetching, telemetry, accounts, cloud behavior, and full layout fidelity deferred.

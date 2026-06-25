@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 use word_core::{
-    collect_ordered_note_references, Block, Document, Heading, ImageAlignment, ImageBlock, Inline,
-    InlineMark, NoteKind, PageField, PageRegion, PageRegionBlock, PageSetup, Paragraph,
-    ParagraphFormat, Section, Style, StyleKind, TableOfContents,
+    collect_ordered_note_references, AssetRef, Block, Document, Heading, ImageAlignment,
+    ImageBlock, Inline, InlineMark, NoteKind, PageField, PageRegion, PageRegionBlock, PageSetup,
+    Paragraph, ParagraphFormat, Section, Style, StyleKind, TableOfContents,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -23,10 +23,15 @@ const PDF_FIGURE_PADDING: f32 = 6.0;
 const PDF_FIGURE_BASE_HEIGHT: f32 = 72.0;
 const PDF_FIGURE_MIN_HEIGHT: f32 = 48.0;
 const PDF_FIGURE_GAP_POINTS: f32 = 4.0;
+const PDF_FIGURE_IMAGE_TEXT_GAP_POINTS: f32 = 4.0;
 const PDF_TEXT_WIDTH_FACTOR: f32 = 0.52;
 const PDF_MAX_LINK_ANNOTATIONS_PER_DOCUMENT: usize = 512;
 const PDF_MAX_LINK_ANNOTATIONS_PER_PAGE: usize = 64;
 const PDF_MAX_URI_BYTES: usize = 2048;
+const PDF_MAX_EMBEDDED_IMAGES_PER_DOCUMENT: usize = 32;
+const PDF_MAX_JPEG_BYTES_PER_IMAGE: usize = 8 * 1024 * 1024;
+const PDF_MAX_JPEG_DIMENSION: u32 = 8192;
+const PDF_MAX_JPEG_PIXELS: u64 = 20_000_000;
 const PDF_PAGE_NUMBER_TOKEN: &str = "\u{e000}page-number\u{e001}";
 const PDF_PAGE_COUNT_TOKEN: &str = "\u{e000}page-count\u{e001}";
 const PDF_DATE_TOKEN: &str = "\u{e000}date\u{e001}";
@@ -147,11 +152,35 @@ struct PdfRect {
 struct PdfRenderedPage {
     stream: String,
     annotations: Vec<PdfLinkAnnotation>,
+    images: Vec<PdfRenderedImage>,
 }
 
 struct PdfAnnotationCollector<'a> {
     annotations: &'a mut Vec<PdfLinkAnnotation>,
     remaining: &'a mut usize,
+}
+
+struct PdfImageCollector<'a> {
+    document: &'a Document,
+    images: &'a mut Vec<PdfRenderedImage>,
+    remaining: &'a mut usize,
+}
+
+struct PdfPageRenderState<'a> {
+    cursor_y: &'a mut f32,
+    annotations: &'a mut Vec<PdfLinkAnnotation>,
+    remaining_annotations: &'a mut usize,
+    images: &'a mut Vec<PdfRenderedImage>,
+    remaining_images: &'a mut usize,
+}
+
+#[derive(Debug, Clone)]
+struct PdfRenderedImage {
+    name: String,
+    bytes: Vec<u8>,
+    width_px: u32,
+    height_px: u32,
+    components: u8,
 }
 
 impl PdfLinkedText {
@@ -266,6 +295,15 @@ struct PdfProjectedFigure {
     caption: Option<String>,
     alignment: ImageAlignment,
     scale_percent: u16,
+    jpeg: Option<PdfJpegImageCandidate>,
+}
+
+#[derive(Debug, Clone)]
+struct PdfJpegImageCandidate {
+    asset_id: String,
+    width_px: u32,
+    height_px: u32,
+    components: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +350,17 @@ struct PdfFigureLayout {
     width: f32,
     box_height: f32,
     block_height: f32,
+    image: Option<PdfFigureImageLayout>,
+}
+
+#[derive(Debug, Clone)]
+struct PdfFigureImageLayout {
+    asset_id: String,
+    width_px: u32,
+    height_px: u32,
+    components: u8,
+    width: f32,
+    height: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -559,12 +608,18 @@ fn split_oversized_pdf_table_row(
     chunks
 }
 
-fn split_oversized_pdf_figure(figure: PdfFigureLayout, body_height: f32) -> Vec<PdfFigureLayout> {
+fn split_oversized_pdf_figure(
+    mut figure: PdfFigureLayout,
+    body_height: f32,
+) -> Vec<PdfFigureLayout> {
     let max_box_height = (body_height - PDF_FIGURE_GAP_POINTS).max(PDF_FIGURE_MIN_HEIGHT);
     let usable_text_height = (max_box_height - PDF_FIGURE_PADDING * 2.0).max(PDF_FIGURE_LEADING);
     let max_lines = (usable_text_height / PDF_FIGURE_LEADING).floor().max(1.0) as usize;
     if figure.lines.len() <= max_lines && figure.box_height <= max_box_height {
         return vec![figure];
+    }
+    if let Some(image) = figure.image.take() {
+        return split_oversized_pdf_image_figure(figure, image, max_box_height);
     }
 
     let mut chunks = Vec::new();
@@ -580,17 +635,89 @@ fn split_oversized_pdf_figure(figure: PdfFigureLayout, body_height: f32) -> Vec<
             width: figure.width,
             box_height,
             block_height: box_height + PDF_FIGURE_GAP_POINTS,
+            image: None,
         });
         start = end;
     }
     if chunks.is_empty() {
+        let box_height = figure.box_height.min(max_box_height);
         chunks.push(PdfFigureLayout {
             lines: vec![String::new()],
             alignment: figure.alignment,
             width: figure.width,
-            box_height: figure.box_height.min(max_box_height),
-            block_height: figure.box_height.min(max_box_height) + PDF_FIGURE_GAP_POINTS,
+            box_height,
+            block_height: box_height + PDF_FIGURE_GAP_POINTS,
+            image: None,
         });
+    }
+    chunks
+}
+
+fn split_oversized_pdf_image_figure(
+    figure: PdfFigureLayout,
+    mut image: PdfFigureImageLayout,
+    max_box_height: f32,
+) -> Vec<PdfFigureLayout> {
+    let inner_height_limit = (max_box_height - PDF_FIGURE_PADDING * 2.0).max(PDF_FIGURE_LEADING);
+    let reserved_text_height = if figure.lines.is_empty() {
+        0.0
+    } else {
+        PDF_FIGURE_IMAGE_TEXT_GAP_POINTS + PDF_FIGURE_LEADING
+    };
+    let image_height_limit = (inner_height_limit - reserved_text_height).max(PDF_FIGURE_LEADING);
+    if image.height > image_height_limit {
+        let scale = image_height_limit / image.height;
+        image.height *= scale;
+        image.width = (image.width * scale).min((figure.width - PDF_FIGURE_PADDING * 2.0).max(1.0));
+    }
+
+    let text_gap = if figure.lines.is_empty() {
+        0.0
+    } else {
+        PDF_FIGURE_IMAGE_TEXT_GAP_POINTS
+    };
+    let first_text_capacity = (inner_height_limit - image.height - text_gap).max(0.0);
+    let first_line_count =
+        ((first_text_capacity / PDF_FIGURE_LEADING).floor() as usize).min(figure.lines.len());
+    let first_lines = figure.lines[..first_line_count].to_vec();
+    let first_text_height = if first_lines.is_empty() {
+        0.0
+    } else {
+        PDF_FIGURE_IMAGE_TEXT_GAP_POINTS + first_lines.len() as f32 * PDF_FIGURE_LEADING
+    };
+    let first_box_height = (PDF_FIGURE_PADDING * 2.0 + image.height + first_text_height)
+        .max(PDF_FIGURE_MIN_HEIGHT)
+        .min(max_box_height);
+
+    let mut chunks = vec![PdfFigureLayout {
+        lines: first_lines,
+        alignment: figure.alignment,
+        width: figure.width,
+        box_height: first_box_height,
+        block_height: first_box_height + PDF_FIGURE_GAP_POINTS,
+        image: Some(image),
+    }];
+
+    let text_only_capacity = ((max_box_height - PDF_FIGURE_PADDING * 2.0).max(PDF_FIGURE_LEADING)
+        / PDF_FIGURE_LEADING)
+        .floor()
+        .max(1.0) as usize;
+    let mut start = first_line_count;
+    while start < figure.lines.len() {
+        let end = (start + text_only_capacity).min(figure.lines.len());
+        let lines = figure.lines[start..end].to_vec();
+        let box_height = (PDF_FIGURE_PADDING * 2.0 + lines.len() as f32 * PDF_FIGURE_LEADING)
+            .max(PDF_FIGURE_MIN_HEIGHT)
+            .min(max_box_height);
+        chunks.push(PdfFigureLayout {
+            lines,
+            alignment: figure.alignment,
+            width: figure.width,
+            box_height,
+            block_height: box_height + PDF_FIGURE_GAP_POINTS,
+            image: None,
+        });
+        start = end;
     }
     chunks
 }
@@ -709,6 +836,7 @@ fn push_block_pdf_items(
                     .map(str::to_string),
                 alignment: image.presentation.alignment,
                 scale_percent: image.presentation.scale_percent,
+                jpeg: pdf_jpeg_image_candidate(document, image),
             }));
             items.push(PdfFlowItem::Text(PdfProjectedText {
                 section_index,
@@ -1378,6 +1506,210 @@ fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+fn pdf_jpeg_image_candidate(
+    document: &Document,
+    image: &ImageBlock,
+) -> Option<PdfJpegImageCandidate> {
+    let asset = document.assets.get(&image.asset_id)?;
+    let safe = pdf_safe_jpeg_asset(asset)?;
+    Some(PdfJpegImageCandidate {
+        asset_id: image.asset_id.clone(),
+        width_px: safe.info.width_px,
+        height_px: safe.info.height_px,
+        components: safe.info.components,
+    })
+}
+
+fn pdf_safe_jpeg_asset(asset: &AssetRef) -> Option<PdfSafeJpeg> {
+    if asset.byte_len != asset.bytes.len()
+        || asset.bytes.len() > PDF_MAX_JPEG_BYTES_PER_IMAGE
+        || asset.media_type != "image/jpeg"
+        || detect_image_media_type(&asset.bytes) != Some("image/jpeg")
+    {
+        return None;
+    }
+    sanitize_pdf_jpeg(&asset.bytes)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PdfJpegInfo {
+    width_px: u32,
+    height_px: u32,
+    components: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PdfSafeJpeg {
+    info: PdfJpegInfo,
+    bytes: Vec<u8>,
+}
+
+fn sanitize_pdf_jpeg(bytes: &[u8]) -> Option<PdfSafeJpeg> {
+    if !bytes.starts_with(b"\xff\xd8") || !bytes.ends_with(b"\xff\xd9") {
+        return None;
+    }
+
+    let mut sanitized = vec![0xff, 0xd8];
+    let mut index = 2;
+    let mut info = None;
+    let mut saw_dqt = false;
+    let mut saw_dht = false;
+    while index < bytes.len() - 2 {
+        if bytes[index] != 0xff {
+            return None;
+        }
+        while index < bytes.len() - 2 && bytes[index] == 0xff {
+            index += 1;
+        }
+        if index >= bytes.len() - 2 {
+            return None;
+        }
+        let marker = bytes[index];
+        index += 1;
+
+        if marker == 0x00 {
+            return None;
+        }
+        if jpeg_marker_without_payload(marker) {
+            if marker == 0xd9 {
+                return None;
+            }
+            sanitized.extend_from_slice(&[0xff, marker]);
+            continue;
+        }
+        if index + 2 > bytes.len() {
+            return None;
+        }
+        let segment_length = u16::from_be_bytes([bytes[index], bytes[index + 1]]) as usize;
+        if segment_length < 2 {
+            return None;
+        }
+        let segment_start = index + 2;
+        let segment_end = index + segment_length;
+        if segment_end > bytes.len() {
+            return None;
+        }
+
+        if is_jpeg_metadata_marker(marker) {
+            index = segment_end;
+            continue;
+        }
+        if is_jpeg_sof_marker(marker) {
+            if !is_supported_pdf_jpeg_sof_marker(marker) || info.is_some() {
+                return None;
+            }
+            info = Some(parse_pdf_jpeg_sof_segment(
+                &bytes[segment_start..segment_end],
+            )?);
+        } else if marker == 0xdb {
+            saw_dqt = true;
+        } else if marker == 0xc4 {
+            saw_dht = true;
+        }
+        sanitized.extend_from_slice(&[0xff, marker]);
+        sanitized.extend_from_slice(&bytes[index..segment_end]);
+        if marker == 0xda {
+            let info = info?;
+            if !saw_dqt || !saw_dht {
+                return None;
+            }
+            let entropy = &bytes[segment_end..];
+            if !jpeg_entropy_data_is_metadata_free(entropy) {
+                return None;
+            }
+            sanitized.extend_from_slice(entropy);
+            return Some(PdfSafeJpeg {
+                info,
+                bytes: sanitized,
+            });
+        }
+        index = segment_end;
+    }
+    None
+}
+
+fn parse_pdf_jpeg_sof_segment(segment: &[u8]) -> Option<PdfJpegInfo> {
+    if segment.len() < 6 {
+        return None;
+    }
+    let precision = segment[0];
+    let height_px = u16::from_be_bytes([segment[1], segment[2]]) as u32;
+    let width_px = u16::from_be_bytes([segment[3], segment[4]]) as u32;
+    let components = segment[5];
+    let expected_len = 6 + components as usize * 3;
+    if precision != 8
+        || width_px == 0
+        || height_px == 0
+        || width_px > PDF_MAX_JPEG_DIMENSION
+        || height_px > PDF_MAX_JPEG_DIMENSION
+        || width_px as u64 * height_px as u64 > PDF_MAX_JPEG_PIXELS
+        || !matches!(components, 1 | 3)
+        || segment.len() < expected_len
+    {
+        return None;
+    }
+    Some(PdfJpegInfo {
+        width_px,
+        height_px,
+        components,
+    })
+}
+
+fn jpeg_marker_without_payload(marker: u8) -> bool {
+    marker == 0x01 || (0xd0..=0xd9).contains(&marker)
+}
+
+fn is_jpeg_metadata_marker(marker: u8) -> bool {
+    (0xe0..=0xef).contains(&marker) || marker == 0xfe
+}
+
+fn is_jpeg_sof_marker(marker: u8) -> bool {
+    matches!(
+        marker,
+        0xc0 | 0xc1 | 0xc2 | 0xc3 | 0xc5 | 0xc6 | 0xc7 | 0xc9 | 0xca | 0xcb | 0xcd | 0xce | 0xcf
+    )
+}
+
+fn is_supported_pdf_jpeg_sof_marker(marker: u8) -> bool {
+    marker == 0xc0
+}
+
+fn jpeg_entropy_data_is_metadata_free(bytes: &[u8]) -> bool {
+    if !bytes.ends_with(b"\xff\xd9") {
+        return false;
+    }
+    let mut index = 0;
+    let mut saw_entropy = false;
+    while index < bytes.len() {
+        if bytes[index] != 0xff {
+            saw_entropy = true;
+            index += 1;
+            continue;
+        }
+        if index + 1 >= bytes.len() {
+            return false;
+        }
+        let marker = bytes[index + 1];
+        match marker {
+            0x00 => {
+                saw_entropy = true;
+                index += 2;
+            }
+            0xd0..=0xd7 => {
+                index += 2;
+            }
+            0xd9 => {
+                return saw_entropy && index + 2 == bytes.len();
+            }
+            0xff => {
+                index += 1;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -1979,19 +2311,43 @@ fn layout_pdf_figure(figure: &PdfProjectedFigure, content_width: f32) -> PdfFigu
     if let Some(caption) = figure.caption.as_deref() {
         lines.extend(wrap_pdf_text_lines(caption, max_chars));
     }
-    if lines.is_empty() {
+
+    let image = figure.jpeg.as_ref().map(|jpeg| {
+        let image_width = (width - PDF_FIGURE_PADDING * 2.0).max(1.0);
+        let image_height = (image_width * jpeg.height_px as f32 / jpeg.width_px as f32).max(1.0);
+        PdfFigureImageLayout {
+            asset_id: jpeg.asset_id.clone(),
+            width_px: jpeg.width_px,
+            height_px: jpeg.height_px,
+            components: jpeg.components,
+            width: image_width,
+            height: image_height,
+        }
+    });
+
+    if lines.is_empty() && image.is_none() {
         lines.push("Image".to_string());
     }
-    let scaled_height =
-        (PDF_FIGURE_BASE_HEIGHT * (scale as f32 / 100.0)).max(PDF_FIGURE_MIN_HEIGHT);
-    let text_height = lines.len() as f32 * PDF_FIGURE_LEADING + PDF_FIGURE_PADDING * 2.0;
-    let box_height = scaled_height.max(text_height);
+    let box_height = if let Some(image) = image.as_ref() {
+        let text_height = if lines.is_empty() {
+            0.0
+        } else {
+            PDF_FIGURE_IMAGE_TEXT_GAP_POINTS + lines.len() as f32 * PDF_FIGURE_LEADING
+        };
+        (PDF_FIGURE_PADDING * 2.0 + image.height + text_height).max(PDF_FIGURE_MIN_HEIGHT)
+    } else {
+        let scaled_height =
+            (PDF_FIGURE_BASE_HEIGHT * (scale as f32 / 100.0)).max(PDF_FIGURE_MIN_HEIGHT);
+        let text_height = lines.len() as f32 * PDF_FIGURE_LEADING + PDF_FIGURE_PADDING * 2.0;
+        scaled_height.max(text_height)
+    };
     PdfFigureLayout {
         lines,
         alignment: figure.alignment,
         width,
         box_height,
         block_height: box_height + PDF_FIGURE_GAP_POINTS,
+        image,
     }
 }
 
@@ -2081,24 +2437,33 @@ fn escape_pdf_text(input: &str) -> String {
 }
 
 fn build_pdf(document: &Document, pages: &[PdfPage], total_pages: usize) -> Vec<u8> {
-    let mut objects = Vec::new();
+    let mut objects: Vec<Vec<u8>> = Vec::new();
     let font_object_number = 3;
     let mut kids = Vec::new();
     let mut remaining_document_annotations = PDF_MAX_LINK_ANNOTATIONS_PER_DOCUMENT;
+    let mut remaining_document_images = PDF_MAX_EMBEDDED_IMAGES_PER_DOCUMENT;
 
-    objects.push("<< /Type /Catalog /Pages 2 0 R >>".to_string());
-    objects.push(String::new());
-    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string());
+    objects.push(b"<< /Type /Catalog /Pages 2 0 R >>".to_vec());
+    objects.push(Vec::new());
+    objects.push(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec());
 
     for page in pages {
         let page_object_number = objects.len() + 1;
         let content_object_number = page_object_number + 1;
         let page_annotation_limit =
             remaining_document_annotations.min(PDF_MAX_LINK_ANNOTATIONS_PER_PAGE);
-        let rendered = render_pdf_page(document, page, total_pages, page_annotation_limit);
+        let rendered = render_pdf_page(
+            document,
+            page,
+            total_pages,
+            page_annotation_limit,
+            remaining_document_images,
+        );
         remaining_document_annotations =
             remaining_document_annotations.saturating_sub(rendered.annotations.len());
+        remaining_document_images = remaining_document_images.saturating_sub(rendered.images.len());
         let first_annotation_object_number = content_object_number + 1;
+        let first_image_object_number = first_annotation_object_number + rendered.annotations.len();
         let annotation_refs = rendered
             .annotations
             .iter()
@@ -2110,19 +2475,41 @@ fn build_pdf(document: &Document, pages: &[PdfPage], total_pages: usize) -> Vec<
         } else {
             format!(" /Annots [{}]", annotation_refs.join(" "))
         };
+        let xobject_resources = if rendered.images.is_empty() {
+            String::new()
+        } else {
+            let image_refs = rendered
+                .images
+                .iter()
+                .enumerate()
+                .map(|(index, image)| {
+                    format!("/{} {} 0 R", image.name, first_image_object_number + index)
+                })
+                .collect::<Vec<_>>();
+            format!(" /XObject << {} >>", image_refs.join(" "))
+        };
         kids.push(format!("{page_object_number} 0 R"));
         let page_width = mm_to_points(page.page_setup.width_mm);
         let page_height = mm_to_points(page.page_setup.height_mm);
-        objects.push(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.1} {page_height:.1}] /Resources << /Font << /F1 {font_object_number} 0 R >> >> /Contents {content_object_number} 0 R{annotations_entry} >>"
-        ));
-        objects.push(format!(
-            "<< /Length {} >>\nstream\n{}\nendstream",
-            rendered.stream.len(),
-            rendered.stream
-        ));
+        objects.push(
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.1} {page_height:.1}] /Resources << /Font << /F1 {font_object_number} 0 R >>{xobject_resources} >> /Contents {content_object_number} 0 R{annotations_entry} >>"
+            )
+            .into_bytes(),
+        );
+        objects.push(
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                rendered.stream.len(),
+                rendered.stream
+            )
+            .into_bytes(),
+        );
         for annotation in rendered.annotations {
-            objects.push(pdf_link_annotation_object(&annotation));
+            objects.push(pdf_link_annotation_object(&annotation).into_bytes());
+        }
+        for image in rendered.images {
+            objects.push(pdf_image_xobject_object(&image));
         }
     }
 
@@ -2130,26 +2517,32 @@ fn build_pdf(document: &Document, pages: &[PdfPage], total_pages: usize) -> Vec<
         "<< /Type /Pages /Kids [{}] /Count {} >>",
         kids.join(" "),
         pages.len()
-    );
+    )
+    .into_bytes();
 
-    let mut pdf = String::from("%PDF-1.4\n");
+    let mut pdf = b"%PDF-1.4\n".to_vec();
     let mut offsets = Vec::with_capacity(objects.len() + 1);
     offsets.push(0);
     for (index, object) in objects.iter().enumerate() {
         offsets.push(pdf.len());
-        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", index + 1, object));
+        pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        pdf.extend_from_slice(object);
+        pdf.extend_from_slice(b"\nendobj\n");
     }
     let xref_start = pdf.len();
-    pdf.push_str(&format!("xref\n0 {}\n", objects.len() + 1));
-    pdf.push_str("0000000000 65535 f \n");
+    pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
     for offset in offsets.iter().skip(1) {
-        pdf.push_str(&format!("{offset:010} 00000 n \n"));
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
     }
-    pdf.push_str(&format!(
-        "trailer << /Size {} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF\n",
-        objects.len() + 1
-    ));
-    pdf.into_bytes()
+    pdf.extend_from_slice(
+        format!(
+            "trailer << /Size {} /Root 1 0 R >>\nstartxref\n{xref_start}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    pdf
 }
 
 fn render_pdf_page(
@@ -2157,6 +2550,7 @@ fn render_pdf_page(
     page: &PdfPage,
     total_pages: usize,
     annotation_limit: usize,
+    image_limit: usize,
 ) -> PdfRenderedPage {
     let page_width = mm_to_points(page.page_setup.width_mm);
     let page_height = mm_to_points(page.page_setup.height_mm);
@@ -2192,7 +2586,9 @@ fn render_pdf_page(
 
     let mut stream = String::new();
     let mut annotations = Vec::new();
+    let mut images = Vec::new();
     let mut remaining_annotations = annotation_limit;
+    let mut remaining_images = image_limit;
     if !header_lines.is_empty() {
         push_pdf_text_block(
             &mut stream,
@@ -2213,14 +2609,14 @@ fn render_pdf_page(
         content_width,
     };
     for item in &page.body_items {
-        push_pdf_body_item_stream(
-            &mut stream,
-            &render_context,
-            &mut cursor_y,
-            item,
-            &mut annotations,
-            &mut remaining_annotations,
-        );
+        let mut render_state = PdfPageRenderState {
+            cursor_y: &mut cursor_y,
+            annotations: &mut annotations,
+            remaining_annotations: &mut remaining_annotations,
+            images: &mut images,
+            remaining_images: &mut remaining_images,
+        };
+        push_pdf_body_item_stream(&mut stream, &render_context, item, &mut render_state);
     }
 
     if !footer_lines.is_empty() {
@@ -2238,11 +2634,13 @@ fn render_pdf_page(
         PdfRenderedPage {
             stream,
             annotations,
+            images,
         }
     } else {
         PdfRenderedPage {
             stream: String::new(),
             annotations: Vec::new(),
+            images: Vec::new(),
         }
     }
 }
@@ -2250,10 +2648,8 @@ fn render_pdf_page(
 fn push_pdf_body_item_stream(
     stream: &mut String,
     context: &PdfPageRenderContext<'_>,
-    cursor_y: &mut f32,
     item: &PdfPageBodyItem,
-    annotations: &mut Vec<PdfLinkAnnotation>,
-    remaining_annotations: &mut usize,
+    state: &mut PdfPageRenderState<'_>,
 ) {
     match item {
         PdfPageBodyItem::TextLine(line) => {
@@ -2268,17 +2664,17 @@ fn push_pdf_body_item_stream(
                 PDF_FONT_SIZE,
                 PDF_LEADING,
                 context.margin_left,
-                *cursor_y,
+                *state.cursor_y,
                 &[resolved],
                 &mut PdfAnnotationCollector {
-                    annotations,
-                    remaining: remaining_annotations,
+                    annotations: state.annotations,
+                    remaining: state.remaining_annotations,
                 },
             );
-            *cursor_y -= PDF_LEADING;
+            *state.cursor_y -= PDF_LEADING;
         }
         PdfPageBodyItem::TableRow(row) => {
-            let top_y = *cursor_y + PDF_TABLE_CELL_PADDING;
+            let top_y = *state.cursor_y + PDF_TABLE_CELL_PADDING;
             let bottom_y = top_y - row.row_height;
             let cell_count = row.cells.len().max(1);
             let cell_width = context.content_width / cell_count as f32;
@@ -2309,15 +2705,15 @@ fn push_pdf_body_item_stream(
                     y,
                     &lines,
                     &mut PdfAnnotationCollector {
-                        annotations,
-                        remaining: remaining_annotations,
+                        annotations: state.annotations,
+                        remaining: state.remaining_annotations,
                     },
                 );
             }
-            *cursor_y -= row.block_height;
+            *state.cursor_y -= row.block_height;
         }
         PdfPageBodyItem::Figure(figure) => {
-            let top_y = *cursor_y + PDF_FIGURE_PADDING / 2.0;
+            let top_y = *state.cursor_y + PDF_FIGURE_PADDING / 2.0;
             let bottom_y = top_y - figure.box_height;
             let x = pdf_aligned_x(
                 context.margin_left,
@@ -2329,24 +2725,120 @@ fn push_pdf_body_item_stream(
                 "q 0.7 w 0.35 G {x:.1} {bottom_y:.1} {:.1} {:.1} re S Q\n",
                 figure.width, figure.box_height
             ));
-            let y = top_y - PDF_FIGURE_PADDING - PDF_FIGURE_FONT_SIZE;
-            let lines = resolve_pdf_text_lines(
-                &figure.lines,
-                context.page.page_number,
-                context.total_pages,
-                context.document,
-            );
-            push_pdf_text_block(
-                stream,
-                PDF_FIGURE_FONT_SIZE,
-                PDF_FIGURE_LEADING,
-                x + PDF_FIGURE_PADDING,
-                y,
-                &lines,
-            );
-            *cursor_y -= figure.block_height;
+            if let Some(image) = figure.image.as_ref() {
+                if let Some(image_name) = register_pdf_image(
+                    image,
+                    &mut PdfImageCollector {
+                        document: context.document,
+                        images: state.images,
+                        remaining: state.remaining_images,
+                    },
+                ) {
+                    let inner_width = (figure.width - PDF_FIGURE_PADDING * 2.0).max(1.0);
+                    let image_x =
+                        x + PDF_FIGURE_PADDING + (inner_width - image.width).max(0.0) / 2.0;
+                    let image_y = top_y - PDF_FIGURE_PADDING - image.height;
+                    stream.push_str(&format!(
+                        "q {:.1} 0 0 {:.1} {image_x:.1} {image_y:.1} cm /{image_name} Do Q\n",
+                        image.width, image.height
+                    ));
+                    let y = image_y - PDF_FIGURE_IMAGE_TEXT_GAP_POINTS - PDF_FIGURE_FONT_SIZE;
+                    push_pdf_figure_text(stream, context, figure, x, y);
+                } else {
+                    let y = top_y - PDF_FIGURE_PADDING - PDF_FIGURE_FONT_SIZE;
+                    push_pdf_figure_placeholder_text(stream, context, figure, x, y);
+                }
+            } else {
+                let y = top_y - PDF_FIGURE_PADDING - PDF_FIGURE_FONT_SIZE;
+                push_pdf_figure_placeholder_text(stream, context, figure, x, y);
+            }
+            *state.cursor_y -= figure.block_height;
         }
     }
+}
+
+fn push_pdf_figure_text(
+    stream: &mut String,
+    context: &PdfPageRenderContext<'_>,
+    figure: &PdfFigureLayout,
+    x: f32,
+    y: f32,
+) {
+    if figure.lines.is_empty() {
+        return;
+    }
+    let lines = resolve_pdf_text_lines(
+        &figure.lines,
+        context.page.page_number,
+        context.total_pages,
+        context.document,
+    );
+    push_pdf_text_block(
+        stream,
+        PDF_FIGURE_FONT_SIZE,
+        PDF_FIGURE_LEADING,
+        x + PDF_FIGURE_PADDING,
+        y,
+        &lines,
+    );
+}
+
+fn push_pdf_figure_placeholder_text(
+    stream: &mut String,
+    context: &PdfPageRenderContext<'_>,
+    figure: &PdfFigureLayout,
+    x: f32,
+    y: f32,
+) {
+    let fallback_lines;
+    let lines = if figure.lines.is_empty() {
+        fallback_lines = vec!["Image".to_string()];
+        &fallback_lines
+    } else {
+        &figure.lines
+    };
+    let resolved = resolve_pdf_text_lines(
+        lines,
+        context.page.page_number,
+        context.total_pages,
+        context.document,
+    );
+    push_pdf_text_block(
+        stream,
+        PDF_FIGURE_FONT_SIZE,
+        PDF_FIGURE_LEADING,
+        x + PDF_FIGURE_PADDING,
+        y,
+        &resolved,
+    );
+}
+
+fn register_pdf_image(
+    image: &PdfFigureImageLayout,
+    collector: &mut PdfImageCollector<'_>,
+) -> Option<String> {
+    if *collector.remaining == 0 {
+        return None;
+    }
+    let asset = collector.document.assets.get(&image.asset_id)?;
+    let safe = pdf_safe_jpeg_asset(asset)?;
+    if safe.info.width_px != image.width_px
+        || safe.info.height_px != image.height_px
+        || safe.info.components != image.components
+    {
+        return None;
+    }
+
+    let name = format!("Im{}", collector.images.len() + 1);
+    collector.images.push(PdfRenderedImage {
+        name: name.clone(),
+        bytes: safe.bytes,
+        width_px: safe.info.width_px,
+        height_px: safe.info.height_px,
+        components: safe.info.components,
+    });
+    *collector.remaining -= 1;
+    Some(name)
 }
 
 fn resolve_pdf_text_lines(
@@ -2495,6 +2987,24 @@ fn pdf_link_annotation_object(annotation: &PdfLinkAnnotation) -> String {
         annotation.rect.top,
         escape_pdf_text(&annotation.uri)
     )
+}
+
+fn pdf_image_xobject_object(image: &PdfRenderedImage) -> Vec<u8> {
+    let color_space = match image.components {
+        1 => "/DeviceGray",
+        3 => "/DeviceRGB",
+        _ => "/DeviceRGB",
+    };
+    let mut object = format!(
+        "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace {color_space} /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
+        image.width_px,
+        image.height_px,
+        image.bytes.len()
+    )
+    .into_bytes();
+    object.extend_from_slice(&image.bytes);
+    object.extend_from_slice(b"\nendstream");
+    object
 }
 
 fn mm_to_points(value: u16) -> f32 {
@@ -3616,6 +4126,323 @@ mod tests {
     }
 
     #[test]
+    fn pdf_export_embeds_safe_jpeg_images_as_dct_xobjects() {
+        let mut document = Document::new_untitled();
+        let private_asset_id = "private-source/client-photo.jpg";
+        let jpeg = tiny_real_jpeg();
+        document.assets.insert(
+            private_asset_id.to_string(),
+            word_core::AssetRef {
+                id: private_asset_id.to_string(),
+                media_type: "image/jpeg".to_string(),
+                byte_len: jpeg.len(),
+                bytes: jpeg,
+                original_name: Some("client-photo.jpg".to_string()),
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: private_asset_id.to_string(),
+            presentation: ImagePresentation {
+                alignment: ImageAlignment::Center,
+                scale_percent: 75,
+                caption: Some("Visible JPEG caption".to_string()),
+            },
+            alt_text: Some("Visible JPEG alt".to_string()),
+        })];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_image_xobject_count(&text), 1);
+        assert!(text.contains("/Subtype /Image"));
+        assert!(text.contains("/Filter /DCTDecode"));
+        assert!(text.contains("/ColorSpace /DeviceRGB"));
+        assert!(text.contains("/XObject << /Im1"));
+        assert!(text.contains("/Im1 Do"));
+        assert!(pdf_contains(&pdf, "Visible JPEG alt"));
+        assert!(pdf_contains(&pdf, "Visible JPEG caption"));
+        assert!(!text.contains(private_asset_id));
+        assert!(!text.contains("client-photo"));
+        assert!(!text.contains("private-source"));
+    }
+
+    #[test]
+    fn pdf_export_strips_jpeg_metadata_segments_before_embedding() {
+        let mut document = Document::new_untitled();
+        let private_metadata = "PRIVATE-JPEG-METADATA local/user/photo.jpg";
+        let jpeg = jpeg_with_metadata_segment(&tiny_real_jpeg(), 0xe1, private_metadata.as_bytes());
+        document.assets.insert(
+            "metadata-bearing-image.jpg".to_string(),
+            word_core::AssetRef {
+                id: "metadata-bearing-image.jpg".to_string(),
+                media_type: "image/jpeg".to_string(),
+                byte_len: jpeg.len(),
+                bytes: jpeg,
+                original_name: Some("photo.jpg".to_string()),
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "metadata-bearing-image.jpg".to_string(),
+            presentation: ImagePresentation {
+                alignment: ImageAlignment::Left,
+                scale_percent: 100,
+                caption: Some("Metadata-stripped caption".to_string()),
+            },
+            alt_text: Some("Metadata-stripped alt".to_string()),
+        })];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_image_xobject_count(&text), 1);
+        assert!(text.contains("/Filter /DCTDecode"));
+        assert!(pdf_contains(&pdf, "Metadata-stripped caption"));
+        assert!(!text.contains(private_metadata));
+        assert!(!text.contains("metadata-bearing-image"));
+        assert!(!text.contains("photo.jpg"));
+    }
+
+    #[test]
+    fn pdf_export_keeps_non_jpeg_images_on_visible_placeholder_path() {
+        let mut document = Document::new_untitled();
+        let private_asset_id = "private-source/figure.png";
+        document.assets.insert(
+            private_asset_id.to_string(),
+            word_core::AssetRef {
+                id: private_asset_id.to_string(),
+                media_type: "image/png".to_string(),
+                byte_len: 8,
+                bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+                original_name: Some("figure.png".to_string()),
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: private_asset_id.to_string(),
+            presentation: ImagePresentation {
+                alignment: ImageAlignment::Right,
+                scale_percent: 80,
+                caption: Some("PNG placeholder caption".to_string()),
+            },
+            alt_text: Some("PNG placeholder alt".to_string()),
+        })];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_image_xobject_count(&text), 0);
+        assert!(!text.contains("/DCTDecode"));
+        assert!(text.contains(" re S"));
+        assert!(pdf_contains(&pdf, "PNG placeholder alt"));
+        assert!(pdf_contains(&pdf, "PNG placeholder caption"));
+        assert!(!text.contains(private_asset_id));
+        assert!(!text.contains("figure.png"));
+        assert!(!text.contains("private-source"));
+    }
+
+    #[test]
+    fn pdf_export_rejects_malformed_oversized_and_unsupported_jpegs_without_leaks() {
+        let mut document = Document::new_untitled();
+        let malformed = b"\xff\xd8\xff\xe0\x00\x10RAW-PRIVATE-JPEG-PAYLOAD".to_vec();
+        let corrupt_after_sof = corrupt_after_sof_jpeg();
+        let mut oversized = tiny_real_jpeg();
+        oversized.resize(PDF_MAX_JPEG_BYTES_PER_IMAGE + 1, b'X');
+        oversized.extend_from_slice(b"OVERSIZED-PRIVATE-JPEG-PAYLOAD");
+        let oversized_dimensions = synthetic_jpeg((PDF_MAX_JPEG_DIMENSION + 1) as u16, 1, 3);
+        let oversized_pixels = synthetic_jpeg(5000, 5000, 3);
+        let unsupported_components = synthetic_jpeg(4, 1, 4);
+        let assets = [
+            (
+                "private-malformed-asset.jpg",
+                malformed,
+                "Malformed JPEG caption",
+            ),
+            (
+                "private-corrupt-after-sof-asset.jpg",
+                corrupt_after_sof,
+                "Corrupt JPEG caption",
+            ),
+            (
+                "private-oversized-asset.jpg",
+                oversized,
+                "Oversized JPEG caption",
+            ),
+            (
+                "private-dimension-asset.jpg",
+                oversized_dimensions,
+                "Oversized dimension caption",
+            ),
+            (
+                "private-pixels-asset.jpg",
+                oversized_pixels,
+                "Oversized pixels caption",
+            ),
+            (
+                "private-cmyk-asset.jpg",
+                unsupported_components,
+                "Unsupported JPEG caption",
+            ),
+        ];
+        for (asset_id, bytes, _) in &assets {
+            document.assets.insert(
+                (*asset_id).to_string(),
+                word_core::AssetRef {
+                    id: (*asset_id).to_string(),
+                    media_type: "image/jpeg".to_string(),
+                    byte_len: bytes.len(),
+                    bytes: bytes.clone(),
+                    original_name: Some((*asset_id).to_string()),
+                },
+            );
+        }
+        document.sections[0].blocks = assets
+            .iter()
+            .map(|(asset_id, _, caption)| {
+                Block::Image(ImageBlock {
+                    asset_id: (*asset_id).to_string(),
+                    presentation: ImagePresentation {
+                        alignment: ImageAlignment::Left,
+                        scale_percent: 100,
+                        caption: Some((*caption).to_string()),
+                    },
+                    alt_text: Some("Public fallback alt".to_string()),
+                })
+            })
+            .collect();
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_image_xobject_count(&text), 0);
+        assert!(!text.contains("/DCTDecode"));
+        assert!(pdf_contains(&pdf, "Malformed JPEG caption"));
+        assert!(pdf_contains(&pdf, "Corrupt JPEG caption"));
+        assert!(pdf_contains(&pdf, "Oversized JPEG caption"));
+        assert!(pdf_contains(&pdf, "Oversized dimension caption"));
+        assert!(pdf_contains(&pdf, "Oversized pixels caption"));
+        assert!(pdf_contains(&pdf, "Unsupported JPEG caption"));
+        assert!(!text.contains("private-malformed-asset"));
+        assert!(!text.contains("private-corrupt-after-sof-asset"));
+        assert!(!text.contains("private-oversized-asset"));
+        assert!(!text.contains("private-dimension-asset"));
+        assert!(!text.contains("private-pixels-asset"));
+        assert!(!text.contains("private-cmyk-asset"));
+        assert!(!text.contains("RAW-PRIVATE-JPEG-PAYLOAD"));
+        assert!(!text.contains("CORRUPT-PRIVATE-AFTER-SOF"));
+        assert!(!text.contains("OVERSIZED-PRIVATE-JPEG-PAYLOAD"));
+    }
+
+    #[test]
+    fn pdf_export_page_range_includes_only_selected_page_images() {
+        let mut document = Document::new_untitled();
+        for asset_id in ["page-one.jpg", "page-two.jpg"] {
+            let jpeg = tiny_real_jpeg();
+            document.assets.insert(
+                asset_id.to_string(),
+                word_core::AssetRef {
+                    id: asset_id.to_string(),
+                    media_type: "image/jpeg".to_string(),
+                    byte_len: jpeg.len(),
+                    bytes: jpeg,
+                    original_name: None,
+                },
+            );
+        }
+        document.sections[0].blocks = vec![
+            Block::Image(ImageBlock {
+                asset_id: "page-one.jpg".to_string(),
+                presentation: ImagePresentation {
+                    alignment: ImageAlignment::Left,
+                    scale_percent: 50,
+                    caption: Some("First page image".to_string()),
+                },
+                alt_text: Some("First page alt".to_string()),
+            }),
+            Block::PageBreak,
+            Block::Image(ImageBlock {
+                asset_id: "page-two.jpg".to_string(),
+                presentation: ImagePresentation {
+                    alignment: ImageAlignment::Left,
+                    scale_percent: 50,
+                    caption: Some("Second page image".to_string()),
+                },
+                alt_text: Some("Second page alt".to_string()),
+            }),
+        ];
+
+        let pdf = export_pdf_with_options(
+            &document,
+            PdfExportOptions {
+                page_range: Some(PdfPageRange { start: 2, end: 2 }),
+            },
+        )
+        .expect("valid page range should export");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_page_object_count(&text), 1);
+        assert_eq!(pdf_image_xobject_count(&text), 1);
+        assert!(!pdf_contains(&pdf, "First page image"));
+        assert!(!pdf_contains(&pdf, "First page alt"));
+        assert!(pdf_contains(&pdf, "Second page image"));
+        assert!(pdf_contains(&pdf, "Second page alt"));
+    }
+
+    #[test]
+    fn pdf_export_falls_back_after_embedded_image_cap() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page = PageSetup {
+            width_mm: 210,
+            height_mm: 5000,
+            margin_top_mm: 10,
+            margin_right_mm: 10,
+            margin_bottom_mm: 10,
+            margin_left_mm: 10,
+        };
+        document.sections[0].blocks = (0..(PDF_MAX_EMBEDDED_IMAGES_PER_DOCUMENT + 2))
+            .map(|index| {
+                let asset_id = format!("image-{index}.jpg");
+                let jpeg = tiny_real_jpeg();
+                document.assets.insert(
+                    asset_id.clone(),
+                    word_core::AssetRef {
+                        id: asset_id.clone(),
+                        media_type: "image/jpeg".to_string(),
+                        byte_len: jpeg.len(),
+                        bytes: jpeg,
+                        original_name: None,
+                    },
+                );
+                Block::Image(ImageBlock {
+                    asset_id,
+                    presentation: ImagePresentation {
+                        alignment: ImageAlignment::Left,
+                        scale_percent: 50,
+                        caption: Some(format!("Capped figure {index}")),
+                    },
+                    alt_text: Some(format!("Capped alt {index}")),
+                })
+            })
+            .collect();
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(
+            pdf_image_xobject_count(&text),
+            PDF_MAX_EMBEDDED_IMAGES_PER_DOCUMENT
+        );
+        assert!(text.contains("/Im32 Do"));
+        assert!(!text.contains("/Im33 Do"));
+        assert!(pdf_contains(
+            &pdf,
+            &format!("Capped figure {}", PDF_MAX_EMBEDDED_IMAGES_PER_DOCUMENT)
+        ));
+        assert!(pdf_contains(
+            &pdf,
+            &format!("Capped alt {}", PDF_MAX_EMBEDDED_IMAGES_PER_DOCUMENT + 1)
+        ));
+    }
+
+    #[test]
     fn pdf_export_returns_pdf_header() {
         let document = Document::new_untitled();
 
@@ -3670,6 +4497,10 @@ mod tests {
         pdf.matches("/Subtype /Link").count()
     }
 
+    fn pdf_image_xobject_count(pdf: &str) -> usize {
+        pdf.matches("/Subtype /Image").count()
+    }
+
     fn pdf_link_annotation_rects(pdf: &str) -> Vec<[f32; 4]> {
         let mut rects = Vec::new();
         let mut remaining = pdf;
@@ -3693,5 +4524,105 @@ mod tests {
     fn pdf_contains(pdf: &[u8], needle: &str) -> bool {
         pdf.windows(needle.len())
             .any(|window| window == needle.as_bytes())
+    }
+
+    fn synthetic_jpeg(width_px: u16, height_px: u16, components: u8) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0xd8];
+        bytes.extend_from_slice(&[
+            0xff, 0xe0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+            0x00, 0x01, 0x00, 0x00,
+        ]);
+
+        let sof_length = 8 + components as u16 * 3;
+        bytes.extend_from_slice(&[0xff, 0xc0]);
+        bytes.extend_from_slice(&sof_length.to_be_bytes());
+        bytes.push(8);
+        bytes.extend_from_slice(&height_px.to_be_bytes());
+        bytes.extend_from_slice(&width_px.to_be_bytes());
+        bytes.push(components);
+        for component in 1..=components {
+            bytes.extend_from_slice(&[component, 0x11, 0x00]);
+        }
+
+        let sos_length = 6 + components as u16 * 2;
+        bytes.extend_from_slice(&[0xff, 0xda]);
+        bytes.extend_from_slice(&sos_length.to_be_bytes());
+        bytes.push(components);
+        for component in 1..=components {
+            bytes.extend_from_slice(&[component, 0x00]);
+        }
+        bytes.extend_from_slice(&[0x00, 0x3f, 0x00, 0x00, 0xff, 0xd9]);
+        bytes
+    }
+
+    fn tiny_real_jpeg() -> Vec<u8> {
+        decode_base64(
+            "/9j/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9sAQwACAgICAgIDAgIDBQMDAwUGBQUFBQYIBgYGBgYICggICAgICAoKCgoKCgoKDAwMDAwMDg4ODg4PDw8PDw8PDw8P/9sAQwECAgIEBAQHBAQHEAsJCxAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ/90ABAAB/9oADAMBAAIRAxEAPwD1iiiiv8rz/FM//9k=",
+        )
+    }
+
+    fn jpeg_with_metadata_segment(jpeg: &[u8], marker: u8, payload: &[u8]) -> Vec<u8> {
+        assert!(jpeg.starts_with(b"\xff\xd8"));
+        assert!((0xe0..=0xef).contains(&marker) || marker == 0xfe);
+        let segment_length = payload.len() + 2;
+        assert!(segment_length <= u16::MAX as usize);
+        let mut output = Vec::with_capacity(jpeg.len() + payload.len() + 4);
+        output.extend_from_slice(&jpeg[..2]);
+        output.extend_from_slice(&[0xff, marker]);
+        output.extend_from_slice(&(segment_length as u16).to_be_bytes());
+        output.extend_from_slice(payload);
+        output.extend_from_slice(&jpeg[2..]);
+        output
+    }
+
+    fn corrupt_after_sof_jpeg() -> Vec<u8> {
+        let mut jpeg = tiny_real_jpeg();
+        let sos_index =
+            jpeg_marker_index(&jpeg, 0xda).expect("tiny fixture should have SOS marker");
+        jpeg.truncate(sos_index);
+        jpeg.extend_from_slice(b"CORRUPT-PRIVATE-AFTER-SOF");
+        jpeg.extend_from_slice(b"\xff\xd9");
+        jpeg
+    }
+
+    fn jpeg_marker_index(jpeg: &[u8], marker: u8) -> Option<usize> {
+        jpeg.windows(2).position(|window| window == [0xff, marker])
+    }
+
+    fn decode_base64(input: &str) -> Vec<u8> {
+        let mut output = Vec::with_capacity(input.len() / 4 * 3);
+        for chunk in input.as_bytes().chunks(4) {
+            assert_eq!(chunk.len(), 4);
+            let values = [
+                base64_test_value(chunk[0]),
+                base64_test_value(chunk[1]),
+                base64_test_value(chunk[2]),
+                base64_test_value(chunk[3]),
+            ];
+            let first = values[0].expect("base64 character");
+            let second = values[1].expect("base64 character");
+            let third = values[2].unwrap_or(0);
+            let fourth = values[3].unwrap_or(0);
+            output.push((first << 2) | (second >> 4));
+            if chunk[2] != b'=' {
+                output.push((second << 4) | (third >> 2));
+            }
+            if chunk[3] != b'=' {
+                output.push((third << 6) | fourth);
+            }
+        }
+        output
+    }
+
+    fn base64_test_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            b'=' => None,
+            _ => panic!("unexpected base64 byte"),
+        }
     }
 }
