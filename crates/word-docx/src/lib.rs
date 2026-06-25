@@ -4,9 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    sanitize_bookmark_id, Block, Document, DocumentWarning, Heading, Inline, InlineMark, ListBlock,
-    ListItem, PageField, PageRegion, PageRegionBlock, PageRegionParagraph, PageRegions, Paragraph,
-    StyleId, Table, TableCell, TableRow,
+    sanitize_bookmark_id, AssetRef, Block, Document, DocumentWarning, Heading, ImageBlock,
+    ImagePresentation, Inline, InlineMark, ListBlock, ListItem, PageField, PageRegion,
+    PageRegionBlock, PageRegionParagraph, PageRegions, Paragraph, StyleId, Table, TableCell,
+    TableRow,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -26,7 +27,11 @@ const REL_TYPE_HEADER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
 const REL_TYPE_FOOTER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
+const REL_TYPE_IMAGE: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const PAGE_REGION_XML: &str = "DOCX page region";
+const MAX_DOCX_IMAGE_PARTS: usize = 64;
+const MAX_DOCX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageLimits {
@@ -118,12 +123,45 @@ struct ParsedBlock {
 struct RelationshipMap {
     hyperlinks: BTreeMap<String, String>,
     page_regions: BTreeMap<String, PageRegionRelationship>,
+    images: BTreeMap<String, DocxImageRelationship>,
 }
 
 #[derive(Debug, Clone)]
 struct PageRegionRelationship {
     kind: PageRegionPartKind,
     target: String,
+}
+
+#[derive(Debug, Clone)]
+struct DocxImageRelationship {
+    target: String,
+    expected_media_type: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct ImportedDocxImage {
+    asset_id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ImportedDocxImages {
+    by_relationship_id: BTreeMap<String, ImportedDocxImage>,
+    assets: BTreeMap<String, AssetRef>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DocxImageExports {
+    parts: Vec<DocxImageExport>,
+}
+
+#[derive(Debug, Clone)]
+struct DocxImageExport {
+    asset_id: String,
+    rel_id: String,
+    path: String,
+    target: String,
+    media_type: &'static str,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -230,6 +268,12 @@ struct HyperlinkIds {
     external: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone)]
+enum ParagraphContent {
+    Inline(Box<Inline>),
+    Image(ImageBlock),
+}
+
 pub fn read_docx_bytes(bytes: &[u8]) -> Result<Document, DocxError> {
     read_docx_bytes_with_limits(bytes, PackageLimits::default())
 }
@@ -275,6 +319,7 @@ pub fn read_docx_bytes_with_limits(
     } else {
         parse_relationships_xml(&rels_xml, &mut warnings)?
     };
+    let imported_images = read_docx_image_parts(&mut archive, &rels, &mut warnings)?;
     let page_region_part_xml = read_page_region_parts(&mut archive, &rels, &mut warnings)?;
     let numbering = if numbering_xml.is_empty() {
         NumberingMap::default()
@@ -284,6 +329,7 @@ pub fn read_docx_bytes_with_limits(
     let parsed_document = parse_document_xml(
         &document_xml,
         &rels,
+        &imported_images,
         &page_region_part_xml,
         &numbering,
         &mut warnings,
@@ -299,30 +345,53 @@ pub fn read_docx_bytes_with_limits(
         section.page_regions = parsed_document.page_regions;
     }
     document.warnings = warnings.warnings;
+    let mut referenced_assets = BTreeSet::new();
+    let mut ordered_assets = Vec::new();
+    for section in &document.sections {
+        collect_image_asset_ids_from_blocks(
+            &section.blocks,
+            &mut referenced_assets,
+            &mut ordered_assets,
+        );
+    }
+    document.assets = imported_images
+        .assets
+        .into_iter()
+        .filter(|(asset_id, _)| referenced_assets.contains(asset_id))
+        .collect();
     Ok(document)
 }
 
 pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     let hyperlinks = collect_external_hyperlinks(document);
-    let page_region_exports = collect_page_region_exports(document);
     let hyperlink_ids = assign_hyperlink_ids(&hyperlinks);
+    let (image_exports, next_rel_id) = collect_docx_image_exports(document, hyperlinks.len() + 3);
+    let page_region_exports = collect_page_region_exports(document, next_rel_id);
     let compressed = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let cursor = Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);
 
     writer.start_file("[Content_Types].xml", compressed)?;
-    writer.write_all(render_content_types_xml(&page_region_exports).as_bytes())?;
+    writer.write_all(render_content_types_xml(&page_region_exports, &image_exports).as_bytes())?;
 
     writer.start_file("_rels/.rels", compressed)?;
     writer.write_all(render_root_rels_xml().as_bytes())?;
 
     writer.start_file(DOCUMENT_XML, compressed)?;
     writer.write_all(
-        render_document_xml(document, &hyperlink_ids, &page_region_exports).as_bytes(),
+        render_document_xml(
+            document,
+            &hyperlink_ids,
+            &page_region_exports,
+            &image_exports,
+        )
+        .as_bytes(),
     )?;
 
     writer.start_file(DOCUMENT_RELS, compressed)?;
-    writer.write_all(render_document_rels_xml(&hyperlink_ids, &page_region_exports).as_bytes())?;
+    writer.write_all(
+        render_document_rels_xml(&hyperlink_ids, &page_region_exports, &image_exports).as_bytes(),
+    )?;
 
     writer.start_file("word/styles.xml", compressed)?;
     writer.write_all(render_styles_xml().as_bytes())?;
@@ -333,6 +402,10 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     for part in &page_region_exports.parts {
         writer.start_file(part.path, compressed)?;
         writer.write_all(render_page_region_part_xml(part).as_bytes())?;
+    }
+    for part in &image_exports.parts {
+        writer.start_file(&part.path, compressed)?;
+        writer.write_all(&part.bytes)?;
     }
 
     Ok(writer.finish()?.into_inner())
@@ -407,7 +480,7 @@ fn parse_relationships_xml(
                 let target_mode = attr_value(&start, b"TargetMode", DOCUMENT_RELS)?;
                 match (id, rel_type, target) {
                     (Some(id), Some(rel_type), Some(target)) if rel_type == REL_TYPE_HYPERLINK => {
-                        if target_mode.as_deref() != Some("External") {
+                        if !target_mode_is_external(target_mode.as_deref()) {
                             warnings.warn(
                                 "docx_internal_hyperlink_ignored",
                                 "Unsupported internal DOCX hyperlinks were imported as plain text",
@@ -426,7 +499,7 @@ fn parse_relationships_xml(
                     (Some(id), Some(rel_type), Some(target))
                         if rel_type == REL_TYPE_HEADER || rel_type == REL_TYPE_FOOTER =>
                     {
-                        if target_mode.as_deref() == Some("External") {
+                        if target_mode_is_external(target_mode.as_deref()) {
                             warnings.warn(
                                 "docx_page_region_relationship_ignored",
                                 "Unsupported DOCX header or footer relationships were ignored during import",
@@ -449,7 +522,37 @@ fn parse_relationships_xml(
                             );
                         }
                     }
-                    (_, Some(_), _) if target_mode.as_deref() == Some("External") => {
+                    (Some(id), Some(rel_type), Some(target)) if rel_type == REL_TYPE_IMAGE => {
+                        if target_mode_is_external(target_mode.as_deref()) {
+                            warnings.warn(
+                                "docx_image_relationship_ignored",
+                                "Unsupported DOCX image relationships were ignored during import",
+                            );
+                            continue;
+                        }
+                        if relationships.images.len() >= MAX_DOCX_IMAGE_PARTS {
+                            warnings.warn(
+                                "docx_too_many_images",
+                                "Excess DOCX images were ignored during import",
+                            );
+                            continue;
+                        }
+                        if let Some((target, expected_media_type)) = resolve_image_target(&target) {
+                            relationships.images.insert(
+                                id,
+                                DocxImageRelationship {
+                                    target,
+                                    expected_media_type,
+                                },
+                            );
+                        } else {
+                            warnings.warn(
+                                "docx_image_relationship_ignored",
+                                "Unsupported DOCX image relationships were ignored during import",
+                            );
+                        }
+                    }
+                    (_, Some(_), _) if target_mode_is_external(target_mode.as_deref()) => {
                         warnings.warn(
                             "docx_external_relationship_ignored",
                             "Unsupported external DOCX relationships were ignored during import",
@@ -492,6 +595,68 @@ fn read_page_region_parts<R: Read + std::io::Seek>(
         }
     }
     Ok(parts)
+}
+
+fn read_docx_image_parts<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    rels: &RelationshipMap,
+    warnings: &mut WarningSink,
+) -> Result<ImportedDocxImages, DocxError> {
+    let mut imported = ImportedDocxImages::default();
+    let mut total_bytes = 0_u64;
+    for (relationship_id, relationship) in &rels.images {
+        match archive.by_name(&relationship.target) {
+            Ok(mut file) => {
+                let size = file.size();
+                if size == 0 || total_bytes.saturating_add(size) > MAX_DOCX_IMAGE_BYTES {
+                    warnings.warn(
+                        "docx_image_part_ignored",
+                        "Unsupported DOCX image payloads were ignored during import",
+                    );
+                    continue;
+                }
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                let Some(media_type) = detect_image_media_type(&bytes) else {
+                    warnings.warn(
+                        "docx_image_part_ignored",
+                        "Unsupported DOCX image payloads were ignored during import",
+                    );
+                    continue;
+                };
+                if media_type != relationship.expected_media_type {
+                    warnings.warn(
+                        "docx_image_part_ignored",
+                        "Unsupported DOCX image payloads were ignored during import",
+                    );
+                    continue;
+                }
+                total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+                let asset_id = generic_docx_image_id(imported.assets.len() + 1, media_type);
+                imported.assets.insert(
+                    asset_id.clone(),
+                    AssetRef {
+                        id: asset_id.clone(),
+                        media_type: media_type.to_string(),
+                        byte_len: bytes.len(),
+                        bytes,
+                        original_name: None,
+                    },
+                );
+                imported
+                    .by_relationship_id
+                    .insert(relationship_id.clone(), ImportedDocxImage { asset_id });
+            }
+            Err(zip::result::ZipError::FileNotFound) => {
+                warnings.warn(
+                    "docx_image_part_missing",
+                    "DOCX images with missing content were ignored during import",
+                );
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(imported)
 }
 
 fn parse_numbering_xml(xml: &str, warnings: &mut WarningSink) -> Result<NumberingMap, DocxError> {
@@ -558,6 +723,7 @@ fn parse_numbering_xml(xml: &str, warnings: &mut WarningSink) -> Result<Numberin
 fn parse_document_xml(
     xml: &str,
     rels: &RelationshipMap,
+    imported_images: &ImportedDocxImages,
     page_region_part_xml: &BTreeMap<String, String>,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
@@ -578,11 +744,14 @@ fn parse_document_xml(
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"body" => break,
             Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"p" => {
-                let block = parse_paragraph(&mut reader, rels, numbering, warnings)?;
-                push_parsed_block(&mut parsed, block);
+                let blocks =
+                    parse_paragraph(&mut reader, rels, imported_images, numbering, warnings)?;
+                for block in blocks {
+                    push_parsed_block(&mut parsed, block);
+                }
             }
             Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"tbl" => {
-                let table = parse_table(&mut reader, rels, numbering, warnings)?;
+                let table = parse_table(&mut reader, rels, imported_images, numbering, warnings)?;
                 push_parsed_block(
                     &mut parsed,
                     ParsedBlock {
@@ -786,6 +955,7 @@ fn parse_referenced_page_region(
 fn parse_table(
     reader: &mut Reader<&[u8]>,
     rels: &RelationshipMap,
+    imported_images: &ImportedDocxImages,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
 ) -> Result<Table, DocxError> {
@@ -796,7 +966,13 @@ fn parse_table(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"tr" => {
-                rows.push(parse_table_row(reader, rels, numbering, warnings)?);
+                rows.push(parse_table_row(
+                    reader,
+                    rels,
+                    imported_images,
+                    numbering,
+                    warnings,
+                )?);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tbl" => break,
             Event::Start(start) => {
@@ -813,6 +989,7 @@ fn parse_table(
 fn parse_table_row(
     reader: &mut Reader<&[u8]>,
     rels: &RelationshipMap,
+    imported_images: &ImportedDocxImages,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
 ) -> Result<TableRow, DocxError> {
@@ -823,7 +1000,13 @@ fn parse_table_row(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"tc" => {
-                cells.push(parse_table_cell(reader, rels, numbering, warnings)?);
+                cells.push(parse_table_cell(
+                    reader,
+                    rels,
+                    imported_images,
+                    numbering,
+                    warnings,
+                )?);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tr" => break,
             Event::Start(start) => {
@@ -840,6 +1023,7 @@ fn parse_table_row(
 fn parse_table_cell(
     reader: &mut Reader<&[u8]>,
     rels: &RelationshipMap,
+    imported_images: &ImportedDocxImages,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
 ) -> Result<TableCell, DocxError> {
@@ -850,15 +1034,17 @@ fn parse_table_cell(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"p" => {
-                let block = parse_paragraph(reader, rels, numbering, warnings)?;
-                push_parsed_block(&mut parsed, block);
+                let blocks = parse_paragraph(reader, rels, imported_images, numbering, warnings)?;
+                for block in blocks {
+                    push_parsed_block(&mut parsed, block);
+                }
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"tbl" => {
                 warnings.warn(
                     "docx_nested_table_degraded",
                     "Nested DOCX tables were imported as plain visible text",
                 );
-                let table = parse_table(reader, rels, numbering, warnings)?;
+                let table = parse_table(reader, rels, imported_images, numbering, warnings)?;
                 push_parsed_block(
                     &mut parsed,
                     ParsedBlock {
@@ -995,11 +1181,12 @@ fn parse_page_region_paragraph(
 fn parse_paragraph(
     reader: &mut Reader<&[u8]>,
     rels: &RelationshipMap,
+    imported_images: &ImportedDocxImages,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
-) -> Result<ParsedBlock, DocxError> {
+) -> Result<Vec<ParsedBlock>, DocxError> {
     let mut properties = ParagraphProperties::default();
-    let mut inlines = Vec::new();
+    let mut content = Vec::new();
 
     loop {
         match reader
@@ -1010,26 +1197,34 @@ fn parse_paragraph(
                 properties = parse_paragraph_properties(reader, numbering, warnings)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
-                let run = parse_run(reader, None, warnings, DOCUMENT_XML)?;
-                append_inlines(&mut inlines, run);
+                let run = parse_paragraph_run(
+                    reader,
+                    None,
+                    rels,
+                    imported_images,
+                    warnings,
+                    DOCUMENT_XML,
+                )?;
+                append_paragraph_content(&mut content, run);
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"hyperlink" => {
                 let link = hyperlink_ref(&start, rels, warnings)?;
-                let run = parse_hyperlink(reader, link, warnings, DOCUMENT_XML)?;
-                append_inlines(&mut inlines, run);
+                let run =
+                    parse_hyperlink(reader, link, rels, imported_images, warnings, DOCUMENT_XML)?;
+                append_paragraph_content(&mut content, run);
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
                 let field = page_field_from_instruction(
                     attr_value(&start, b"instr", DOCUMENT_XML)?.as_deref(),
                 );
                 let run = parse_simple_field(reader, field, warnings, DOCUMENT_XML)?;
-                append_inlines(&mut inlines, run);
+                append_inline_content(&mut content, run);
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
                 if let Some(field) = page_field_from_instruction(
                     attr_value(&start, b"instr", DOCUMENT_XML)?.as_deref(),
                 ) {
-                    inlines.push(Inline::field(field));
+                    content.push(ParagraphContent::Inline(Box::new(Inline::field(field))));
                 } else {
                     warnings.warn(
                         "docx_field_degraded",
@@ -1070,25 +1265,7 @@ fn parse_paragraph(
         }
     }
 
-    let block = if let Some(level) = properties.heading_level {
-        Block::Heading(Heading {
-            bookmark_id: None,
-            level,
-            inlines,
-        })
-    } else {
-        Block::Paragraph(Paragraph {
-            bookmark_id: None,
-            style: StyleId::from("body"),
-            format: Default::default(),
-            inlines,
-        })
-    };
-
-    Ok(ParsedBlock {
-        block,
-        list_marker: properties.list_marker,
-    })
+    Ok(paragraph_content_to_blocks(content, &properties))
 }
 
 fn parse_paragraph_properties(
@@ -1179,15 +1356,24 @@ fn parse_num_properties(
 fn parse_hyperlink(
     reader: &mut Reader<&[u8]>,
     link: HyperlinkRef,
+    rels: &RelationshipMap,
+    imported_images: &ImportedDocxImages,
     warnings: &mut WarningSink,
     name: &str,
-) -> Result<Vec<Inline>, DocxError> {
-    let mut inlines = Vec::new();
+) -> Result<Vec<ParagraphContent>, DocxError> {
+    let mut content = Vec::new();
     loop {
         match reader.read_event().map_err(|err| xml_error(name, err))? {
             Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
-                let run = parse_run(reader, link.href.clone(), warnings, name)?;
-                append_inlines(&mut inlines, run);
+                let run = parse_paragraph_run(
+                    reader,
+                    link.href.clone(),
+                    rels,
+                    imported_images,
+                    warnings,
+                    name,
+                )?;
+                append_paragraph_content(&mut content, run);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"hyperlink" => break,
             Event::Start(start) => {
@@ -1198,7 +1384,217 @@ fn parse_hyperlink(
             _ => {}
         }
     }
-    Ok(inlines)
+    Ok(content)
+}
+
+fn parse_paragraph_run(
+    reader: &mut Reader<&[u8]>,
+    link: Option<String>,
+    rels: &RelationshipMap,
+    imported_images: &ImportedDocxImages,
+    warnings: &mut WarningSink,
+    name: &str,
+) -> Result<Vec<ParagraphContent>, DocxError> {
+    let mut properties = RunProperties::default();
+    let mut text = String::new();
+    let mut content = Vec::new();
+
+    loop {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"rPr" => {
+                properties = parse_run_properties(reader, name)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"t" => {
+                text.push_str(&read_text_element(reader, b"t", name)?);
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"tab" => {
+                text.push('\t');
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"br" => {
+                text.push('\n');
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"drawing" => {
+                flush_run_text_content(&mut content, &mut text, &properties, link.clone());
+                if let Some(image) = parse_drawing(reader, rels, imported_images, warnings, name)? {
+                    content.push(ParagraphContent::Image(image));
+                }
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"drawing" => {
+                warnings.warn(
+                    "docx_image_reference_ignored",
+                    "Unsupported DOCX image references were ignored during import",
+                );
+            }
+            Event::Empty(start)
+                if matches!(local_name(start.name().as_ref()), b"object" | b"pict") =>
+            {
+                warnings.warn(
+                    "docx_media_ignored",
+                    "Unsupported DOCX media content was ignored during import",
+                );
+            }
+            Event::Start(start)
+                if matches!(local_name(start.name().as_ref()), b"object" | b"pict") =>
+            {
+                warnings.warn(
+                    "docx_media_ignored",
+                    "Unsupported DOCX media content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, name)?;
+            }
+            Event::Empty(start)
+                if matches!(
+                    local_name(start.name().as_ref()),
+                    b"footnoteReference"
+                        | b"endnoteReference"
+                        | b"commentReference"
+                        | b"fldChar"
+                        | b"instrText"
+                ) =>
+            {
+                warnings.warn(
+                    "docx_inline_metadata_ignored",
+                    "Unsupported DOCX inline metadata was ignored during import",
+                );
+            }
+            Event::Start(start)
+                if matches!(
+                    local_name(start.name().as_ref()),
+                    b"footnoteReference"
+                        | b"endnoteReference"
+                        | b"commentReference"
+                        | b"fldChar"
+                        | b"instrText"
+                ) =>
+            {
+                warnings.warn(
+                    "docx_inline_metadata_ignored",
+                    "Unsupported DOCX inline metadata was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, name)?;
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"r" => break,
+            Event::Empty(_) => {
+                warnings.warn(
+                    "docx_unsupported_run_content",
+                    "Unsupported DOCX run content was ignored during import",
+                );
+            }
+            Event::Start(start) => {
+                warnings.warn(
+                    "docx_unsupported_run_content",
+                    "Unsupported DOCX run content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, name)?;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    flush_run_text_content(&mut content, &mut text, &properties, link);
+    Ok(content)
+}
+
+fn parse_drawing(
+    reader: &mut Reader<&[u8]>,
+    rels: &RelationshipMap,
+    imported_images: &ImportedDocxImages,
+    warnings: &mut WarningSink,
+    name: &str,
+) -> Result<Option<ImageBlock>, DocxError> {
+    let mut embed_id = None;
+    let mut linked_id = None;
+    let mut alt_text = None;
+    loop {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
+            Event::Empty(start) | Event::Start(start)
+                if matches!(local_name(start.name().as_ref()), b"docPr" | b"cNvPr") =>
+            {
+                if alt_text.is_none() {
+                    alt_text = image_alt_text(&start, name)?;
+                }
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"blip" =>
+            {
+                if embed_id.is_none() {
+                    embed_id = attr_value(&start, b"embed", name)?;
+                }
+                if linked_id.is_none() {
+                    linked_id = attr_value(&start, b"link", name)?;
+                }
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"drawing" => break,
+            Event::Start(_) => {}
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    if linked_id.is_some() {
+        warnings.warn(
+            "docx_image_reference_ignored",
+            "Unsupported DOCX image references were ignored during import",
+        );
+    }
+    let Some(embed_id) = embed_id else {
+        warnings.warn(
+            "docx_image_reference_ignored",
+            "Unsupported DOCX image references were ignored during import",
+        );
+        return Ok(None);
+    };
+    if !rels.images.contains_key(&embed_id) {
+        warnings.warn(
+            "docx_image_reference_ignored",
+            "Unsupported DOCX image references were ignored during import",
+        );
+        return Ok(None);
+    }
+    let Some(imported) = imported_images.by_relationship_id.get(&embed_id) else {
+        warnings.warn(
+            "docx_image_reference_ignored",
+            "Unsupported DOCX image references were ignored during import",
+        );
+        return Ok(None);
+    };
+    Ok(Some(ImageBlock {
+        asset_id: imported.asset_id.clone(),
+        presentation: ImagePresentation::default(),
+        alt_text,
+    }))
+}
+
+fn image_alt_text(start: &BytesStart<'_>, name: &str) -> Result<Option<String>, DocxError> {
+    let value = attr_value(start, b"descr", name)?.or(attr_value(start, b"title", name)?);
+    Ok(value
+        .map(|value| value.trim().chars().take(512).collect::<String>())
+        .filter(|value| !value.is_empty()))
+}
+
+fn flush_run_text_content(
+    content: &mut Vec<ParagraphContent>,
+    text: &mut String,
+    properties: &RunProperties,
+    link: Option<String>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    content.push(ParagraphContent::Inline(Box::new(Inline {
+        text: std::mem::take(text),
+        marks: properties.marks(),
+        link,
+        comment_ids: Vec::new(),
+        style: Default::default(),
+        field: None,
+        note_reference: None,
+        tracked_change: None,
+    })));
 }
 
 fn parse_run(
@@ -1492,6 +1888,110 @@ fn append_inlines(target: &mut Vec<Inline>, source: Vec<Inline>) {
     }
 }
 
+fn append_inline_content(target: &mut Vec<ParagraphContent>, source: Vec<Inline>) {
+    append_paragraph_content(
+        target,
+        source
+            .into_iter()
+            .map(|inline| ParagraphContent::Inline(Box::new(inline)))
+            .collect(),
+    );
+}
+
+fn append_paragraph_content(target: &mut Vec<ParagraphContent>, source: Vec<ParagraphContent>) {
+    for item in source {
+        match item {
+            ParagraphContent::Inline(inline) => {
+                let inline = *inline;
+                if inline.text.is_empty() {
+                    continue;
+                }
+                let mut merged = false;
+                if let Some(ParagraphContent::Inline(previous)) = target.last_mut() {
+                    if previous.marks == inline.marks
+                        && previous.link == inline.link
+                        && previous.style == inline.style
+                        && previous.comment_ids.is_empty()
+                        && inline.comment_ids.is_empty()
+                        && previous.field.is_none()
+                        && inline.field.is_none()
+                        && previous.note_reference.is_none()
+                        && inline.note_reference.is_none()
+                        && previous.tracked_change.is_none()
+                        && inline.tracked_change.is_none()
+                    {
+                        previous.text.push_str(&inline.text);
+                        merged = true;
+                    }
+                }
+                if !merged {
+                    target.push(ParagraphContent::Inline(Box::new(inline)));
+                }
+            }
+            ParagraphContent::Image(image) => target.push(ParagraphContent::Image(image)),
+        }
+    }
+}
+
+fn paragraph_content_to_blocks(
+    content: Vec<ParagraphContent>,
+    properties: &ParagraphProperties,
+) -> Vec<ParsedBlock> {
+    let mut blocks = Vec::new();
+    let mut inlines = Vec::new();
+    for item in content {
+        match item {
+            ParagraphContent::Inline(inline) => inlines.push(*inline),
+            ParagraphContent::Image(image) => {
+                flush_paragraph_block(&mut blocks, &mut inlines, properties);
+                blocks.push(ParsedBlock {
+                    block: Block::Image(image),
+                    list_marker: None,
+                });
+            }
+        }
+    }
+    flush_paragraph_block(&mut blocks, &mut inlines, properties);
+    if blocks.is_empty() {
+        blocks.push(ParsedBlock {
+            block: paragraph_block_from_inlines(Vec::new(), properties.heading_level),
+            list_marker: properties.list_marker,
+        });
+    }
+    blocks
+}
+
+fn flush_paragraph_block(
+    blocks: &mut Vec<ParsedBlock>,
+    inlines: &mut Vec<Inline>,
+    properties: &ParagraphProperties,
+) {
+    if inlines.is_empty() {
+        return;
+    }
+    blocks.push(ParsedBlock {
+        block: paragraph_block_from_inlines(std::mem::take(inlines), properties.heading_level),
+        list_marker: properties.list_marker,
+    });
+}
+
+fn paragraph_block_from_inlines(inlines: Vec<Inline>, heading_level: Option<u8>) -> Block {
+    if let Some(level) = heading_level {
+        Block::Heading(Heading {
+            bookmark_id: None,
+            level,
+            inlines,
+        })
+    } else {
+        Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines,
+        })
+    }
+}
+
 fn read_text_element(
     reader: &mut Reader<&[u8]>,
     end_name: &[u8],
@@ -1588,15 +2088,33 @@ fn table_to_paragraph_block(table: &Table) -> Block {
     })
 }
 
-fn render_content_types_xml(page_regions: &DocxPageRegionExports) -> String {
+fn render_content_types_xml(
+    page_regions: &DocxPageRegionExports,
+    images: &DocxImageExports,
+) -> String {
     let mut output = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>"#
+        .to_string();
+    let image_defaults = images
+        .parts
+        .iter()
+        .map(|part| (image_extension(part.media_type), part.media_type))
+        .collect::<BTreeMap<_, _>>();
+    for (extension, media_type) in image_defaults {
+        output.push_str("\n  <Default Extension=\"");
+        output.push_str(extension);
+        output.push_str("\" ContentType=\"");
+        output.push_str(media_type);
+        output.push_str("\"/>");
+    }
+    output.push_str(
+        r#"
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>"#
-        .to_string();
+    );
     for part in &page_regions.parts {
         output.push_str("\n  <Override PartName=\"/");
         output.push_str(part.path);
@@ -1627,6 +2145,7 @@ fn render_root_rels_xml() -> String {
 fn render_document_rels_xml(
     hyperlinks: &HyperlinkIds,
     page_regions: &DocxPageRegionExports,
+    images: &DocxImageExports,
 ) -> String {
     let mut output = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1642,6 +2161,15 @@ fn render_document_rels_xml(
         output.push_str("\" Target=\"");
         output.push_str(&escape_xml(href));
         output.push_str("\" TargetMode=\"External\"/>");
+    }
+    for part in &images.parts {
+        output.push_str("\n  <Relationship Id=\"");
+        output.push_str(&escape_xml(&part.rel_id));
+        output.push_str("\" Type=\"");
+        output.push_str(REL_TYPE_IMAGE);
+        output.push_str("\" Target=\"");
+        output.push_str(&escape_xml(&part.target));
+        output.push_str("\"/>");
     }
     for part in &page_regions.parts {
         output.push_str("\n  <Relationship Id=\"");
@@ -1663,16 +2191,17 @@ fn render_document_xml(
     document: &Document,
     hyperlinks: &HyperlinkIds,
     page_regions: &DocxPageRegionExports,
+    images: &DocxImageExports,
 ) -> String {
     let mut output = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
 <w:body>"#,
     );
 
     for section in &document.sections {
         for block in &section.blocks {
-            render_block_xml(block, hyperlinks, &mut output);
+            render_block_xml(block, hyperlinks, images, &mut output);
         }
     }
 
@@ -1755,43 +2284,113 @@ fn render_page_region_block_xml(block: &PageRegionBlock, output: &mut String) {
     }
 }
 
-fn render_block_xml(block: &Block, hyperlinks: &HyperlinkIds, output: &mut String) {
+fn render_block_xml(
+    block: &Block,
+    hyperlinks: &HyperlinkIds,
+    images: &DocxImageExports,
+    output: &mut String,
+) {
     match block {
         Block::Paragraph(paragraph) => render_paragraph_xml(paragraph, None, hyperlinks, output),
         Block::Heading(heading) => render_heading_xml(heading, hyperlinks, output),
-        Block::List(list) => render_list_xml(list, hyperlinks, output),
-        Block::Table(table) => render_table_xml(table, hyperlinks, output),
+        Block::List(list) => render_list_xml(list, hyperlinks, images, output),
+        Block::Table(table) => render_table_xml(table, hyperlinks, images, output),
         Block::TableOfContents(table_of_contents) => render_fallback_paragraph(
             &table_of_contents_text(table_of_contents),
             hyperlinks,
             output,
         ),
         Block::Image(image) => {
-            let mut text = String::new();
-            if let Some(alt) = image
-                .alt_text
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-            {
-                text.push_str(alt.trim());
-            }
-            if let Some(caption) = image
-                .presentation
-                .caption
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-            {
-                if !text.is_empty() {
-                    text.push('\n');
+            if let Some(export) = docx_image_export_for(images, &image.asset_id) {
+                render_image_xml(image, export, output);
+                if let Some(caption) = image
+                    .presentation
+                    .caption
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    render_fallback_paragraph(caption.trim(), hyperlinks, output);
                 }
-                text.push_str(caption.trim());
+            } else {
+                render_fallback_paragraph(&image_fallback_text(image), hyperlinks, output);
             }
-            render_fallback_paragraph(&text, hyperlinks, output);
         }
         Block::PageBreak => {
             output.push_str("<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>");
         }
     }
+}
+
+fn docx_image_export_for<'a>(
+    images: &'a DocxImageExports,
+    asset_id: &str,
+) -> Option<&'a DocxImageExport> {
+    images.parts.iter().find(|part| part.asset_id == asset_id)
+}
+
+fn render_image_xml(image: &ImageBlock, export: &DocxImageExport, output: &mut String) {
+    let doc_pr_id = export
+        .rel_id
+        .trim_start_matches("rId")
+        .parse::<u32>()
+        .unwrap_or(1);
+    let extent = image_extent_emu(image);
+    output.push_str("<w:p><w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"");
+    output.push_str(&extent.to_string());
+    output.push_str("\" cy=\"");
+    output.push_str(&extent.to_string());
+    output.push_str("\"/><wp:docPr id=\"");
+    output.push_str(&doc_pr_id.to_string());
+    output.push_str("\" name=\"900Word image\"");
+    if let Some(alt) = image
+        .alt_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        output.push_str(" descr=\"");
+        output.push_str(&escape_xml(alt));
+        output.push('"');
+    }
+    output.push_str("/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"");
+    output.push_str(&doc_pr_id.to_string());
+    output.push_str(
+        "\" name=\"900Word image\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"",
+    );
+    output.push_str(&escape_xml(&export.rel_id));
+    output.push_str("\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"");
+    output.push_str(&extent.to_string());
+    output.push_str("\" cy=\"");
+    output.push_str(&extent.to_string());
+    output.push_str("\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>");
+}
+
+fn image_extent_emu(image: &ImageBlock) -> u32 {
+    let scale = image.presentation.scale_percent.clamp(10, 400) as u32;
+    914_400_u32.saturating_mul(scale) / 100
+}
+
+fn image_fallback_text(image: &ImageBlock) -> String {
+    let mut text = String::new();
+    if let Some(alt) = image
+        .alt_text
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        text.push_str(alt.trim());
+    }
+    if let Some(caption) = image
+        .presentation
+        .caption
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(caption.trim());
+    }
+    text
 }
 
 fn render_heading_xml(heading: &Heading, hyperlinks: &HyperlinkIds, output: &mut String) {
@@ -1820,7 +2419,12 @@ fn render_paragraph_xml(
     output.push_str("</w:p>");
 }
 
-fn render_list_xml(list: &ListBlock, hyperlinks: &HyperlinkIds, output: &mut String) {
+fn render_list_xml(
+    list: &ListBlock,
+    hyperlinks: &HyperlinkIds,
+    images: &DocxImageExports,
+    output: &mut String,
+) {
     let ordered = list.definition_id == "900w-ordered";
     for item in &list.items {
         for block in &item.blocks {
@@ -1851,13 +2455,21 @@ fn render_list_xml(list: &ListBlock, hyperlinks: &HyperlinkIds, output: &mut Str
                         output,
                     );
                 }
+                Block::Image(image) => {
+                    render_block_xml(&Block::Image(image.clone()), hyperlinks, images, output)
+                }
                 _ => render_fallback_paragraph(&block_text(block), hyperlinks, output),
             }
         }
     }
 }
 
-fn render_table_xml(table: &Table, hyperlinks: &HyperlinkIds, output: &mut String) {
+fn render_table_xml(
+    table: &Table,
+    hyperlinks: &HyperlinkIds,
+    images: &DocxImageExports,
+    output: &mut String,
+) {
     output.push_str("<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/></w:tblPr>");
     for row in &table.rows {
         output.push_str("<w:tr>");
@@ -1872,7 +2484,13 @@ fn render_table_xml(table: &Table, hyperlinks: &HyperlinkIds, output: &mut Strin
                             render_paragraph_xml(paragraph, None, hyperlinks, output)
                         }
                         Block::Heading(heading) => render_heading_xml(heading, hyperlinks, output),
-                        Block::List(list) => render_list_xml(list, hyperlinks, output),
+                        Block::List(list) => render_list_xml(list, hyperlinks, images, output),
+                        Block::Image(image) => render_block_xml(
+                            &Block::Image(image.clone()),
+                            hyperlinks,
+                            images,
+                            output,
+                        ),
                         _ => render_fallback_paragraph(&block_text(block), hyperlinks, output),
                     }
                 }
@@ -2020,12 +2638,12 @@ fn collect_external_hyperlinks(document: &Document) -> BTreeSet<String> {
     links
 }
 
-fn collect_page_region_exports(document: &Document) -> DocxPageRegionExports {
+fn collect_page_region_exports(document: &Document, first_rel_id: usize) -> DocxPageRegionExports {
     let Some(section) = document.sections.first() else {
         return DocxPageRegionExports::default();
     };
     let mut parts = Vec::new();
-    let mut next_id = collect_external_hyperlinks(document).len() + 3;
+    let mut next_id = first_rel_id;
     push_page_region_export(
         &mut parts,
         &mut next_id,
@@ -2063,6 +2681,89 @@ fn collect_page_region_exports(document: &Document) -> DocxPageRegionExports {
         &section.page_regions.first_footer,
     );
     DocxPageRegionExports { parts }
+}
+
+fn collect_docx_image_exports(
+    document: &Document,
+    first_rel_id: usize,
+) -> (DocxImageExports, usize) {
+    let mut asset_ids = Vec::new();
+    let mut seen = BTreeSet::new();
+    for section in &document.sections {
+        collect_image_asset_ids_from_blocks(&section.blocks, &mut seen, &mut asset_ids);
+    }
+
+    let mut parts = Vec::new();
+    let mut next_id = first_rel_id;
+    let mut total_bytes = 0_u64;
+    for asset_id in asset_ids {
+        if parts.len() >= MAX_DOCX_IMAGE_PARTS {
+            break;
+        }
+        let Some(asset) = document.assets.get(&asset_id) else {
+            continue;
+        };
+        let Some(media_type) = detect_image_media_type(&asset.bytes) else {
+            continue;
+        };
+        if asset.media_type != media_type || asset.byte_len != asset.bytes.len() {
+            continue;
+        }
+        let byte_len = asset.bytes.len() as u64;
+        if byte_len > PackageLimits::default().max_entry_size
+            || total_bytes.saturating_add(byte_len) > MAX_DOCX_IMAGE_BYTES
+        {
+            continue;
+        }
+        let extension = image_extension(media_type);
+        if extension == "bin" {
+            continue;
+        }
+        let file_name = format!("900word-image-{}.{}", parts.len() + 1, extension);
+        parts.push(DocxImageExport {
+            asset_id,
+            rel_id: format!("rId{next_id}"),
+            path: format!("word/media/{file_name}"),
+            target: format!("media/{file_name}"),
+            media_type,
+            bytes: asset.bytes.clone(),
+        });
+        total_bytes = total_bytes.saturating_add(byte_len);
+        next_id += 1;
+    }
+    (DocxImageExports { parts }, next_id)
+}
+
+fn collect_image_asset_ids_from_blocks(
+    blocks: &[Block],
+    seen: &mut BTreeSet<String>,
+    asset_ids: &mut Vec<String>,
+) {
+    for block in blocks {
+        match block {
+            Block::Image(image) => {
+                if seen.insert(image.asset_id.clone()) {
+                    asset_ids.push(image.asset_id.clone());
+                }
+            }
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_image_asset_ids_from_blocks(&item.blocks, seen, asset_ids);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_image_asset_ids_from_blocks(&cell.blocks, seen, asset_ids);
+                    }
+                }
+            }
+            Block::Paragraph(_)
+            | Block::Heading(_)
+            | Block::TableOfContents(_)
+            | Block::PageBreak => {}
+        }
+    }
 }
 
 fn push_page_region_export(
@@ -2245,6 +2946,84 @@ fn resolve_page_region_target(target: &str, kind: PageRegionPartKind) -> Option<
     }
 }
 
+fn resolve_image_target(target: &str) -> Option<(String, &'static str)> {
+    let trimmed = target.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('\\')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+    {
+        return None;
+    }
+    let combined = if trimmed.starts_with("word/") {
+        trimmed.to_string()
+    } else {
+        format!("word/{trimmed}")
+    };
+    if combined
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return None;
+    }
+    let lower = combined.to_ascii_lowercase();
+    let file_name = lower.strip_prefix("word/media/")?;
+    if file_name.contains('/') {
+        return None;
+    }
+    let media_type = media_type_from_image_extension(file_name)?;
+    if validate_entry_path(&combined, PackageLimits::default()).is_ok() {
+        Some((combined, media_type))
+    } else {
+        None
+    }
+}
+
+fn media_type_from_image_extension(file_name: &str) -> Option<&'static str> {
+    if file_name.ends_with(".png") {
+        Some("image/png")
+    } else if file_name.ends_with(".jpg") || file_name.ends_with(".jpeg") {
+        Some("image/jpeg")
+    } else if file_name.ends_with(".gif") {
+        Some("image/gif")
+    } else if file_name.ends_with(".webp") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+fn image_extension(media_type: &str) -> &'static str {
+    match media_type {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "bin",
+    }
+}
+
+fn generic_docx_image_id(index: usize, media_type: &str) -> String {
+    format!("docx-image-{index}.{}", image_extension(media_type))
+}
+
 fn validate_entry_path(name: &str, limits: PackageLimits) -> Result<(), DocxError> {
     let normalized = name.trim_end_matches('/');
     if name.starts_with('/')
@@ -2365,6 +3144,12 @@ fn attr_value(
     Ok(None)
 }
 
+fn target_mode_is_external(value: Option<&str>) -> bool {
+    value
+        .map(|value| value.eq_ignore_ascii_case("External"))
+        .unwrap_or(false)
+}
+
 fn local_name(name: &[u8]) -> &[u8] {
     name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
@@ -2389,6 +3174,12 @@ fn escape_xml(value: &str) -> String {
 mod tests {
     use super::*;
     use word_core::{InlineStyle, ParagraphFormat};
+
+    const SAMPLE_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1,
+        13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
 
     #[test]
     fn imports_synthetic_docx_paragraphs_headings_marks_links_lists_and_tables() {
@@ -2724,6 +3515,401 @@ mod tests {
     }
 
     #[test]
+    fn imports_synthetic_docx_embedded_png_image() {
+        let bytes = synthetic_docx_with_binary_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<w:body><w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="Picture 1" descr="Diagram"/><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/source-private-name.png"/>
+</Relationships>"#,
+            ),
+            None,
+            &[],
+            &[("word/media/source-private-name.png", SAMPLE_PNG)],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("embedded image should import");
+
+        assert!(document.warnings.is_empty(), "{:?}", document.warnings);
+        assert_eq!(document.assets.len(), 1);
+        let Block::Image(image) = &document.sections[0].blocks[0] else {
+            panic!("image block expected");
+        };
+        assert_eq!(image.asset_id, "docx-image-1.png");
+        assert_eq!(image.alt_text.as_deref(), Some("Diagram"));
+        let asset = document
+            .assets
+            .get("docx-image-1.png")
+            .expect("asset should exist");
+        assert_eq!(asset.media_type, "image/png");
+        assert_eq!(asset.bytes, SAMPLE_PNG);
+        assert_eq!(asset.original_name, None);
+        assert!(!document.assets.contains_key("source-private-name.png"));
+    }
+
+    #[test]
+    fn imports_docx_image_without_dropping_adjacent_text() {
+        let bytes = synthetic_docx_with_binary_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<w:body><w:p><w:r><w:t>Before </w:t></w:r><w:r><w:drawing><wp:inline><wp:docPr id="1" name="Picture 1"/><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r><w:r><w:t> after</w:t></w:r></w:p></w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>"#,
+            ),
+            None,
+            &[],
+            &[("word/media/image1.png", SAMPLE_PNG)],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("mixed paragraph should import");
+
+        assert_eq!(document.sections[0].blocks.len(), 3);
+        let Block::Paragraph(before) = &document.sections[0].blocks[0] else {
+            panic!("leading text paragraph expected");
+        };
+        assert_eq!(before.inlines[0].text, "Before ");
+        assert!(matches!(document.sections[0].blocks[1], Block::Image(_)));
+        let Block::Paragraph(after) = &document.sections[0].blocks[2] else {
+            panic!("trailing text paragraph expected");
+        };
+        assert_eq!(after.inlines[0].text, " after");
+    }
+
+    #[test]
+    fn ignores_hostile_image_relationship_targets_with_generic_warning() {
+        for (target, target_mode) in [
+            ("../private/image.png", ""),
+            ("/absolute/image.png", ""),
+            ("C:/placeholder/image.png", ""),
+            ("media\\image.png", ""),
+            ("https://example.invalid/image.png", ""),
+            ("media/image.bmp", ""),
+            ("media/image.png", r#" TargetMode="External""#),
+        ] {
+            let rels_xml = format!(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{target}"{target_mode}/>
+</Relationships>"#
+            );
+            let bytes = synthetic_docx(
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<w:body><w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#,
+                Some(&rels_xml),
+                None,
+            );
+
+            let document =
+                read_docx_bytes(&bytes).expect("unsafe image relationship should degrade");
+
+            assert!(document.assets.is_empty());
+            assert!(document.sections[0]
+                .blocks
+                .iter()
+                .all(|block| !matches!(block, Block::Image(_))));
+            let warning = document
+                .warnings
+                .iter()
+                .find(|warning| warning.code == "docx_image_relationship_ignored")
+                .expect("unsafe relationship should warn");
+            assert!(!warning.message.contains("private"));
+            assert!(!warning.message.contains("image.png"));
+            assert!(!warning.message.contains("example.invalid"));
+            assert!(!warning.message.contains("C:/"));
+        }
+    }
+
+    #[test]
+    fn ignores_docx_images_with_missing_or_mismatched_payloads() {
+        let doc_xml = synthetic_docx_image_document(&[r#"<a:blip r:embed="rImg1"/>"#]);
+
+        let mismatched_bytes = synthetic_docx_with_binary_parts(
+            &doc_xml,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/not-really-jpeg.jpg"/>
+</Relationships>"#,
+            ),
+            None,
+            &[],
+            &[("word/media/not-really-jpeg.jpg", SAMPLE_PNG)],
+        );
+        let mismatched =
+            read_docx_bytes(&mismatched_bytes).expect("mismatched image should degrade");
+        assert!(mismatched.assets.is_empty());
+        assert_eq!(image_block_count(&mismatched), 0);
+        assert!(mismatched
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_image_part_ignored"));
+        assert_docx_image_warnings_are_generic(&mismatched);
+
+        let missing_bytes = synthetic_docx(
+            &doc_xml,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/missing.png"/>
+</Relationships>"#,
+            ),
+            None,
+        );
+        let missing = read_docx_bytes(&missing_bytes).expect("missing image should degrade");
+        assert!(missing.assets.is_empty());
+        assert_eq!(image_block_count(&missing), 0);
+        assert!(missing
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_image_part_missing"));
+        assert_docx_image_warnings_are_generic(&missing);
+    }
+
+    #[test]
+    fn ignores_linked_only_docx_image_references() {
+        let doc_xml = synthetic_docx_image_document(&[r#"<a:blip r:link="rImg1"/>"#]);
+        let bytes = synthetic_docx(
+            &doc_xml,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.invalid/image.png" TargetMode="External"/>
+</Relationships>"#,
+            ),
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("linked image should degrade");
+
+        assert!(document.assets.is_empty());
+        assert_eq!(image_block_count(&document), 0);
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_image_reference_ignored"));
+        assert_docx_image_warnings_are_generic(&document);
+    }
+
+    #[test]
+    fn bounds_imported_docx_image_payload_total_bytes() {
+        let mut large_png = SAMPLE_PNG.to_vec();
+        large_png.resize(PackageLimits::default().max_entry_size as usize, 0);
+        let doc_xml = synthetic_docx_image_document(&[
+            r#"<a:blip r:embed="rImg1"/>"#,
+            r#"<a:blip r:embed="rImg2"/>"#,
+            r#"<a:blip r:embed="rImg3"/>"#,
+        ]);
+        let bytes = synthetic_docx_with_binary_parts(
+            &doc_xml,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/large1.png"/>
+<Relationship Id="rImg2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/large2.png"/>
+<Relationship Id="rImg3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/large3.png"/>
+</Relationships>"#,
+            ),
+            None,
+            &[],
+            &[
+                ("word/media/large1.png", large_png.as_slice()),
+                ("word/media/large2.png", large_png.as_slice()),
+                ("word/media/large3.png", large_png.as_slice()),
+            ],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("over-budget images should degrade");
+
+        assert_eq!(document.assets.len(), 2);
+        assert_eq!(image_block_count(&document), 2);
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_image_part_ignored"));
+        assert_docx_image_warnings_are_generic(&document);
+    }
+
+    #[test]
+    fn bounds_imported_docx_image_relationship_count() {
+        let ids = (1..=65)
+            .map(|index| format!("rImg{index}"))
+            .collect::<Vec<_>>();
+        let blips = ids
+            .iter()
+            .map(|id| format!(r#"<a:blip r:embed="{id}"/>"#))
+            .collect::<Vec<_>>();
+        let blip_refs = blips.iter().map(String::as_str).collect::<Vec<_>>();
+        let doc_xml = synthetic_docx_image_document(&blip_refs);
+        let mut rels_xml = String::from(
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+        );
+        for index in 1..=65 {
+            rels_xml.push_str(&format!(
+                r#"<Relationship Id="rImg{index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image{index}.png"/>"#
+            ));
+        }
+        rels_xml.push_str("</Relationships>");
+        let paths = (1..=65)
+            .map(|index| format!("word/media/image{index}.png"))
+            .collect::<Vec<_>>();
+        let binary_parts = paths
+            .iter()
+            .map(|path| (path.as_str(), SAMPLE_PNG))
+            .collect::<Vec<_>>();
+        let bytes =
+            synthetic_docx_with_binary_parts(&doc_xml, Some(&rels_xml), None, &[], &binary_parts);
+
+        let document = read_docx_bytes(&bytes).expect("excess images should degrade");
+
+        assert_eq!(document.assets.len(), MAX_DOCX_IMAGE_PARTS);
+        assert_eq!(image_block_count(&document), MAX_DOCX_IMAGE_PARTS);
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_too_many_images"));
+        assert_docx_image_warnings_are_generic(&document);
+    }
+
+    #[test]
+    fn exports_and_imports_word_core_image_assets_through_docx_converter() {
+        let mut document = Document::new_untitled();
+        document.assets.insert(
+            "image-1.png".to_string(),
+            AssetRef {
+                id: "image-1.png".to_string(),
+                media_type: "image/png".to_string(),
+                byte_len: SAMPLE_PNG.len(),
+                bytes: SAMPLE_PNG.to_vec(),
+                original_name: None,
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "image-1.png".to_string(),
+            presentation: ImagePresentation::default(),
+            alt_text: Some("Alt text".to_string()),
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write image");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let parsed = read_docx_bytes(&bytes).expect("written package should import");
+
+        assert_eq!(parsed.assets.len(), 1);
+        let Block::Image(image) = &parsed.sections[0].blocks[0] else {
+            panic!("image should round-trip through docx converter");
+        };
+        assert_eq!(image.asset_id, "docx-image-1.png");
+        assert_eq!(image.alt_text.as_deref(), Some("Alt text"));
+        let asset = parsed
+            .assets
+            .get("docx-image-1.png")
+            .expect("round-tripped asset should exist");
+        assert_eq!(asset.media_type, "image/png");
+        assert_eq!(asset.bytes, SAMPLE_PNG);
+        assert_eq!(asset.original_name, None);
+    }
+
+    #[test]
+    fn exports_docx_image_package_parts_relationships_and_drawing_reference() {
+        let mut document = Document::new_untitled();
+        document.assets.insert(
+            "image-1.png".to_string(),
+            AssetRef {
+                id: "image-1.png".to_string(),
+                media_type: "image/png".to_string(),
+                byte_len: SAMPLE_PNG.len(),
+                bytes: SAMPLE_PNG.to_vec(),
+                original_name: None,
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "image-1.png".to_string(),
+            presentation: ImagePresentation {
+                caption: Some("Visible caption".to_string()),
+                ..ImagePresentation::default()
+            },
+            alt_text: Some("Alt text".to_string()),
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write image package");
+        let mut archive =
+            ZipArchive::new(Cursor::new(bytes.as_slice())).expect("written docx should open");
+        let mut content_types = String::new();
+        archive
+            .by_name("[Content_Types].xml")
+            .expect("content types should exist")
+            .read_to_string(&mut content_types)
+            .expect("content types should read");
+        let mut document_rels = String::new();
+        archive
+            .by_name(DOCUMENT_RELS)
+            .expect("document rels should exist")
+            .read_to_string(&mut document_rels)
+            .expect("document rels should read");
+        let mut document_xml = String::new();
+        archive
+            .by_name(DOCUMENT_XML)
+            .expect("document xml should exist")
+            .read_to_string(&mut document_xml)
+            .expect("document xml should read");
+        let mut media = Vec::new();
+        archive
+            .by_name("word/media/900word-image-1.png")
+            .expect("image media part should exist")
+            .read_to_end(&mut media)
+            .expect("image media should read");
+
+        assert!(content_types.contains(r#"<Default Extension="png" ContentType="image/png"/>"#));
+        assert!(document_rels.contains("relationships/image"));
+        assert!(document_rels.contains(r#"Target="media/900word-image-1.png""#));
+        assert!(document_xml.contains("<w:drawing>"));
+        assert!(document_xml.contains("r:embed=\"rId3\""));
+        assert!(document_xml.contains("descr=\"Alt text\""));
+        assert!(document_xml.contains("Visible caption"));
+        assert_eq!(media, SAMPLE_PNG);
+    }
+
+    #[test]
+    fn skips_oversized_docx_image_exports_with_visible_fallback_text() {
+        let mut oversized_png = SAMPLE_PNG.to_vec();
+        oversized_png.resize(PackageLimits::default().max_entry_size as usize + 1, 0);
+        let mut document = Document::new_untitled();
+        document.assets.insert(
+            "image-large.png".to_string(),
+            AssetRef {
+                id: "image-large.png".to_string(),
+                media_type: "image/png".to_string(),
+                byte_len: oversized_png.len(),
+                bytes: oversized_png,
+                original_name: None,
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "image-large.png".to_string(),
+            presentation: ImagePresentation {
+                caption: Some("Oversized caption".to_string()),
+                ..ImagePresentation::default()
+            },
+            alt_text: Some("Oversized alt".to_string()),
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write fallback text");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let mut archive =
+            ZipArchive::new(Cursor::new(bytes.as_slice())).expect("written docx should open");
+        assert!(matches!(
+            archive.by_name("word/media/900word-image-1.png"),
+            Err(zip::result::ZipError::FileNotFound)
+        ));
+        let mut document_xml = String::new();
+        archive
+            .by_name(DOCUMENT_XML)
+            .expect("document xml should exist")
+            .read_to_string(&mut document_xml)
+            .expect("document xml should read");
+
+        assert!(!document_xml.contains("<w:drawing>"));
+        assert!(document_xml.contains("Oversized alt"));
+        assert!(document_xml.contains("Oversized caption"));
+    }
+
+    #[test]
     fn rejects_docx_with_unsafe_entry_without_path_leak_in_ui_layer() {
         let mut cursor = Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(&mut cursor);
@@ -2860,6 +4046,38 @@ mod tests {
         }
     }
 
+    fn synthetic_docx_image_document(blips: &[&str]) -> String {
+        let mut body = String::new();
+        for blip in blips {
+            body.push_str("<w:p><w:r><w:drawing><wp:inline><a:graphic><a:graphicData>");
+            body.push_str(blip);
+            body.push_str("</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>");
+        }
+        format!(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><w:body>{body}</w:body></w:document>"#
+        )
+    }
+
+    fn image_block_count(document: &Document) -> usize {
+        document
+            .sections
+            .iter()
+            .flat_map(|section| section.blocks.iter())
+            .filter(|block| matches!(block, Block::Image(_)))
+            .count()
+    }
+
+    fn assert_docx_image_warnings_are_generic(document: &Document) {
+        for warning in &document.warnings {
+            assert!(!warning.message.contains("private"));
+            assert!(!warning.message.contains("media/"));
+            assert!(!warning.message.contains("word/media"));
+            assert!(!warning.message.contains("image.png"));
+            assert!(!warning.message.contains("example.invalid"));
+            assert!(!warning.message.contains("C:/"));
+        }
+    }
+
     fn synthetic_docx(
         document_xml: &str,
         rels_xml: Option<&str>,
@@ -2874,6 +4092,16 @@ mod tests {
         numbering_xml: Option<&str>,
         extra_parts: &[(&str, &str)],
     ) -> Vec<u8> {
+        synthetic_docx_with_binary_parts(document_xml, rels_xml, numbering_xml, extra_parts, &[])
+    }
+
+    fn synthetic_docx_with_binary_parts(
+        document_xml: &str,
+        rels_xml: Option<&str>,
+        numbering_xml: Option<&str>,
+        extra_parts: &[(&str, &str)],
+        binary_parts: &[(&str, &[u8])],
+    ) -> Vec<u8> {
         let mut cursor = Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(&mut cursor);
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -2881,7 +4109,13 @@ mod tests {
             .start_file("[Content_Types].xml", options)
             .expect("content types should start");
         writer
-            .write_all(render_content_types_xml(&DocxPageRegionExports::default()).as_bytes())
+            .write_all(
+                render_content_types_xml(
+                    &DocxPageRegionExports::default(),
+                    &DocxImageExports::default(),
+                )
+                .as_bytes(),
+            )
             .expect("content types should write");
         writer
             .start_file("_rels/.rels", options)
@@ -2916,6 +4150,12 @@ mod tests {
                 .start_file(*path, options)
                 .expect("part should start");
             writer.write_all(xml.as_bytes()).expect("part should write");
+        }
+        for (path, bytes) in binary_parts {
+            writer
+                .start_file(*path, options)
+                .expect("binary part should start");
+            writer.write_all(bytes).expect("binary part should write");
         }
         writer.finish().expect("zip should finish");
         cursor.into_inner()

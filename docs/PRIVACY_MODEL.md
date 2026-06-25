@@ -42,6 +42,8 @@ Sprint 032 PDF export settings are local UI state only. Page-range start/end val
 
 Sprint 033 DOCX page-region import/export uses only local package relationships and preflighted header/footer XML parts. Unsafe, remote, missing, or unsupported page-region relationships produce generic warnings without exposing package entry names, local paths, private filenames, usernames, hostnames, or document text. Exported DOCX page-region parts are generated from `word-core` and do not include source paths, account data, telemetry identifiers, or remote references.
 
+Sprint 034 DOCX image import/export uses only local package image relationships and preflighted embedded media parts. Accepted imported images receive generated `docx-image-<n>.<ext>` asset IDs, leave `original_name` empty, and do not preserve source relationship target names or private filenames. Unsafe, remote, missing, mismatched, unsupported, or over-limit image media produce generic warnings without package entry names, local paths, private filenames, usernames, hostnames, or document text. Exported DOCX image parts are generated from `word-core` asset bytes and do not include source paths, account data, telemetry identifiers, linked image references, or remote references.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -75,6 +77,8 @@ Sprint 030 does not add ODT, TXT, HTML, print HTML, PDF, or app metadata. The Do
 Sprint 032 PDF export does not add local path metadata, source filenames, usernames, hostnames, creation-date metadata, producer metadata, telemetry identifiers, remote resources, or private build metadata to generated PDFs.
 
 Sprint 033 DOCX export adds simple generated header/footer XML parts only when `word-core` page regions have content. These generated parts do not include local path metadata, source filenames, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, or private build metadata.
+
+Sprint 034 DOCX export embeds only valid allowlisted image assets already present in the local document model. Exported image relationship targets and media part names are generated and do not use source filenames, local paths, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, or private build metadata.
 
 ## Network
 
