@@ -75,7 +75,6 @@
     type DocumentOutlineEntry,
     type NoteSummary,
     type TrackedChangeSummary,
-    type ListBlock,
     type NoteKind,
     type PageField,
     type PageRegionKind,
@@ -91,6 +90,11 @@
   } from './lib/keyboardShortcuts';
   import { defaultSmartTypingSettings, type SmartTypingSettings } from './lib/smartTyping';
   import {
+    buildExpandedDocumentStats,
+    type CoreDocumentStats,
+    type ExpandedDocumentStats
+  } from './lib/documentStats';
+  import {
     clampEditorZoom,
     editorViewportStyle,
     editorZoomStep,
@@ -100,12 +104,6 @@
     type EditorViewMode,
     type EditorZoomChoice
   } from './lib/editorViewport';
-
-  interface DocumentStats {
-    word_count: number;
-    character_count: number;
-    block_count: number;
-  }
 
   interface SpellIssue {
     word: string;
@@ -233,7 +231,7 @@
   let showRulers = $state(false);
   let editorViewportWidth = $state(0);
   let plainText = $state('');
-  let stats = $state<DocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
+  let stats = $state<CoreDocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
   let spellIssues = $state<SpellIssue[]>([]);
   let projectionWarnings = $state<string[]>([]);
   let exportPathInput = $state('');
@@ -312,9 +310,15 @@
   let unresolvedCommentCount = $derived(commentThreads.filter((comment) => !comment.resolved).length);
   let trackedChangeCount = $derived(trackedChanges.length);
   let selectionWordCount = $derived(activeFormatting.selectionWordCount);
-  let characterCountNoSpaces = $derived(countNonWhitespaceCharacters(plainText));
-  let paragraphCount = $derived(countProjectedParagraphs(documentState));
-  let readingMinutes = $derived(stats.word_count === 0 ? 0 : Math.max(1, Math.ceil(stats.word_count / 200)));
+  let expandedStats = $derived<ExpandedDocumentStats>(
+    buildExpandedDocumentStats({
+      coreStats: stats,
+      document: documentState,
+      plainText,
+      selectionWordCount,
+      pageSetup
+    })
+  );
   let fitWidthZoom = $derived(
     editorViewMode === 'page-layout' ? fitWidthZoomPercent(pageSetup, editorViewportWidth, showRulers ? 22 : 0) : 100
   );
@@ -391,7 +395,7 @@
     firstHeaderText = pageRegionToText(pageRegions.first_header);
     firstFooterText = pageRegionToText(pageRegions.first_footer);
     differentFirstPage = Boolean(pageRegions.different_first_page);
-    stats = await invoke<DocumentStats>('get_document_stats');
+    stats = await invoke<CoreDocumentStats>('get_document_stats');
     projectionWarnings = collectDocumentWarnings(document);
     spellIssues = [];
     spellIssueRanges = [];
@@ -458,7 +462,7 @@
     linkTargets = documentLinkTargets(nextDocument);
     projectionWarnings = collectDocumentWarnings(nextDocument);
     fileState = { ...fileState, dirty: true };
-    stats = await invoke<DocumentStats>('get_document_stats');
+    stats = await invoke<CoreDocumentStats>('get_document_stats');
   }
 
   async function refreshFileState() {
@@ -1699,30 +1703,6 @@
     );
   }
 
-  function countNonWhitespaceCharacters(text: string) {
-    return Array.from(text).filter((char) => !/\s/.test(char)).length;
-  }
-
-  function countProjectedParagraphs(document: DocumentState | undefined) {
-    if (!document) {
-      return 0;
-    }
-    return document.sections.reduce(
-      (total, section) =>
-        total +
-        section.blocks.reduce((blockTotal, block) => {
-          if (block.type === 'Paragraph' || block.type === 'Heading') {
-            return blockTotal + 1;
-          }
-          if (isProjectedListBlock(block)) {
-            return blockTotal + block.value.items.length;
-          }
-          return blockTotal;
-        }, 0),
-      0
-    );
-  }
-
   function sortedCommentThreads(document: DocumentState | undefined): CommentThread[] {
     return Object.values(document?.comments ?? {}).sort((left, right) => {
       if (left.resolved !== right.resolved) {
@@ -1743,18 +1723,6 @@
       hour: '2-digit',
       minute: '2-digit'
     }).format(parsed);
-  }
-
-  function isProjectedListBlock(
-    block: DocumentState['sections'][number]['blocks'][number]
-  ): block is ListBlock {
-    return (
-      block.type === 'List' &&
-      typeof block.value === 'object' &&
-      block.value !== null &&
-      'items' in block.value &&
-      Array.isArray(block.value.items)
-    );
   }
 
   function defaultDocumentFileName() {
@@ -3337,20 +3305,30 @@
       >
         {tr('stats')}
       </button>
-      <span>{tr('words')}: <strong>{stats.word_count}</strong></span>
-      <span>{tr('selectionWords')}: <strong>{selectionWordCount}</strong></span>
-      <span>{tr('characters')}: <strong>{stats.character_count}</strong></span>
-      <span>{tr('blocks')}: <strong>{stats.block_count}</strong></span>
+      <span>{tr('words')}: <strong>{expandedStats.wordCount}</strong></span>
+      <span>{tr('selectionWords')}: <strong>{expandedStats.selectionWordCount}</strong></span>
+      <span>{tr('estimatedPages')}: <strong>{expandedStats.estimatedPageCount}</strong></span>
       {#if statsPanelOpen}
-        <div class="status-panel" role="dialog" aria-label={tr('documentStatistics')}>
+        <div class="status-panel stats-panel" role="dialog" aria-label={tr('documentStatistics')}>
+          <p class="status-panel-note">{tr('statsEstimateNote')}</p>
           <dl>
-            <div><dt>{tr('words')}</dt><dd>{stats.word_count}</dd></div>
-            <div><dt>{tr('selectionWords')}</dt><dd>{selectionWordCount}</dd></div>
-            <div><dt>{tr('characters')}</dt><dd>{stats.character_count}</dd></div>
-            <div><dt>{tr('charactersNoSpaces')}</dt><dd>{characterCountNoSpaces}</dd></div>
-            <div><dt>{tr('paragraphs')}</dt><dd>{paragraphCount}</dd></div>
-            <div><dt>{tr('blocks')}</dt><dd>{stats.block_count}</dd></div>
-            <div><dt>{tr('readingTime')}</dt><dd>{tr('readingMinutes', { count: readingMinutes })}</dd></div>
+            <div><dt>{tr('words')}</dt><dd>{expandedStats.wordCount}</dd></div>
+            <div><dt>{tr('selectionWords')}</dt><dd>{expandedStats.selectionWordCount}</dd></div>
+            <div><dt>{tr('charactersWithSpaces')}</dt><dd>{expandedStats.characterCountWithSpaces}</dd></div>
+            <div><dt>{tr('charactersNoSpaces')}</dt><dd>{expandedStats.characterCountWithoutSpaces}</dd></div>
+            <div><dt>{tr('paragraphs')}</dt><dd>{expandedStats.paragraphCount}</dd></div>
+            <div><dt>{tr('blocks')}</dt><dd>{expandedStats.blockCount}</dd></div>
+            <div><dt>{tr('estimatedPages')}</dt><dd>{expandedStats.estimatedPageCount}</dd></div>
+            <div><dt>{tr('estimatedReadingTime')}</dt><dd>{tr('readingMinutes', { count: expandedStats.estimatedReadingMinutes })}</dd></div>
+            <div><dt>{tr('comments')}</dt><dd>{expandedStats.commentCount}</dd></div>
+            <div><dt>{tr('unresolvedComments')}</dt><dd>{expandedStats.unresolvedCommentCount}</dd></div>
+            <div><dt>{tr('trackChangesStatus')}</dt><dd>{expandedStats.trackChangesRecording ? tr('recording') : tr('notRecording')}</dd></div>
+            <div><dt>{tr('trackedChanges')}</dt><dd>{expandedStats.trackedChangeCount}</dd></div>
+            <div><dt>{tr('images')}</dt><dd>{expandedStats.imageCount}</dd></div>
+            <div><dt>{tr('embeddedAssets')}</dt><dd>{expandedStats.assetCount}</dd></div>
+            <div><dt>{tr('footnotes')}</dt><dd>{expandedStats.footnoteCount}</dd></div>
+            <div><dt>{tr('endnotes')}</dt><dd>{expandedStats.endnoteCount}</dd></div>
+            <div><dt>{tr('pageSize')}</dt><dd>{expandedStats.pageSize}</dd></div>
           </dl>
         </div>
       {/if}
