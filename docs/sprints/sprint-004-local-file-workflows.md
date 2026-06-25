@@ -10,7 +10,7 @@ Implement local document file workflows without adding broad filesystem, shell, 
 - User-selected `.odt` paths are validated for extension, traversal components, and size limits before read/write operations.
 - Saves use size-checked atomic writes.
 - Recent documents keep real paths backend-only and expose opaque tokens plus generic labels to the frontend.
-- Autosave writes recovery drafts using sanitized `recovery-<DOCUMENT_ID>.odt` filenames under `{TEMP_DIR}/900word-recovery`.
+- Autosave originally wrote one sanitized recovery draft per document. Sprint 029 replaces new autosaves with bounded versioned recovery snapshots while preserving validated legacy recovery tokens for list, recover, and discard.
 - On Unix platforms, recovery directories and files are forced to owner-only permissions.
 - Recovery drafts open as dirty unsaved documents rather than adopting the recovery file as the save path.
 - The desktop shell uses native dialogs for ODT Open and Save As with scoped dialog permissions.

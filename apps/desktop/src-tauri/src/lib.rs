@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -17,6 +18,9 @@ const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const IMAGE_TOO_LARGE_ERROR: &str = "image file is too large";
 const MAX_RECENT_DOCUMENTS: usize = 5;
 const RECOVERY_DIR_NAME: &str = "900word-recovery";
+const RECOVERY_SNAPSHOTS_PER_DOCUMENT: usize = 3;
+const MAX_RECOVERY_SNAPSHOTS: usize = 20;
+const MAX_RECOVERY_TOKEN_LEN: usize = 96;
 const USER_DICTIONARY_DIR_NAME: &str = "dictionaries";
 const FALLBACK_LANGUAGE_TAG: &str = "en-US";
 
@@ -106,6 +110,21 @@ pub struct RecoveryDocumentSummary {
     pub label: String,
     pub modified_unix_seconds: u64,
     pub byte_len: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoveryTokenParts {
+    document_key: String,
+}
+
+#[derive(Debug, Clone)]
+struct RecoverySnapshotEntry {
+    token: String,
+    document_key: String,
+    path: PathBuf,
+    modified_sort_key: u128,
+    modified_unix_seconds: u64,
+    byte_len: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,19 +319,17 @@ fn list_recovery_documents() -> Result<Vec<RecoveryDocumentSummary>, String> {
 
 #[tauri::command]
 fn recover_document(token: String, state: State<'_, AppState>) -> Result<Document, String> {
-    let path = recovery_path_for_token(&token)?;
-    let document = read_document_from_path(&path)?;
     let mut session = lock_session(&state)?;
-    session.document = document;
-    session.undo = UndoStack::default();
-    session.current_path = None;
-    session.dirty = true;
-    Ok(session.document.clone())
+    recover_document_from_dir(&token, &recovery_dir(), &mut session)
 }
 
 #[tauri::command]
 fn discard_recovery(token: String) -> Result<(), String> {
-    let path = recovery_path_for_token(&token)?;
+    discard_recovery_from_dir(&token, &recovery_dir())
+}
+
+fn discard_recovery_from_dir(token: &str, dir: &Path) -> Result<(), String> {
+    let path = recovery_path_for_token_in_dir(token, dir)?;
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1061,38 +1078,154 @@ fn recent_summaries(session: &DocumentSession) -> Vec<RecentDocumentSummary> {
 }
 
 fn write_recovery_document(document: &Document) -> Result<RecoveryDocumentSummary, String> {
-    let token = recovery_token_for_document(document);
-    let path = recovery_path_for_token(&token)?;
+    write_recovery_document_in_dir(document, &recovery_dir())
+}
+
+fn write_recovery_document_in_dir(
+    document: &Document,
+    dir: &Path,
+) -> Result<RecoveryDocumentSummary, String> {
     let bytes = word_odf::write_odt_bytes(document).map_err(|err| err.to_string())?;
-    ensure_private_recovery_dir()?;
-    write_bytes_atomically(&path, &bytes, true)?;
-    recovery_summary_from_path(token, &path, 1)
+    ensure_private_recovery_dir_at(dir)?;
+
+    for _ in 0..3 {
+        let token = recovery_token_for_document(document);
+        let path = recovery_path_for_token_in_dir(&token, dir)?;
+        if path.exists() {
+            continue;
+        }
+        write_bytes_atomically(&path, &bytes, true)?;
+        prune_recovery_snapshots_in_dir(dir, Some(&token))?;
+        let summaries = list_recovery_documents_in_dir(dir)?;
+        if let Some(summary) = summaries.into_iter().find(|summary| summary.token == token) {
+            return Ok(summary);
+        }
+        return recovery_summary_from_path(token, &path, 1);
+    }
+
+    Err("recovery snapshot could not be created".to_string())
 }
 
 fn list_recovery_documents_from_disk() -> Result<Vec<RecoveryDocumentSummary>, String> {
-    let dir = recovery_dir();
+    list_recovery_documents_in_dir(&recovery_dir())
+}
+
+fn list_recovery_documents_in_dir(dir: &Path) -> Result<Vec<RecoveryDocumentSummary>, String> {
+    let mut entries = recovery_snapshot_entries_in_dir(dir)?;
+    sort_recovery_entries_newest_first(&mut entries);
+
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| recovery_summary_from_entry(entry, index + 1))
+        .collect()
+}
+
+fn recovery_snapshot_entries_in_dir(dir: &Path) -> Result<Vec<RecoverySnapshotEntry>, String> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
 
-    let mut tokens = Vec::new();
+    let mut entries = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(safe_io_error)? {
         let entry = entry.map_err(safe_io_error)?;
         let Some(token) = entry.file_name().to_str().map(ToOwned::to_owned) else {
             continue;
         };
-        if validate_recovery_token(&token).is_ok() {
-            tokens.push(token);
+        let Ok(parts) = parse_recovery_token(&token) else {
+            continue;
+        };
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(safe_io_error)?;
+        let file_type = metadata.file_type();
+        if file_type.is_symlink() || !file_type.is_file() {
+            continue;
+        }
+        let modified_duration = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok());
+        let modified_unix_seconds = modified_duration
+            .as_ref()
+            .map(|duration| duration.as_secs())
+            .unwrap_or_else(current_unix_seconds);
+        let modified_sort_key = modified_duration
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_else(current_unix_nanos);
+        entries.push(RecoverySnapshotEntry {
+            token,
+            document_key: parts.document_key,
+            path,
+            modified_sort_key,
+            modified_unix_seconds,
+            byte_len: metadata.len(),
+        });
+    }
+
+    Ok(entries)
+}
+
+fn prune_recovery_snapshots_in_dir(dir: &Path, pinned_token: Option<&str>) -> Result<(), String> {
+    let mut entries = recovery_snapshot_entries_in_dir(dir)?;
+    sort_recovery_entries_newest_first(&mut entries);
+    if let Some(pinned_token) = pinned_token {
+        if let Some(index) = entries
+            .iter()
+            .position(|entry| entry.token.as_str() == pinned_token)
+        {
+            let entry = entries.remove(index);
+            entries.insert(0, entry);
         }
     }
-    tokens.sort();
 
-    let mut summaries = Vec::new();
-    for (index, token) in tokens.into_iter().enumerate() {
-        let path = recovery_path_for_token(&token)?;
-        summaries.push(recovery_summary_from_path(token, &path, index + 1)?);
+    let mut kept_tokens = HashSet::new();
+    let mut kept_per_document = BTreeMap::new();
+    for entry in &entries {
+        let document_count = kept_per_document
+            .entry(entry.document_key.clone())
+            .or_insert(0);
+        if *document_count >= RECOVERY_SNAPSHOTS_PER_DOCUMENT {
+            continue;
+        }
+        if kept_tokens.len() >= MAX_RECOVERY_SNAPSHOTS {
+            continue;
+        }
+        kept_tokens.insert(entry.token.clone());
+        *document_count += 1;
     }
-    Ok(summaries)
+
+    for entry in entries {
+        if kept_tokens.contains(&entry.token) {
+            continue;
+        }
+        match std::fs::remove_file(entry.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(safe_io_error(error)),
+        }
+    }
+    Ok(())
+}
+
+fn sort_recovery_entries_newest_first(entries: &mut [RecoverySnapshotEntry]) {
+    entries.sort_by(|left, right| {
+        right
+            .modified_sort_key
+            .cmp(&left.modified_sort_key)
+            .then_with(|| right.token.cmp(&left.token))
+    });
+}
+
+fn recovery_summary_from_entry(
+    entry: RecoverySnapshotEntry,
+    index: usize,
+) -> Result<RecoveryDocumentSummary, String> {
+    Ok(RecoveryDocumentSummary {
+        token: entry.token,
+        label: format!("Recovery draft {index}"),
+        modified_unix_seconds: entry.modified_unix_seconds,
+        byte_len: entry.byte_len,
+    })
 }
 
 fn recovery_summary_from_path(
@@ -1117,23 +1250,50 @@ fn recovery_summary_from_path(
 }
 
 fn recovery_token_for_document(document: &Document) -> String {
-    format!("recovery-{}.odt", document.id)
+    format!(
+        "recovery-v1-{}-{}.odt",
+        document.id.simple(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
-fn recovery_path_for_token(token: &str) -> Result<PathBuf, String> {
+fn recovery_path_for_token_in_dir(token: &str, dir: &Path) -> Result<PathBuf, String> {
     let token = validate_recovery_token(token)?;
-    Ok(recovery_dir().join(token))
+    Ok(dir.join(token))
 }
 
 fn recovery_dir() -> PathBuf {
     std::env::temp_dir().join(RECOVERY_DIR_NAME)
 }
 
-fn ensure_private_recovery_dir() -> Result<PathBuf, String> {
-    let dir = recovery_dir();
-    std::fs::create_dir_all(&dir).map_err(safe_io_error)?;
-    set_private_directory_permissions(&dir)?;
-    Ok(dir)
+fn ensure_private_recovery_dir_at(dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(safe_io_error)?;
+    set_private_directory_permissions(dir)?;
+    Ok(dir.to_path_buf())
+}
+
+fn recover_document_from_dir(
+    token: &str,
+    dir: &Path,
+    session: &mut DocumentSession,
+) -> Result<Document, String> {
+    let path = recovery_path_for_token_in_dir(token, dir)?;
+    validate_recovery_regular_file(&path)?;
+    let document = read_document_from_path(&path)?;
+    session.document = document;
+    session.undo = UndoStack::default();
+    session.current_path = None;
+    session.dirty = true;
+    Ok(session.document.clone())
+}
+
+fn validate_recovery_regular_file(path: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(safe_io_error)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err("recovery token is invalid".to_string());
+    }
+    Ok(())
 }
 
 fn write_bytes_atomically(path: &Path, bytes: &[u8], private: bool) -> Result<(), String> {
@@ -1250,7 +1410,12 @@ fn set_output_file_permissions(
 }
 
 fn validate_recovery_token(token: &str) -> Result<String, String> {
-    if token.len() > 64
+    parse_recovery_token(token)?;
+    Ok(token.to_string())
+}
+
+fn parse_recovery_token(token: &str) -> Result<RecoveryTokenParts, String> {
+    if token.len() > MAX_RECOVERY_TOKEN_LEN
         || !token.starts_with("recovery-")
         || !token.ends_with(".odt")
         || token.contains("..")
@@ -1262,7 +1427,46 @@ fn validate_recovery_token(token: &str) -> Result<String, String> {
     {
         return Err("recovery token is invalid".to_string());
     }
-    Ok(token.to_string())
+
+    let stem = token
+        .strip_suffix(".odt")
+        .ok_or_else(|| "recovery token is invalid".to_string())?;
+    if let Some(versioned) = stem.strip_prefix("recovery-v1-") {
+        let (document_id, snapshot_id) = versioned
+            .split_once('-')
+            .ok_or_else(|| "recovery token is invalid".to_string())?;
+        if snapshot_id.contains('-')
+            || parse_simple_uuid_component(document_id).is_err()
+            || parse_simple_uuid_component(snapshot_id).is_err()
+        {
+            return Err("recovery token is invalid".to_string());
+        }
+        return Ok(RecoveryTokenParts {
+            document_key: normalize_uuid_component(document_id)?,
+        });
+    }
+
+    let legacy_document_id = stem
+        .strip_prefix("recovery-")
+        .ok_or_else(|| "recovery token is invalid".to_string())?;
+    Ok(RecoveryTokenParts {
+        document_key: normalize_uuid_component(legacy_document_id)?,
+    })
+}
+
+fn parse_simple_uuid_component(component: &str) -> Result<(), String> {
+    if component.len() != 32 || !component.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("recovery token is invalid".to_string());
+    }
+    uuid::Uuid::parse_str(component)
+        .map(|_| ())
+        .map_err(|_| "recovery token is invalid".to_string())
+}
+
+fn normalize_uuid_component(component: &str) -> Result<String, String> {
+    uuid::Uuid::parse_str(component)
+        .map(|uuid| uuid.simple().to_string())
+        .map_err(|_| "recovery token is invalid".to_string())
 }
 
 fn current_unix_seconds() -> u64 {
@@ -1476,12 +1680,210 @@ mod tests {
         assert!(
             validate_recovery_token("recovery-00000000-0000-4000-8000-000000000001.odt").is_ok()
         );
+        assert!(validate_recovery_token(
+            "recovery-v1-00000000000040008000000000000001-00000000000040008000000000000002.odt"
+        )
+        .is_ok());
         assert_eq!(
             validate_recovery_token("../private.odt").expect_err("traversal should fail"),
             "recovery token is invalid"
         );
         assert_eq!(
             validate_recovery_token("folder/recovery-private.odt").expect_err("path should fail"),
+            "recovery token is invalid"
+        );
+        assert_eq!(
+            validate_recovery_token("document.odt").expect_err("plain path should fail"),
+            "recovery token is invalid"
+        );
+        assert_eq!(
+            validate_recovery_token("recovery-document.odt")
+                .expect_err("plain recovery name should fail"),
+            "recovery token is invalid"
+        );
+    }
+
+    #[test]
+    fn recovery_token_generation_uses_versioned_opaque_components() {
+        let mut document = Document::new_untitled();
+        document.id = uuid::Uuid::from_u128(0x00000000_0000_4000_8000_000000000011);
+
+        let token = recovery_token_for_document(&document);
+        let parts = parse_recovery_token(&token).expect("generated token should validate");
+
+        assert!(token.starts_with("recovery-v1-"));
+        assert!(token.ends_with(".odt"));
+        assert_eq!(parts.document_key, "00000000000040008000000000000011");
+        assert!(!token.contains("Untitled"));
+        assert!(!token.contains('/'));
+        assert!(!token.contains('\\'));
+    }
+
+    #[test]
+    fn recovery_autosave_writes_versioned_snapshots_and_bounds_per_document() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let mut document = Document::new_untitled();
+        document.id = uuid::Uuid::from_u128(0x00000000_0000_4000_8000_000000000021);
+
+        let mut written_tokens = HashSet::new();
+        for _ in 0..(RECOVERY_SNAPSHOTS_PER_DOCUMENT + 2) {
+            let summary = write_recovery_document_in_dir(&document, dir.path())
+                .expect("recovery snapshot should write");
+            assert!(summary.token.starts_with("recovery-v1-"));
+            assert!(summary.label.starts_with("Recovery draft "));
+            assert!(!summary.label.contains("Untitled"));
+            assert!(!summary.token.contains("Untitled"));
+            written_tokens.insert(summary.token);
+        }
+
+        let summaries =
+            list_recovery_documents_in_dir(dir.path()).expect("recovery snapshots should list");
+        assert_eq!(summaries.len(), RECOVERY_SNAPSHOTS_PER_DOCUMENT);
+        assert!(written_tokens.len() > RECOVERY_SNAPSHOTS_PER_DOCUMENT);
+        for summary in summaries {
+            assert!(summary.token.starts_with("recovery-v1-"));
+            assert!(summary.label.starts_with("Recovery draft "));
+            assert!(summary.byte_len > 0);
+            assert!(!summary.label.contains("Untitled"));
+        }
+    }
+
+    #[test]
+    fn recovery_autosave_bounds_total_snapshot_count() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+
+        for index in 0..(MAX_RECOVERY_SNAPSHOTS + 5) {
+            let mut document = Document::new_untitled();
+            document.id =
+                uuid::Uuid::from_u128(0x00000000_0000_4000_8000_000000000100 + index as u128);
+            write_recovery_document_in_dir(&document, dir.path())
+                .expect("recovery snapshot should write");
+        }
+
+        let summaries =
+            list_recovery_documents_in_dir(dir.path()).expect("recovery snapshots should list");
+        assert_eq!(summaries.len(), MAX_RECOVERY_SNAPSHOTS);
+        assert!(summaries
+            .iter()
+            .all(|summary| summary.label.starts_with("Recovery draft ")));
+    }
+
+    #[test]
+    fn legacy_recovery_tokens_still_list_and_recover() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let mut document = Document::new_untitled();
+        document.id = uuid::Uuid::from_u128(0x00000000_0000_4000_8000_000000000031);
+        let legacy_token = format!("recovery-{}.odt", document.id);
+        let legacy_path = recovery_path_for_token_in_dir(&legacy_token, dir.path())
+            .expect("legacy token should produce path");
+        let bytes = word_odf::write_odt_bytes(&document).expect("document should write as ODT");
+        ensure_private_recovery_dir_at(dir.path()).expect("recovery dir should be private");
+        write_bytes_atomically(&legacy_path, &bytes, true).expect("legacy recovery should write");
+
+        let summaries =
+            list_recovery_documents_in_dir(dir.path()).expect("legacy recovery should list");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].token, legacy_token);
+        assert_eq!(summaries[0].label, "Recovery draft 1");
+        assert!(!summaries[0].label.contains("Untitled"));
+
+        let mut session = DocumentSession::default();
+        session.current_path = Some(PathBuf::from("document.odt"));
+        session.dirty = false;
+        let recovered = recover_document_from_dir(&legacy_token, dir.path(), &mut session)
+            .expect("legacy recovery should recover");
+
+        assert_eq!(recovered.meta.title, "Untitled Document");
+        assert!(session.dirty);
+        assert!(session.current_path.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_recovery_entries_are_not_listed_or_opened() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let external = tempfile::tempdir().expect("external temp dir should be created");
+        let document = Document::new_untitled();
+        let bytes = word_odf::write_odt_bytes(&document).expect("document should write as ODT");
+        let target = external.path().join("target.odt");
+        std::fs::write(&target, bytes).expect("external target should write");
+
+        let token =
+            "recovery-v1-00000000000040008000000000000061-00000000000040008000000000000062.odt";
+        let symlink_path = dir.path().join(token);
+        symlink(&target, &symlink_path).expect("recovery symlink should write");
+
+        let summaries =
+            list_recovery_documents_in_dir(dir.path()).expect("recovery list should succeed");
+        assert!(summaries.is_empty());
+
+        let mut session = DocumentSession::default();
+        assert_eq!(
+            recover_document_from_dir(token, dir.path(), &mut session)
+                .expect_err("recovery symlink should not be opened"),
+            "recovery token is invalid"
+        );
+        assert!(!session.dirty);
+        assert!(session.current_path.is_none());
+    }
+
+    #[test]
+    fn recovery_open_keeps_draft_dirty_and_unsaved() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let mut document = Document::new_untitled();
+        document.id = uuid::Uuid::from_u128(0x00000000_0000_4000_8000_000000000041);
+        let summary = write_recovery_document_in_dir(&document, dir.path())
+            .expect("recovery snapshot should write");
+        let mut session = DocumentSession::default();
+        session.current_path = Some(PathBuf::from("document.odt"));
+        session.dirty = false;
+
+        let recovered = recover_document_from_dir(&summary.token, dir.path(), &mut session)
+            .expect("recovery snapshot should open");
+
+        assert_eq!(recovered.meta.title, "Untitled Document");
+        assert!(session.dirty);
+        assert!(session.current_path.is_none());
+    }
+
+    #[test]
+    fn recovery_discard_is_scoped_to_selected_validated_token() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let mut first = Document::new_untitled();
+        first.id = uuid::Uuid::from_u128(0x00000000_0000_4000_8000_000000000051);
+        let mut second = Document::new_untitled();
+        second.id = uuid::Uuid::from_u128(0x00000000_0000_4000_8000_000000000052);
+        let first_summary = write_recovery_document_in_dir(&first, dir.path())
+            .expect("first recovery snapshot should write");
+        let second_summary = write_recovery_document_in_dir(&second, dir.path())
+            .expect("second recovery snapshot should write");
+        let plain_path = dir.path().join("document.odt");
+        std::fs::write(&plain_path, b"not a recovery token").expect("plain file should write");
+
+        discard_recovery_from_dir(&first_summary.token, dir.path())
+            .expect("selected recovery should discard");
+
+        assert!(
+            !recovery_path_for_token_in_dir(&first_summary.token, dir.path())
+                .expect("first token should stay valid")
+                .exists()
+        );
+        assert!(
+            recovery_path_for_token_in_dir(&second_summary.token, dir.path())
+                .expect("second token should stay valid")
+                .exists()
+        );
+        assert!(plain_path.exists());
+        assert_eq!(
+            discard_recovery_from_dir("../document.odt", dir.path())
+                .expect_err("traversal discard should fail"),
+            "recovery token is invalid"
+        );
+        assert_eq!(
+            discard_recovery_from_dir("document.odt", dir.path())
+                .expect_err("plain discard should fail"),
             "recovery token is invalid"
         );
     }
@@ -1662,6 +2064,34 @@ mod tests {
 
         assert_eq!(err, "document exceeds supported bootstrap size limit");
         assert!(!target.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_write_uses_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let document = Document::new_untitled();
+
+        let summary = write_recovery_document_in_dir(&document, dir.path())
+            .expect("recovery snapshot should write");
+        let path = recovery_path_for_token_in_dir(&summary.token, dir.path())
+            .expect("recovery token should produce path");
+
+        let dir_mode = std::fs::metadata(dir.path())
+            .expect("dir metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(path)
+            .expect("file metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
     }
 
     #[cfg(unix)]
