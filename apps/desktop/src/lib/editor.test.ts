@@ -10,12 +10,14 @@ import {
   editTableStructureTransaction,
   imageScalePercentFromResizeDrag,
   insertDefaultTableTransaction,
+  insertEditorNoteReferenceTransaction,
   insertTableTransaction,
   mapSpellIssuesToEditorRanges,
   pastePlainTextAsBlocksTransaction,
   recordSelectedDeletionTransaction,
   recordTextInsertionTransaction,
   removeEditorCommentTransaction,
+  removeEditorNoteReferenceTransaction,
   removeEditorLinkTransaction,
   removeEditorBlockBookmarkTransaction,
   setEditorParagraphFormatTransaction,
@@ -93,6 +95,76 @@ describe('findEditorDocMatches', () => {
     const firstText = nextState.doc.firstChild?.firstChild;
     expect(firstText?.marks.map((mark) => mark.type.name)).toEqual(['bold']);
     expect(firstText?.text).toBe('Hello');
+  });
+
+  it('inserts footnote reference atoms at a fallback cursor without replacing selected text', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Claim text' }]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = insertEditorNoteReferenceTransaction(state, 'note-source', 'footnote', '1', {
+      from: 1,
+      to: 6,
+      empty: false
+    });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.toJSON()).toMatchObject({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            { type: 'text', text: 'Claim' },
+            { type: 'note_reference', attrs: { id: 'note-source', kind: 'footnote', label: '1' } },
+            { type: 'text', text: ' text' }
+          ]
+        }
+      ]
+    });
+  });
+
+  it('removes failed note reference atoms without leaving citation text behind', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            { type: 'text', text: 'Claim' },
+            { type: 'note_reference', attrs: { id: 'note-source', kind: 'footnote', label: '1' } },
+            { type: 'text', text: ' text' }
+          ]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = removeEditorNoteReferenceTransaction(state, 'note-source');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.toJSON()).toMatchObject({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Claim text' }]
+        }
+      ]
+    });
   });
 
   it('changes the selected block type from a fallback toolbar selection', () => {

@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 use word_core::{
-    Block, Document, Heading, ImageBlock, Inline, InlineMark, PageField, PageRegion,
-    PageRegionBlock, PageSetup, Paragraph, ParagraphFormat, Section, Style, StyleKind,
-    TableOfContents,
+    collect_ordered_note_references, Block, Document, Heading, ImageBlock, Inline, InlineMark,
+    NoteKind, PageField, PageRegion, PageRegionBlock, PageSetup, Paragraph, ParagraphFormat,
+    Section, Style, StyleKind, TableOfContents,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -31,6 +31,7 @@ pub fn export_txt(document: &Document) -> Result<String, ExportError> {
         }
         push_section_regions_text(section, document, false, &mut output);
     }
+    push_notes_text(document, &mut output);
     Ok(output.trim_end().to_string())
 }
 
@@ -105,6 +106,7 @@ fn export_html_with_options(
         push_section_regions_html(section, document, false, &mut output);
         output.push_str("</section>");
     }
+    push_notes_html(document, &mut output);
 
     output.push_str("</body></html>");
     Ok(output)
@@ -242,6 +244,48 @@ fn push_table_of_contents_text(table_of_contents: &TableOfContents, output: &mut
         }
         output.push_str(&entry.text);
     }
+}
+
+fn push_notes_text(document: &Document, output: &mut String) {
+    let references = collect_ordered_note_references(&document.sections);
+    push_note_kind_text(
+        document,
+        &references,
+        NoteKind::Footnote,
+        "Footnotes",
+        output,
+    );
+    push_note_kind_text(document, &references, NoteKind::Endnote, "Endnotes", output);
+}
+
+fn push_note_kind_text(
+    document: &Document,
+    references: &[word_core::InlineNoteReference],
+    kind: NoteKind,
+    title: &str,
+    output: &mut String,
+) {
+    let mut lines = Vec::new();
+    for reference in references.iter().filter(|reference| reference.kind == kind) {
+        let Some(note) = document.notes.get(&reference.id) else {
+            continue;
+        };
+        if note.kind != reference.kind {
+            continue;
+        }
+        lines.push(format!("[{}] {}", reference.label, note.body));
+    }
+    if lines.is_empty() {
+        return;
+    }
+    if !output.trim_end().is_empty() {
+        output.push('\n');
+    }
+    output.push('\n');
+    output.push_str(title);
+    output.push('\n');
+    output.push_str(&lines.join("\n"));
+    output.push('\n');
 }
 
 fn push_section_regions_html(
@@ -514,6 +558,19 @@ fn push_inlines_html(inlines: &[Inline], document: &Document, output: &mut Strin
 }
 
 fn push_inline_html(inline: &Inline, document: &Document, output: &mut String) {
+    if let Some(reference) = inline.note_reference.as_ref() {
+        output.push_str("<sup data-note-reference-id=\"");
+        output.push_str(&escape_html(&reference.id));
+        output.push_str("\" data-note-kind=\"");
+        output.push_str(note_kind_name(reference.kind));
+        output.push_str("\" data-note-label=\"");
+        output.push_str(&escape_html(&reference.label));
+        output.push_str("\">");
+        output.push_str(&escape_html(&reference.label));
+        output.push_str("</sup>");
+        return;
+    }
+
     if let Some(field) = inline.field {
         output.push_str("<span data-page-field=\"");
         output.push_str(page_field_name(field));
@@ -583,11 +640,79 @@ fn push_inline_html(inline: &Inline, document: &Document, output: &mut String) {
 }
 
 fn inline_export_text(inline: &Inline, document: &Document) -> String {
+    if let Some(reference) = inline.note_reference.as_ref() {
+        return reference.label.clone();
+    }
     match inline.field {
         Some(PageField::PageNumber) => "1".to_string(),
         Some(PageField::PageCount) => "1".to_string(),
         Some(PageField::Date) => document.meta.modified_at.format("%Y-%m-%d").to_string(),
         None => inline.text.clone(),
+    }
+}
+
+fn push_notes_html(document: &Document, output: &mut String) {
+    let references = collect_ordered_note_references(&document.sections);
+    let mut sections = String::new();
+    push_note_kind_html(
+        document,
+        &references,
+        NoteKind::Footnote,
+        "Footnotes",
+        &mut sections,
+    );
+    push_note_kind_html(
+        document,
+        &references,
+        NoteKind::Endnote,
+        "Endnotes",
+        &mut sections,
+    );
+    if sections.is_empty() {
+        return;
+    }
+    output.push_str("<aside data-900word-notes=\"true\">");
+    output.push_str(&sections);
+    output.push_str("</aside>");
+}
+
+fn push_note_kind_html(
+    document: &Document,
+    references: &[word_core::InlineNoteReference],
+    kind: NoteKind,
+    title: &str,
+    output: &mut String,
+) {
+    let mut rows = String::new();
+    for reference in references.iter().filter(|reference| reference.kind == kind) {
+        let Some(note) = document.notes.get(&reference.id) else {
+            continue;
+        };
+        if note.kind != reference.kind {
+            continue;
+        }
+        rows.push_str("<li><span class=\"note-label\">[");
+        rows.push_str(&escape_html(&reference.label));
+        rows.push_str("]</span> ");
+        rows.push_str(&escape_html(&note.body));
+        rows.push_str("</li>");
+    }
+    if rows.is_empty() {
+        return;
+    }
+    output.push_str("<section data-note-kind=\"");
+    output.push_str(note_kind_name(kind));
+    output.push_str("\"><h2>");
+    output.push_str(title);
+    output.push_str("</h2><ol>");
+    output.push_str(&rows);
+    output.push_str("</ol></section>");
+}
+
+fn note_kind_name(kind: NoteKind) -> &'static str {
+    match kind {
+        NoteKind::Footnote => "footnote",
+        NoteKind::Endnote => "endnote",
     }
 }
 
@@ -754,7 +879,7 @@ fn push_export_css(document: &Document, options: HtmlExportOptions, output: &mut
         .unwrap_or_default();
     output.push_str("<style>");
     output.push_str("body{font-family:system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;line-height:1.55;color:#1d2433;background:#fff;margin:2rem;}");
-    output.push_str("section{max-width:48rem;margin:0 auto;}table{border-collapse:collapse;width:100%;}td{border:1px solid #9aa7b8;padding:.35rem;vertical-align:top;}figure{margin:1rem 0;padding:.75rem;border:1px solid #d6dce5;}figcaption{color:#526070;}a{color:#0b63b6;}nav[data-900word-block=\"table-of-contents\"]{margin:1rem 0;padding:.75rem;border-left:3px solid #0f6b5f;background:#f3f7f5;}nav[data-900word-block=\"table-of-contents\"] .toc-title{margin:.1rem 0 .45rem;font-weight:700;}nav[data-900word-block=\"table-of-contents\"] ol{margin:.25rem 0 0;padding-left:1.25rem;}nav[data-900word-block=\"table-of-contents\"] li[data-toc-level=\"2\"]{margin-left:1rem;}nav[data-900word-block=\"table-of-contents\"] li[data-toc-level=\"3\"]{margin-left:2rem;}hr[data-page-break=\"true\"]{break-after:page;border:0;border-top:1px dashed #9aa7b8;}");
+    output.push_str("section{max-width:48rem;margin:0 auto;}table{border-collapse:collapse;width:100%;}td{border:1px solid #9aa7b8;padding:.35rem;vertical-align:top;}figure{margin:1rem 0;padding:.75rem;border:1px solid #d6dce5;}figcaption{color:#526070;}a{color:#0b63b6;}sup[data-note-reference-id]{color:#0f6b5f;font-size:.72em;font-weight:700;}aside[data-900word-notes]{max-width:48rem;margin:1.5rem auto 0;border-top:1px solid #cfd7df;padding-top:.75rem;}aside[data-900word-notes] h2{font-size:1rem;margin:.75rem 0 .35rem;}aside[data-900word-notes] ol{margin:.25rem 0 0;padding-left:1.25rem;}aside[data-900word-notes] li{margin:.25rem 0;}nav[data-900word-block=\"table-of-contents\"]{margin:1rem 0;padding:.75rem;border-left:3px solid #0f6b5f;background:#f3f7f5;}nav[data-900word-block=\"table-of-contents\"] .toc-title{margin:.1rem 0 .45rem;font-weight:700;}nav[data-900word-block=\"table-of-contents\"] ol{margin:.25rem 0 0;padding-left:1.25rem;}nav[data-900word-block=\"table-of-contents\"] li[data-toc-level=\"2\"]{margin-left:1rem;}nav[data-900word-block=\"table-of-contents\"] li[data-toc-level=\"3\"]{margin-left:2rem;}hr[data-page-break=\"true\"]{break-after:page;border:0;border-top:1px dashed #9aa7b8;}");
     if options.print_ready {
         output.push_str(&format!(
             "@page{{size:{}mm {}mm;margin:{}mm {}mm {}mm {}mm;}}body{{margin:0;}}section{{max-width:none;}}",
@@ -870,8 +995,9 @@ fn escape_html(input: &str) -> String {
 mod tests {
     use super::*;
     use word_core::{
-        ImageAlignment, ImageBlock, ImagePresentation, ListBlock, ListDefinition, ListItem,
-        PageRegionParagraph, Table, TableCell, TableOfContents, TableOfContentsEntry, TableRow,
+        ImageAlignment, ImageBlock, ImagePresentation, InlineNoteReference, ListBlock,
+        ListDefinition, ListItem, Note, NoteKind, PageRegionParagraph, Table, TableCell,
+        TableOfContents, TableOfContentsEntry, TableRow,
     };
 
     #[test]
@@ -977,6 +1103,7 @@ mod tests {
                 comment_ids: Vec::new(),
                 style: Default::default(),
                 field: None,
+                note_reference: None,
                 tracked_change: None,
             }],
         })];
@@ -1008,6 +1135,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: None,
                 }],
             }),
@@ -1068,6 +1196,61 @@ mod tests {
     }
 
     #[test]
+    fn note_exports_include_references_and_bodies_without_page_layout_claims() {
+        let mut document = Document::new_untitled();
+        document.notes.insert(
+            "note-source".to_string(),
+            Note {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Source body".to_string(),
+            },
+        );
+        document.notes.insert(
+            "note-end".to_string(),
+            Note {
+                id: "note-end".to_string(),
+                kind: NoteKind::Endnote,
+                body: "Endnote body".to_string(),
+            },
+        );
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: "body".into(),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Claim"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-source".to_string(),
+                    kind: NoteKind::Footnote,
+                    label: "1".to_string(),
+                }),
+                Inline::text(" appendix"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-end".to_string(),
+                    kind: NoteKind::Endnote,
+                    label: "i".to_string(),
+                }),
+            ],
+        })];
+
+        let text = export_txt(&document).expect("txt export should succeed");
+        let html = export_html(&document).expect("html export should succeed");
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+
+        assert!(text.contains("Claim1 appendixi"));
+        assert!(text.contains("Footnotes\n[1] Source body"));
+        assert!(text.contains("Endnotes\n[i] Endnote body"));
+        assert!(html.contains("data-note-reference-id=\"note-source\""));
+        assert!(html.contains("data-900word-notes=\"true\""));
+        assert!(html.contains("Source body"));
+        assert!(!html.contains("page-bottom"));
+        assert!(pdf
+            .windows("Footnotes".len())
+            .any(|window| window == b"Footnotes"));
+    }
+
+    #[test]
     fn html_export_preserves_authoring_direct_formatting() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
@@ -1094,6 +1277,7 @@ mod tests {
                     highlight_color: Some("#fff3bf".to_string()),
                 },
                 field: None,
+                note_reference: None,
                 tracked_change: None,
             }],
         })];

@@ -1,5 +1,5 @@
 import { Schema, type MarkSpec, type NodeSpec } from 'prosemirror-model';
-import { sanitizeCommentId, sanitizeTrackedChangeId } from './documentProjection';
+import { sanitizeCommentId, sanitizeNoteId, sanitizeNoteLabel, sanitizeTrackedChangeId } from './documentProjection';
 import { sanitizeBookmarkId, sanitizeEditorHref } from './editorSecurity';
 
 const nodes: Record<string, NodeSpec> = {
@@ -370,6 +370,55 @@ const nodes: Record<string, NodeSpec> = {
       ];
     }
   },
+  note_reference: {
+    inline: true,
+    group: 'inline',
+    atom: true,
+    selectable: false,
+    attrs: {
+      id: {
+        validate(value: unknown) {
+          if (typeof value !== 'string' || !sanitizeNoteId(value)) {
+            throw new RangeError('unsupported note id');
+          }
+        }
+      },
+      kind: {
+        validate(value: unknown) {
+          if (value !== 'footnote' && value !== 'endnote') {
+            throw new RangeError('unsupported note kind');
+          }
+        }
+      },
+      label: {
+        validate(value: unknown) {
+          if (typeof value !== 'string' || !sanitizeNoteLabel(value)) {
+            throw new RangeError('unsupported note label');
+          }
+        }
+      }
+    },
+    parseDOM: [
+      {
+        tag: 'sup[data-note-reference-id]',
+        getAttrs(node) {
+          const id = sanitizeNoteId(node.getAttribute('data-note-reference-id') ?? '');
+          const kind = noteKindAttr(node.getAttribute('data-note-kind'));
+          const label = sanitizeNoteLabel(node.getAttribute('data-note-label') ?? node.textContent ?? '');
+          return id && kind && label ? { id, kind, label } : false;
+        }
+      }
+    ],
+    toDOM(node) {
+      const id = sanitizeNoteId(node.attrs.id) ?? '';
+      const kind = noteKindAttr(node.attrs.kind) ?? 'footnote';
+      const label = sanitizeNoteLabel(node.attrs.label) ?? '1';
+      return ['sup', noteReferenceDomAttrs(id, kind, label), label];
+    },
+    leafText(node) {
+      return sanitizeNoteLabel(node.attrs.label) ?? '';
+    }
+  },
   text: {
     group: 'inline'
   }
@@ -610,6 +659,7 @@ export const supportedBlockTypes = ['paragraph', 'heading'] as const;
 export const supportedListNodeTypes = ['bullet_list', 'ordered_list', 'list_item'] as const;
 export const supportedTableNodeTypes = ['table', 'table_row', 'table_cell'] as const;
 export const supportedImageNodeTypes = ['image'] as const;
+export const supportedInlineNodeTypes = ['note_reference'] as const;
 export const supportedMarkTypes = [
   'bold',
   'italic',
@@ -801,6 +851,21 @@ function imageDomAttrs(attrs: Record<string, unknown>): Record<string, string> {
   }
   domAttrs.style = css.join('; ');
   return domAttrs;
+}
+
+function noteKindAttr(value: unknown): 'footnote' | 'endnote' | null {
+  return value === 'footnote' || value === 'endnote' ? value : null;
+}
+
+function noteReferenceDomAttrs(id: string, kind: 'footnote' | 'endnote', label: string): Record<string, string> {
+  return {
+    class: `note-reference note-${kind}`,
+    'data-note-reference-id': id,
+    'data-note-kind': kind,
+    'data-note-label': label,
+    contenteditable: 'false',
+    'aria-label': `${kind === 'footnote' ? 'Footnote' : 'Endnote'} ${label}`
+  };
 }
 
 function imageAlignmentAttr(value: unknown): 'inline' | 'left' | 'center' | 'right' {

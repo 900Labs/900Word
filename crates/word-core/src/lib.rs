@@ -16,6 +16,8 @@ pub struct Document {
     pub assets: BTreeMap<String, AssetRef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub comments: BTreeMap<String, CommentThread>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub notes: BTreeMap<String, Note>,
     pub warnings: Vec<DocumentWarning>,
 }
 
@@ -30,6 +32,7 @@ impl Document {
             lists: default_list_definitions(),
             assets: BTreeMap::new(),
             comments: BTreeMap::new(),
+            notes: BTreeMap::new(),
             warnings: Vec::new(),
         }
     }
@@ -40,6 +43,15 @@ impl Document {
             for block in &section.blocks {
                 block.push_text(&mut text);
                 text.push('\n');
+            }
+        }
+        for reference in collect_ordered_note_references(&self.sections) {
+            if let Some(note) = self.notes.get(&reference.id) {
+                if note.kind != reference.kind {
+                    continue;
+                }
+                text.push('\n');
+                text.push_str(&note.body);
             }
         }
 
@@ -92,6 +104,7 @@ impl Document {
                 normalize_comment_anchors_in_block(&mut block);
                 section.blocks.insert(block_index, block);
                 self.prune_unanchored_comments();
+                self.prune_unreferenced_notes();
                 self.touch();
                 Ok(())
             }
@@ -111,6 +124,7 @@ impl Document {
                 normalize_comment_anchors_in_block(&mut block);
                 *slot = block;
                 self.prune_unanchored_comments();
+                self.prune_unreferenced_notes();
                 self.touch();
                 Ok(())
             }
@@ -127,6 +141,7 @@ impl Document {
                 }
                 section.blocks.remove(block_index);
                 self.prune_unanchored_comments();
+                self.prune_unreferenced_notes();
                 self.touch();
                 Ok(())
             }
@@ -233,6 +248,77 @@ impl Document {
                 }
                 Ok(())
             }
+            DocumentCommand::InsertNote {
+                section_index,
+                block_index,
+                inline_index,
+                id,
+                kind,
+                body,
+                label,
+            } => {
+                let id = validate_note_id(&id)?;
+                if self.notes.contains_key(&id) {
+                    return Err(DocumentError::NoteAlreadyExists { id });
+                }
+                if self.notes.len() >= MAX_NOTES {
+                    return Err(DocumentError::TooManyNotes { max: MAX_NOTES });
+                }
+                let body = validate_note_body(&body)?;
+                let label = match label {
+                    Some(label) => validate_note_label(&label)?,
+                    None => self.next_note_label(kind),
+                };
+                self.insert_note_reference(
+                    section_index,
+                    block_index,
+                    inline_index,
+                    InlineNoteReference {
+                        id: id.clone(),
+                        kind,
+                        label,
+                    },
+                )?;
+                self.notes.insert(id.clone(), Note { id, kind, body });
+                self.touch();
+                Ok(())
+            }
+            DocumentCommand::AddNote { id, kind, body } => {
+                let id = validate_note_id(&id)?;
+                if self.notes.contains_key(&id) {
+                    return Err(DocumentError::NoteAlreadyExists { id });
+                }
+                if self.notes.len() >= MAX_NOTES {
+                    return Err(DocumentError::TooManyNotes { max: MAX_NOTES });
+                }
+                if !note_is_referenced_with_kind(&self.sections, &id, kind) {
+                    return Err(DocumentError::NoteNotReferenced { id });
+                }
+                let body = validate_note_body(&body)?;
+                self.notes.insert(id.clone(), Note { id, kind, body });
+                self.touch();
+                Ok(())
+            }
+            DocumentCommand::UpdateNote { id, body } => {
+                let id = validate_note_id(&id)?;
+                let body = validate_note_body(&body)?;
+                let note = self
+                    .notes
+                    .get_mut(&id)
+                    .ok_or_else(|| DocumentError::NoteNotFound { id: id.clone() })?;
+                note.body = body;
+                self.touch();
+                Ok(())
+            }
+            DocumentCommand::DeleteNote { id } => {
+                let id = validate_note_id(&id)?;
+                if self.notes.remove(&id).is_none() {
+                    return Err(DocumentError::NoteNotFound { id });
+                }
+                self.remove_note_references(&id);
+                self.touch();
+                Ok(())
+            }
             DocumentCommand::AddComment { id, author, body } => {
                 let id = validate_comment_id(&id)?;
                 if self.comments.contains_key(&id) {
@@ -295,6 +381,7 @@ impl Document {
             return Err(DocumentError::TrackedChangeNotFound { id });
         }
         self.prune_unanchored_comments();
+        self.prune_unreferenced_notes();
         self.touch();
         Ok(())
     }
@@ -306,6 +393,7 @@ impl Document {
         }
         if changed {
             self.prune_unanchored_comments();
+            self.prune_unreferenced_notes();
         }
         changed
     }
@@ -320,12 +408,71 @@ impl Document {
         }
     }
 
+    fn remove_note_references(&mut self, note_id: &str) {
+        for section in &mut self.sections {
+            remove_note_references_from_blocks(&mut section.blocks, note_id);
+        }
+    }
+
+    fn insert_note_reference(
+        &mut self,
+        section_index: usize,
+        block_index: usize,
+        inline_index: usize,
+        reference: InlineNoteReference,
+    ) -> Result<(), DocumentError> {
+        let section = self
+            .sections
+            .get_mut(section_index)
+            .ok_or(DocumentError::SectionOutOfBounds { section_index })?;
+        let block = section
+            .blocks
+            .get_mut(block_index)
+            .ok_or(DocumentError::BlockOutOfBounds { block_index })?;
+        let inlines = match block {
+            Block::Paragraph(paragraph) => &mut paragraph.inlines,
+            Block::Heading(heading) => &mut heading.inlines,
+            _ => {
+                return Err(DocumentError::UnsupportedBlockForNote {
+                    block_type: block.kind_name(),
+                })
+            }
+        };
+        if inline_index > inlines.len() {
+            return Err(DocumentError::InlineOutOfBounds { inline_index });
+        }
+        inlines.insert(inline_index, Inline::note_reference(reference));
+        Ok(())
+    }
+
+    fn next_note_label(&self, kind: NoteKind) -> String {
+        let references = collect_ordered_note_references(&self.sections)
+            .into_iter()
+            .filter(|reference| reference.kind == kind)
+            .collect::<Vec<_>>();
+        let max_numeric_label = references
+            .iter()
+            .filter_map(|reference| reference.label.parse::<usize>().ok())
+            .max()
+            .unwrap_or(0);
+        (max_numeric_label.max(references.len()) + 1).to_string()
+    }
+
     fn prune_unanchored_comments(&mut self) {
         if self.comments.is_empty() {
             return;
         }
         let anchored = collect_comment_anchor_ids(&self.sections);
         self.comments.retain(|id, _| anchored.contains(id));
+    }
+
+    fn prune_unreferenced_notes(&mut self) {
+        if self.notes.is_empty() {
+            return;
+        }
+        let sections = &self.sections;
+        self.notes
+            .retain(|id, note| note_is_referenced_with_kind(sections, id, note.kind));
     }
 }
 
@@ -370,6 +517,10 @@ pub const DEFAULT_TRACKED_CHANGE_AUTHOR: &str = "Local User";
 pub const MAX_COMMENT_ID_LEN: usize = 64;
 pub const MAX_COMMENT_BODY_CHARS: usize = 2_000;
 pub const MAX_COMMENT_AUTHOR_CHARS: usize = 80;
+pub const MAX_NOTE_ID_LEN: usize = 64;
+pub const MAX_NOTE_BODY_CHARS: usize = 4_000;
+pub const MAX_NOTE_LABEL_CHARS: usize = 16;
+pub const MAX_NOTES: usize = 512;
 pub const MAX_TRACKED_CHANGE_ID_LEN: usize = 64;
 pub const MAX_TABLE_OF_CONTENTS_TITLE_CHARS: usize = 120;
 pub const MAX_TABLE_OF_CONTENTS_ENTRY_TEXT_CHARS: usize = 240;
@@ -384,6 +535,27 @@ pub struct CommentThread {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub resolved: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    pub id: String,
+    pub kind: NoteKind,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteKind {
+    Footnote,
+    Endnote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InlineNoteReference {
+    pub id: String,
+    pub kind: NoteKind,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -621,6 +793,18 @@ pub enum Block {
 }
 
 impl Block {
+    fn kind_name(&self) -> &'static str {
+        match self {
+            Block::Paragraph(_) => "Paragraph",
+            Block::Heading(_) => "Heading",
+            Block::TableOfContents(_) => "TableOfContents",
+            Block::List(_) => "List",
+            Block::Table(_) => "Table",
+            Block::Image(_) => "Image",
+            Block::PageBreak => "PageBreak",
+        }
+    }
+
     fn push_text(&self, output: &mut String) {
         match self {
             Block::Paragraph(paragraph) => paragraph.push_text(output),
@@ -756,6 +940,8 @@ pub struct Inline {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<PageField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_reference: Option<InlineNoteReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracked_change: Option<TrackedChange>,
 }
 
@@ -768,6 +954,7 @@ impl Inline {
             comment_ids: Vec::new(),
             style: InlineStyle::default(),
             field: None,
+            note_reference: None,
             tracked_change: None,
         }
     }
@@ -780,12 +967,28 @@ impl Inline {
             comment_ids: Vec::new(),
             style: InlineStyle::default(),
             field: Some(field),
+            note_reference: None,
+            tracked_change: None,
+        }
+    }
+
+    pub fn note_reference(reference: InlineNoteReference) -> Self {
+        Self {
+            text: reference.label.clone(),
+            marks: Vec::new(),
+            link: None,
+            comment_ids: Vec::new(),
+            style: InlineStyle::default(),
+            field: None,
+            note_reference: Some(reference),
             tracked_change: None,
         }
     }
 
     fn push_text(&self, output: &mut String) {
-        if let Some(field) = self.field {
+        if let Some(reference) = &self.note_reference {
+            output.push_str(&reference.label);
+        } else if let Some(field) = self.field {
             output.push_str(field.fallback_text());
         } else {
             output.push_str(&self.text);
@@ -1063,6 +1266,27 @@ pub enum DocumentCommand {
     },
     AcceptAllTrackedChanges,
     RejectAllTrackedChanges,
+    InsertNote {
+        section_index: usize,
+        block_index: usize,
+        inline_index: usize,
+        id: String,
+        kind: NoteKind,
+        body: String,
+        label: Option<String>,
+    },
+    AddNote {
+        id: String,
+        kind: NoteKind,
+        body: String,
+    },
+    UpdateNote {
+        id: String,
+        body: String,
+    },
+    DeleteNote {
+        id: String,
+    },
     AddComment {
         id: String,
         author: Option<String>,
@@ -1165,6 +1389,26 @@ pub enum DocumentError {
     CommentNotFound { id: String },
     #[error("comment {id} has no selected text anchor")]
     CommentNotAnchored { id: String },
+    #[error("invalid note id")]
+    InvalidNoteId,
+    #[error("invalid note label")]
+    InvalidNoteLabel,
+    #[error("note body must not be empty")]
+    EmptyNoteBody,
+    #[error("note body is too long; maximum is {max} characters")]
+    NoteBodyTooLong { max: usize },
+    #[error("note {id} already exists")]
+    NoteAlreadyExists { id: String },
+    #[error("note {id} was not found")]
+    NoteNotFound { id: String },
+    #[error("note {id} has no text reference")]
+    NoteNotReferenced { id: String },
+    #[error("document has too many notes; maximum is {max}")]
+    TooManyNotes { max: usize },
+    #[error("inline index {inline_index} is out of bounds")]
+    InlineOutOfBounds { inline_index: usize },
+    #[error("{block_type} blocks do not support note insertion")]
+    UnsupportedBlockForNote { block_type: &'static str },
     #[error("invalid tracked change id")]
     InvalidTrackedChangeId,
     #[error("tracked change {id} was not found")]
@@ -1437,6 +1681,63 @@ pub fn validate_comment_body(value: &str) -> Result<String, DocumentError> {
     Ok(trimmed.to_string())
 }
 
+pub fn validate_note_id(value: &str) -> Result<String, DocumentError> {
+    let trimmed = value.trim();
+    let Some(suffix) = trimmed.strip_prefix("note-") else {
+        return Err(DocumentError::InvalidNoteId);
+    };
+    if trimmed.len() > MAX_NOTE_ID_LEN || suffix.is_empty() {
+        return Err(DocumentError::InvalidNoteId);
+    }
+    if suffix
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        Ok(trimmed.to_string())
+    } else {
+        Err(DocumentError::InvalidNoteId)
+    }
+}
+
+pub fn validate_note_body(value: &str) -> Result<String, DocumentError> {
+    let sanitized = value
+        .chars()
+        .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
+        .collect::<String>();
+    let trimmed = sanitized.trim();
+    if trimmed.is_empty() {
+        return Err(DocumentError::EmptyNoteBody);
+    }
+    if trimmed.chars().count() > MAX_NOTE_BODY_CHARS {
+        return Err(DocumentError::NoteBodyTooLong {
+            max: MAX_NOTE_BODY_CHARS,
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn validate_note_label(value: &str) -> Result<String, DocumentError> {
+    let sanitized = value
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>();
+    let trimmed = sanitized.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > MAX_NOTE_LABEL_CHARS {
+        return Err(DocumentError::InvalidNoteLabel);
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn validate_note_reference(
+    reference: &InlineNoteReference,
+) -> Result<InlineNoteReference, DocumentError> {
+    Ok(InlineNoteReference {
+        id: validate_note_id(&reference.id)?,
+        kind: reference.kind,
+        label: validate_note_label(&reference.label)?,
+    })
+}
+
 pub fn normalize_comment_author(value: Option<&str>) -> Result<String, DocumentError> {
     let sanitized = value
         .unwrap_or(DEFAULT_COMMENT_AUTHOR)
@@ -1488,6 +1789,13 @@ fn normalize_inline_metadata(inlines: &mut [Inline]) {
         inline
             .comment_ids
             .retain(|id| validate_comment_id(id).is_ok() && seen.insert(id.clone()));
+        inline.note_reference = inline
+            .note_reference
+            .as_ref()
+            .and_then(|reference| validate_note_reference(reference).ok());
+        if let Some(reference) = inline.note_reference.as_ref() {
+            inline.text = reference.label.clone();
+        }
         if let Some(change) = inline.tracked_change.as_mut() {
             if validate_tracked_change_id(&change.id).is_err() {
                 inline.tracked_change = None;
@@ -1662,6 +1970,42 @@ fn remove_comment_anchors_from_inlines(inlines: &mut [Inline], comment_id: &str)
     }
 }
 
+fn remove_note_references_from_blocks(blocks: &mut [Block], note_id: &str) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                remove_note_references_from_inlines(&mut paragraph.inlines, note_id)
+            }
+            Block::Heading(heading) => {
+                remove_note_references_from_inlines(&mut heading.inlines, note_id)
+            }
+            Block::TableOfContents(_) => {}
+            Block::List(list) => {
+                for item in &mut list.items {
+                    remove_note_references_from_blocks(&mut item.blocks, note_id);
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        remove_note_references_from_blocks(&mut cell.blocks, note_id);
+                    }
+                }
+            }
+            Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn remove_note_references_from_inlines(inlines: &mut Vec<Inline>, note_id: &str) {
+    inlines.retain(|inline| {
+        inline
+            .note_reference
+            .as_ref()
+            .is_none_or(|reference| reference.id != note_id)
+    });
+}
+
 fn collect_comment_anchor_ids(sections: &[Section]) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     for section in sections {
@@ -1703,6 +2047,71 @@ fn collect_comment_anchor_ids_from_inlines(inlines: &[Inline], ids: &mut BTreeSe
             if validate_comment_id(id).is_ok() {
                 ids.insert(id.clone());
             }
+        }
+    }
+}
+
+fn note_is_referenced_with_kind(sections: &[Section], id: &str, kind: NoteKind) -> bool {
+    collect_ordered_note_references(sections)
+        .into_iter()
+        .any(|reference| reference.id == id && reference.kind == kind)
+}
+
+pub fn collect_ordered_note_references(sections: &[Section]) -> Vec<InlineNoteReference> {
+    let mut references = Vec::new();
+    let mut seen = BTreeSet::new();
+    for section in sections {
+        collect_note_references_from_blocks(&section.blocks, &mut references, &mut seen);
+    }
+    references
+}
+
+fn collect_note_references_from_blocks(
+    blocks: &[Block],
+    references: &mut Vec<InlineNoteReference>,
+    seen: &mut BTreeSet<String>,
+) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                collect_note_references_from_inlines(&paragraph.inlines, references, seen)
+            }
+            Block::Heading(heading) => {
+                collect_note_references_from_inlines(&heading.inlines, references, seen)
+            }
+            Block::TableOfContents(_) => {}
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_note_references_from_blocks(&item.blocks, references, seen);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_note_references_from_blocks(&cell.blocks, references, seen);
+                    }
+                }
+            }
+            Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn collect_note_references_from_inlines(
+    inlines: &[Inline],
+    references: &mut Vec<InlineNoteReference>,
+    seen: &mut BTreeSet<String>,
+) {
+    for inline in inlines {
+        let Some(reference) = inline
+            .note_reference
+            .as_ref()
+            .and_then(|reference| validate_note_reference(reference).ok())
+        else {
+            continue;
+        };
+        if seen.insert(reference.id.clone()) {
+            references.push(reference);
         }
     }
 }
@@ -2071,6 +2480,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: Some(insertion.clone()),
                 },
                 Inline {
@@ -2080,6 +2490,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: Some(deletion.clone()),
                 },
             ],
@@ -2153,6 +2564,7 @@ mod tests {
                     comment_ids: vec!["cmt-insert".to_string()],
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: Some(TrackedChange {
                         id: "chg-insert-all".to_string(),
                         kind: TrackedChangeKind::Insertion,
@@ -2167,6 +2579,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: Some(TrackedChange {
                         id: "chg-delete-all".to_string(),
                         kind: TrackedChangeKind::Deletion,
@@ -2208,6 +2621,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: Some(TrackedChange {
                         id: "chg-insert-all".to_string(),
                         kind: TrackedChangeKind::Insertion,
@@ -2222,6 +2636,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: Some(TrackedChange {
                         id: "chg-delete-all".to_string(),
                         kind: TrackedChangeKind::Deletion,
@@ -2465,6 +2880,7 @@ mod tests {
                 comment_ids: vec!["cmt-1234".to_string()],
                 style: Default::default(),
                 field: None,
+                note_reference: None,
                 tracked_change: None,
             }],
         })];
@@ -2544,6 +2960,179 @@ mod tests {
     }
 
     #[test]
+    fn footnote_insert_command_updates_text_stats_and_undo_stack() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![Inline::text("Claim")],
+        })];
+        let mut undo = UndoStack::default();
+
+        undo.apply(
+            &mut document,
+            DocumentCommand::InsertNote {
+                section_index: 0,
+                block_index: 0,
+                inline_index: 1,
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Source detail".to_string(),
+                label: None,
+            },
+        )
+        .expect("footnote should insert");
+
+        let note = document.notes.get("note-source").expect("note exists");
+        assert_eq!(note.kind, NoteKind::Footnote);
+        assert_eq!(note.body, "Source detail");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("block should remain a paragraph");
+        };
+        assert_eq!(
+            paragraph.inlines[1].note_reference,
+            Some(InlineNoteReference {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                label: "1".to_string(),
+            })
+        );
+        assert_eq!(document.stats().word_count, 3);
+
+        undo.undo(&mut document)
+            .expect("undo should remove footnote");
+        assert!(document.notes.is_empty());
+        undo.redo(&mut document)
+            .expect("redo should restore footnote");
+        assert!(document.notes.contains_key("note-source"));
+
+        document
+            .apply_command(DocumentCommand::InsertNote {
+                section_index: 0,
+                block_index: 0,
+                inline_index: 2,
+                id: "note-second".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Second detail".to_string(),
+                label: None,
+            })
+            .expect("second footnote should insert");
+        document
+            .apply_command(DocumentCommand::DeleteNote {
+                id: "note-source".to_string(),
+            })
+            .expect("first footnote should delete");
+        document
+            .apply_command(DocumentCommand::InsertNote {
+                section_index: 0,
+                block_index: 0,
+                inline_index: 2,
+                id: "note-third".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Third detail".to_string(),
+                label: None,
+            })
+            .expect("third footnote should insert");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("block should remain a paragraph");
+        };
+        let labels = paragraph
+            .inlines
+            .iter()
+            .filter_map(|inline| {
+                inline
+                    .note_reference
+                    .as_ref()
+                    .map(|reference| reference.label.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["2", "3"]);
+    }
+
+    #[test]
+    fn footnote_add_update_delete_validate_and_prune_references() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Body"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-mismatch".to_string(),
+                    kind: NoteKind::Footnote,
+                    label: "1".to_string(),
+                }),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-existing".to_string(),
+                    kind: NoteKind::Endnote,
+                    label: "i".to_string(),
+                }),
+            ],
+        })];
+
+        document
+            .apply_command(DocumentCommand::AddNote {
+                id: "note-existing".to_string(),
+                kind: NoteKind::Endnote,
+                body: "End matter".to_string(),
+            })
+            .expect("referenced endnote should add");
+
+        let mismatched = document
+            .apply_command(DocumentCommand::AddNote {
+                id: "note-mismatch".to_string(),
+                kind: NoteKind::Endnote,
+                body: "Wrong kind".to_string(),
+            })
+            .expect_err("mismatched note kind should fail");
+        assert_eq!(
+            mismatched,
+            DocumentError::NoteNotReferenced {
+                id: "note-mismatch".to_string()
+            }
+        );
+
+        document
+            .apply_command(DocumentCommand::UpdateNote {
+                id: "note-existing".to_string(),
+                body: "Updated end matter".to_string(),
+            })
+            .expect("note should update");
+        assert_eq!(document.notes["note-existing"].body, "Updated end matter");
+
+        let unreferenced = document
+            .apply_command(DocumentCommand::AddNote {
+                id: "note-missing".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Missing reference".to_string(),
+            })
+            .expect_err("unreferenced note should fail");
+        assert_eq!(
+            unreferenced,
+            DocumentError::NoteNotReferenced {
+                id: "note-missing".to_string()
+            }
+        );
+
+        document
+            .apply_command(DocumentCommand::DeleteNote {
+                id: "note-existing".to_string(),
+            })
+            .expect("note should delete");
+        assert!(document.notes.is_empty());
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("block should remain a paragraph");
+        };
+        assert_eq!(paragraph.inlines.len(), 2);
+        assert!(paragraph.inlines.iter().all(|inline| inline
+            .note_reference
+            .as_ref()
+            .is_none_or(|reference| reference.id != "note-existing")));
+    }
+
+    #[test]
     fn comment_resolve_unresolve_and_delete_clean_anchors() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
@@ -2557,6 +3146,7 @@ mod tests {
                 comment_ids: vec!["cmt-review".to_string()],
                 style: Default::default(),
                 field: None,
+                note_reference: None,
                 tracked_change: None,
             }],
         })];
@@ -2610,6 +3200,7 @@ mod tests {
                 comment_ids: vec!["cmt-delete-me".to_string()],
                 style: Default::default(),
                 field: None,
+                note_reference: None,
                 tracked_change: None,
             }],
         })];

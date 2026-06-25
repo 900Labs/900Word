@@ -10,6 +10,8 @@ import {
   documentToEditorDoc,
   documentToText,
   editorDocToWordCoreBlocks,
+  nextNoteLabelInDocument,
+  noteSummariesInDocument,
   pageFieldTokens,
   pageRegionTextToBlocks,
   pageRegionToText,
@@ -57,6 +59,93 @@ describe('documentToText', () => {
 
     expect(documentToText(document)).toBe('Contents\nOverview\n    Details');
     expect(documentProjectionWarnings(document)).toEqual([]);
+  });
+
+  it('projects footnotes and endnotes to text without dropping note bodies', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      notes: {
+        'note-foot': { id: 'note-foot', kind: 'footnote', body: 'Footnote body' },
+        'note-end': { id: 'note-end', kind: 'endnote', body: 'Endnote body' }
+      },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Paragraph',
+              value: {
+                inlines: [
+                  { text: 'Claim' },
+                  { text: '1', note_reference: { id: 'note-foot', kind: 'footnote', label: '1' } },
+                  { text: ' Appendix' },
+                  { text: 'i', note_reference: { id: 'note-end', kind: 'endnote', label: 'i' } }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(documentToText(document)).toBe('Claim1 Appendixi\n\nFootnotes\n[1] Footnote body\n\nEndnotes\n[i] Endnote body');
+  });
+
+  it('builds visible note summaries only for matching live references', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      notes: {
+        'note-foot': { id: 'note-foot', kind: 'footnote', body: 'Visible footnote' },
+        'note-kind-mismatch': { id: 'note-kind-mismatch', kind: 'endnote', body: 'Hidden mismatch' },
+        'note-unreferenced': { id: 'note-unreferenced', kind: 'footnote', body: 'Hidden orphan' }
+      },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Paragraph',
+              value: {
+                inlines: [
+                  { text: 'Claim' },
+                  { text: '1', note_reference: { id: 'note-foot', kind: 'footnote', label: '1' } },
+                  { text: '2', note_reference: { id: 'note-kind-mismatch', kind: 'footnote', label: '2' } }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(noteSummariesInDocument(document)).toEqual([
+      { id: 'note-foot', kind: 'footnote', label: '1', body: 'Visible footnote' }
+    ]);
+  });
+
+  it('chooses the next note label after the highest existing numeric label', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      notes: {
+        'note-two': { id: 'note-two', kind: 'footnote', body: 'Second note' }
+      },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Paragraph',
+              value: {
+                inlines: [
+                  { text: 'Claim' },
+                  { text: '2', note_reference: { id: 'note-two', kind: 'footnote', label: '2' } }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(nextNoteLabelInDocument(document, 'footnote')).toBe('3');
+    expect(nextNoteLabelInDocument(document, 'endnote')).toBe('1');
   });
 
   it('converts page region tokens to typed field inlines and back', () => {
@@ -694,6 +783,62 @@ describe('documentToText', () => {
       ]
     });
     expect(editorDocToWordCoreBlocks(editorDoc)).toEqual(document.sections[0].blocks);
+  });
+
+  it('round-trips note reference atoms through editor projection', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      notes: {
+        'note-source': { id: 'note-source', kind: 'footnote', body: 'Source body' }
+      },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Paragraph',
+              value: {
+                style: 'body',
+                inlines: [
+                  { text: 'Claim' },
+                  {
+                    text: '1',
+                    note_reference: { id: 'note-source', kind: 'footnote', label: '1' }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+
+    expect(editorDoc.content[0]).toEqual({
+      type: 'paragraph',
+      attrs: { style: 'body' },
+      content: [
+        { type: 'text', text: 'Claim' },
+        { type: 'note_reference', attrs: { id: 'note-source', kind: 'footnote', label: '1' } }
+      ]
+    });
+    expect(editorDocToWordCoreBlocks(editorDoc)).toEqual([
+      {
+        type: 'Paragraph',
+        value: {
+          style: 'body',
+          inlines: [
+            { text: 'Claim', marks: [], link: null },
+            {
+              text: '1',
+              marks: [],
+              link: null,
+              note_reference: { id: 'note-source', kind: 'footnote', label: '1' }
+            }
+          ]
+        }
+      }
+    ]);
   });
 
   it('projects paragraph direct formatting and inline style to word-core JSON', () => {

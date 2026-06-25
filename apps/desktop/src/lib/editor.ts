@@ -7,9 +7,12 @@ import {
   documentToEditorDoc,
   editorDocToWordCoreBlocks,
   sanitizeCommentId,
+  sanitizeNoteId,
+  sanitizeNoteLabel,
   type DocumentState,
   type EditorDoc,
-  type EditorProjectedChange
+  type EditorProjectedChange,
+  type NoteKind
 } from './documentProjection';
 import { findTextRanges, type FindRange } from './findReplace';
 import { supportedSchema } from './editorSchema';
@@ -545,6 +548,19 @@ export function createEditorCommentId(): string {
   return `cmt-${suffix}`;
 }
 
+export function createEditorNoteId(): string {
+  const bytes = new Uint8Array(8);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  const suffix = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `note-${suffix}`;
+}
+
 export function createEditorTrackedChangeId(): string {
   const bytes = new Uint8Array(8);
   if (globalThis.crypto?.getRandomValues) {
@@ -724,6 +740,95 @@ export function removeEditorCommentTransaction(
     return true;
   });
   return changed ? transaction : undefined;
+}
+
+export function insertEditorNoteReference(
+  view: EditorView | undefined,
+  noteId: string,
+  kind: NoteKind,
+  label: string,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = insertEditorNoteReferenceTransaction(view.state, noteId, kind, label, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function insertEditorNoteReferenceTransaction(
+  state: EditorState,
+  noteId: string,
+  kind: NoteKind,
+  label: string,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const nodeType = supportedSchema.nodes.note_reference;
+  const safeId = sanitizeNoteId(noteId);
+  const safeLabel = sanitizeNoteLabel(label);
+  if (!nodeType || !safeId || !safeLabel || (kind !== 'footnote' && kind !== 'endnote')) {
+    return undefined;
+  }
+
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const position = transaction.selection.empty ? transaction.selection.from : transaction.selection.to;
+  if (!transaction.doc.resolve(position).parent.inlineContent) {
+    return undefined;
+  }
+  const node = nodeType.create({ id: safeId, kind, label: safeLabel });
+  transaction = transaction.insert(position, node);
+  return transaction.setSelection(TextSelection.create(transaction.doc, position + node.nodeSize));
+}
+
+export function removeEditorNoteReferenceFromDocument(
+  view: EditorView | undefined,
+  noteId: string
+): boolean {
+  if (!view) {
+    return false;
+  }
+  const transaction = removeEditorNoteReferenceTransaction(view.state, noteId);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function removeEditorNoteReferenceTransaction(
+  state: EditorState,
+  noteId: string
+): Transaction | undefined {
+  const nodeType = supportedSchema.nodes.note_reference;
+  const safeId = sanitizeNoteId(noteId);
+  if (!nodeType || !safeId) {
+    return undefined;
+  }
+
+  let transaction = state.tr;
+  const ranges: Array<{ from: number; to: number }> = [];
+  state.doc.descendants((node, pos) => {
+    if (node.type === nodeType && node.attrs.id === safeId) {
+      ranges.push({ from: pos, to: pos + node.nodeSize });
+      return false;
+    }
+    return true;
+  });
+  if (ranges.length === 0) {
+    return undefined;
+  }
+  for (const range of ranges.reverse()) {
+    transaction = transaction.delete(range.from, range.to);
+  }
+  return transaction;
 }
 
 export function selectEditorCommentRange(view: EditorView | undefined, commentId: string): boolean {

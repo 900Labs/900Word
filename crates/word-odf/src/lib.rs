@@ -6,13 +6,14 @@ use std::fmt::Display;
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    normalize_comment_author, validate_comment_body, validate_comment_id,
-    validate_tracked_change_id, AssetRef, Block, CommentThread, Document, DocumentWarning, Heading,
-    ImageAlignment, ImageBlock, ImagePresentation, Inline, InlineMark, InlineStyle, ListBlock,
-    ListDefinition, ListItem, PageField, PageRegion, PageRegionBlock, PageRegionKind,
-    PageRegionParagraph, PageRegions, PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat,
-    Section, Style, StyleId, StyleKind, Table, TableCell, TableOfContents, TableOfContentsEntry,
-    TableRow, TrackChangesState, TrackedChange, TrackedChangeKind,
+    normalize_comment_author, validate_comment_body, validate_comment_id, validate_note_body,
+    validate_note_id, validate_note_label, validate_note_reference, validate_tracked_change_id,
+    AssetRef, Block, CommentThread, Document, DocumentWarning, Heading, ImageAlignment, ImageBlock,
+    ImagePresentation, Inline, InlineMark, InlineNoteReference, InlineStyle, ListBlock,
+    ListDefinition, ListItem, Note, NoteKind, PageField, PageRegion, PageRegionBlock,
+    PageRegionKind, PageRegionParagraph, PageRegions, PageSetup, Paragraph, ParagraphAlignment,
+    ParagraphFormat, Section, Style, StyleId, StyleKind, Table, TableCell, TableOfContents,
+    TableOfContentsEntry, TableRow, TrackChangesState, TrackedChange, TrackedChangeKind,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -766,6 +767,11 @@ fn render_inlines(inlines: &[Inline], document: Option<&Document>, output: &mut 
         close_inactive_comments(&mut active_comments, &next_comments, output);
         open_new_comments(&mut active_comments, &next_comments, document, output);
 
+        if let Some(reference) = inline.note_reference.as_ref() {
+            output.push_str(&render_note(reference, document));
+            continue;
+        }
+
         if let Some(field) = inline.field {
             output.push_str(&render_page_field(field, &inline.text));
             continue;
@@ -785,6 +791,45 @@ fn render_inlines(inlines: &[Inline], document: Option<&Document>, output: &mut 
         output.push_str(&rendered);
     }
     close_inactive_comments(&mut active_comments, &[], output);
+}
+
+fn render_note(reference: &InlineNoteReference, document: Option<&Document>) -> String {
+    let Ok(reference) = validate_note_reference(reference) else {
+        return escape_xml(&reference.label);
+    };
+    let Some(note) = document.and_then(|document| document.notes.get(&reference.id)) else {
+        return escape_xml(&reference.label);
+    };
+    if note.kind != reference.kind {
+        return escape_xml(&reference.label);
+    }
+    format!(
+        "<text:note text:id=\"{}\" text:note-class=\"{}\" word900:note-id=\"{}\" word900:note-kind=\"{}\">\
+         <text:note-citation>{}</text:note-citation>\
+         <text:note-body><text:p>{}</text:p></text:note-body>\
+         </text:note>",
+        escape_xml(&reference.id),
+        note_kind_name(reference.kind),
+        escape_xml(&reference.id),
+        note_kind_name(reference.kind),
+        escape_xml(&reference.label),
+        escape_xml(&note.body)
+    )
+}
+
+fn note_kind_name(kind: NoteKind) -> &'static str {
+    match kind {
+        NoteKind::Footnote => "footnote",
+        NoteKind::Endnote => "endnote",
+    }
+}
+
+fn parse_note_kind(value: &str) -> Option<NoteKind> {
+    match value {
+        "footnote" => Some(NoteKind::Footnote),
+        "endnote" => Some(NoteKind::Endnote),
+        _ => None,
+    }
 }
 
 fn inline_span_attrs(style_name: Option<&str>, tracked_change: Option<&TrackedChange>) -> String {
@@ -1539,12 +1584,15 @@ struct ParseState<'a> {
     lists: BTreeMap<String, ListDefinition>,
     page: PageSetup,
     track_changes: TrackChangesState,
+    notes: BTreeMap<String, Note>,
     warnings: Vec<DocumentWarning>,
     unsupported_elements: BTreeSet<String>,
     unsupported_depth: usize,
     list_counter: usize,
     active_annotation: Option<AnnotationParse>,
     annotation_depth: usize,
+    active_note: Option<NoteParse>,
+    note_depth: usize,
 }
 
 impl<'a> ParseState<'a> {
@@ -1562,16 +1610,27 @@ impl<'a> ParseState<'a> {
             lists: Document::new_untitled().lists,
             page: PageSetup::default(),
             track_changes: TrackChangesState::default(),
+            notes: BTreeMap::new(),
             warnings: Vec::new(),
             unsupported_elements: BTreeSet::new(),
             unsupported_depth: 0,
             list_counter: 0,
             active_annotation: None,
             annotation_depth: 0,
+            active_note: None,
+            note_depth: 0,
         }
     }
 
     fn start(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.active_note.is_some() {
+            self.note_depth += 1;
+            if let Some(note) = self.active_note.as_mut() {
+                note.start(local_name(start.name().as_ref()));
+            }
+            return Ok(());
+        }
+
         if self.active_annotation.is_some() {
             self.annotation_depth += 1;
             if let Some(annotation) = self.active_annotation.as_mut() {
@@ -1592,6 +1651,7 @@ impl<'a> ParseState<'a> {
             b"h" => self.start_heading(start)?,
             b"span" => self.start_span(start)?,
             b"a" => self.start_link(start)?,
+            b"note" => self.start_note(start)?,
             b"annotation" => self.start_annotation(start)?,
             b"annotation-end" => self.end_annotation_anchor(start)?,
             b"page-number" => self.start_page_field(PageField::PageNumber),
@@ -1634,6 +1694,13 @@ impl<'a> ParseState<'a> {
     }
 
     fn empty(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.active_note.is_some() {
+            if let Some(note) = self.active_note.as_mut() {
+                note.empty(local_name(start.name().as_ref()));
+            }
+            return Ok(());
+        }
+
         if self.active_annotation.is_some() {
             return Ok(());
         }
@@ -1658,6 +1725,7 @@ impl<'a> ParseState<'a> {
             }
             b"bookmark" | b"bookmark-start" => self.read_inline_bookmark_id(start)?,
             b"bookmark-end" => {}
+            b"note" => self.start_and_finish_empty_note(start)?,
             b"annotation" => self.start_and_finish_empty_annotation(start)?,
             b"annotation-end" => self.end_annotation_anchor(start)?,
             b"soft-page-break" => {
@@ -1699,6 +1767,19 @@ impl<'a> ParseState<'a> {
     }
 
     fn end(&mut self, name: &[u8]) -> Result<(), OdtError> {
+        if self.active_note.is_some() {
+            let local = local_name(name);
+            if let Some(note) = self.active_note.as_mut() {
+                note.end(local);
+            }
+            if local == b"note" && self.note_depth == 1 {
+                self.finish_note();
+            } else {
+                self.note_depth = self.note_depth.saturating_sub(1);
+            }
+            return Ok(());
+        }
+
         if self.active_annotation.is_some() {
             let local = local_name(name);
             if let Some(annotation) = self.active_annotation.as_mut() {
@@ -2072,6 +2153,142 @@ impl<'a> ParseState<'a> {
         Ok(())
     }
 
+    fn start_note(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let odf_kind = attr_value(start, b"note-class")?.and_then(|value| parse_note_kind(&value));
+        let word900_kind = attr_value_exact(start, b"word900:note-kind")?
+            .and_then(|value| parse_note_kind(&value));
+        let word900_id = attr_value_exact(start, b"word900:note-id")?
+            .and_then(|value| validate_note_id(&value).ok());
+        let kind = match (word900_kind, odf_kind) {
+            (Some(word900_kind), Some(odf_kind)) if word900_kind == odf_kind => Some(word900_kind),
+            _ => None,
+        };
+        self.active_note = Some(NoteParse::new(word900_id, kind));
+        self.note_depth = 1;
+        Ok(())
+    }
+
+    fn start_and_finish_empty_note(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        self.start_note(start)?;
+        if self.active_note.is_some() {
+            self.finish_note();
+        }
+        Ok(())
+    }
+
+    fn finish_note(&mut self) {
+        let Some(note) = self.active_note.take() else {
+            return;
+        };
+        self.note_depth = 0;
+        let Some(kind) = note.kind else {
+            self.warn(
+                "odt_unsupported_note",
+                "Unsupported note type was imported as visible text",
+            );
+            self.push_visible_note_fallback(&note);
+            return;
+        };
+        let Some(id) = note
+            .id
+            .as_deref()
+            .and_then(|value| validate_note_id(value).ok())
+        else {
+            self.warn(
+                "odt_unsafe_note",
+                "Unsafe note metadata was imported as visible text",
+            );
+            self.push_visible_note_fallback(&note);
+            return;
+        };
+        let label = match validate_note_label(&note.citation) {
+            Ok(label) => label,
+            Err(_) => (self.notes.len() + 1).to_string(),
+        };
+        let body = match validate_note_body(&note.body) {
+            Ok(body) => body,
+            Err(_) => {
+                self.warn(
+                    "odt_invalid_note",
+                    "Invalid note body was imported as visible text",
+                );
+                self.push_visible_note_fallback(&note);
+                return;
+            }
+        };
+        if note.overflowed {
+            self.warn(
+                "odt_invalid_note",
+                "Invalid note body was imported as visible text",
+            );
+            self.push_visible_note_fallback(&note);
+            return;
+        }
+        if self.notes.contains_key(&id) {
+            self.warn(
+                "odt_duplicate_note",
+                "Duplicate note metadata was imported as visible text",
+            );
+            self.push_visible_note_fallback(&note);
+            return;
+        }
+        if self.notes.len() >= word_core::MAX_NOTES {
+            self.warn(
+                "odt_too_many_notes",
+                "Excess ODT note metadata was imported as visible text",
+            );
+            self.push_visible_note_fallback(&note);
+            return;
+        }
+        if self.active_text.is_none() {
+            self.warn(
+                "odt_unanchored_note",
+                "Note outside editable text was imported as visible text",
+            );
+            self.push_visible_note_fallback(&note);
+            return;
+        }
+        self.notes.insert(
+            id.clone(),
+            Note {
+                id: id.clone(),
+                kind,
+                body,
+            },
+        );
+        if let Some(active) = self.active_text.as_mut() {
+            active.push_note_reference(InlineNoteReference { id, kind, label });
+        }
+    }
+
+    fn push_visible_note_fallback(&mut self, note: &NoteParse) {
+        let mut text = String::new();
+        let kind = note.kind.unwrap_or(NoteKind::Footnote);
+        text.push('[');
+        text.push_str(note_kind_name(kind));
+        let citation = note.citation.trim();
+        if !citation.is_empty() {
+            text.push(' ');
+            text.push_str(citation);
+        }
+        let body = note.body.trim();
+        if !body.is_empty() {
+            text.push_str(": ");
+            text.push_str(body);
+        }
+        text.push(']');
+        if let Some(active) = self.active_text.as_mut() {
+            active.text.push_str(&text);
+        } else {
+            self.push_block(Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: StyleId::from("body"),
+                format: Default::default(),
+                inlines: vec![Inline::text(text)],
+            }));
+        }
+    }
+
     fn start_and_finish_empty_annotation(
         &mut self,
         start: &BytesStart<'_>,
@@ -2142,6 +2359,10 @@ impl<'a> ParseState<'a> {
     }
 
     fn text(&mut self, value: &str) {
+        if let Some(note) = self.active_note.as_mut() {
+            note.text(value);
+            return;
+        }
         if let Some(annotation) = self.active_annotation.as_mut() {
             annotation.text(value);
             return;
@@ -2455,6 +2676,7 @@ impl<'a> ParseState<'a> {
         document.styles = self.styles;
         document.assets = self.assets;
         document.comments = self.comments;
+        document.notes = self.notes;
         document.lists = self.lists;
         document.track_changes = self.track_changes;
         document.warnings = self.warnings;
@@ -2549,6 +2771,92 @@ enum AnnotationField {
     Author,
     Date,
     Body,
+}
+
+#[derive(Debug)]
+struct NoteParse {
+    id: Option<String>,
+    kind: Option<NoteKind>,
+    citation: String,
+    body: String,
+    field: NoteField,
+    overflowed: bool,
+}
+
+impl NoteParse {
+    fn new(id: Option<String>, kind: Option<NoteKind>) -> Self {
+        Self {
+            id,
+            kind,
+            citation: String::new(),
+            body: String::new(),
+            field: NoteField::None,
+            overflowed: false,
+        }
+    }
+
+    fn start(&mut self, name: &[u8]) {
+        self.field = match name {
+            b"note-citation" => NoteField::Citation,
+            b"p" if self.field == NoteField::Body => NoteField::Body,
+            b"note-body" => NoteField::Body,
+            _ => self.field,
+        };
+    }
+
+    fn empty(&mut self, name: &[u8]) {
+        match name {
+            b"s" => self.text(" "),
+            b"line-break" => self.text("\n"),
+            _ => {}
+        }
+    }
+
+    fn end(&mut self, name: &[u8]) {
+        match name {
+            b"note-citation" | b"note-body" => self.field = NoteField::None,
+            _ => {}
+        }
+    }
+
+    fn text(&mut self, value: &str) {
+        match self.field {
+            NoteField::Citation => {
+                if push_bounded_text(&mut self.citation, value, word_core::MAX_NOTE_LABEL_CHARS) {
+                    self.overflowed = true;
+                }
+            }
+            NoteField::Body => {
+                if push_bounded_text(&mut self.body, value, word_core::MAX_NOTE_BODY_CHARS) {
+                    self.overflowed = true;
+                }
+            }
+            NoteField::None => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoteField {
+    None,
+    Citation,
+    Body,
+}
+
+fn push_bounded_text(output: &mut String, value: &str, max_chars: usize) -> bool {
+    let remaining = max_chars.saturating_sub(output.chars().count());
+    if remaining == 0 {
+        return !value.is_empty();
+    }
+    let mut overflowed = false;
+    for (index, ch) in value.chars().enumerate() {
+        if index >= remaining {
+            overflowed = true;
+            break;
+        }
+        output.push(ch);
+    }
+    overflowed
 }
 
 #[derive(Debug)]
@@ -2656,6 +2964,7 @@ impl ActiveText {
             comment_ids: self.active_comment_ids(),
             style: self.active_style(),
             field: None,
+            note_reference: None,
             tracked_change: self.active_tracked_change(),
         });
     }
@@ -2669,6 +2978,21 @@ impl ActiveText {
             comment_ids: self.active_comment_ids(),
             style: self.active_style(),
             field: Some(field),
+            note_reference: None,
+            tracked_change: self.active_tracked_change(),
+        });
+    }
+
+    fn push_note_reference(&mut self, reference: InlineNoteReference) {
+        self.flush();
+        self.inlines.push(Inline {
+            text: reference.label.clone(),
+            marks: self.active_marks(),
+            link: self.active_link(),
+            comment_ids: self.active_comment_ids(),
+            style: self.active_style(),
+            field: None,
+            note_reference: Some(reference),
             tracked_change: self.active_tracked_change(),
         });
     }
@@ -3259,7 +3583,7 @@ fn xml_error(name: &str, err: impl Display) -> OdtError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use word_core::{Style, StyleKind};
+    use word_core::{InlineNoteReference, NoteKind, Style, StyleKind};
 
     const SAMPLE_PNG: &[u8] = &[
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
@@ -3465,7 +3789,7 @@ mod tests {
               office:version="1.3">
               <office:body><office:text>
                 <text:p>Visible text</text:p>
-                <text:note><text:note-body><text:p>Unsupported footnote</text:p></text:note-body></text:note>
+                <text:unknown-element>Unsupported payload</text:unknown-element>
               </office:text></office:body>
             </office:document-content>"#;
 
@@ -3476,7 +3800,7 @@ mod tests {
             |block| matches!(block, Block::Paragraph(paragraph) if paragraph
                 .inlines
                 .iter()
-                .any(|inline| inline.text.contains("Unsupported footnote")))
+                .any(|inline| inline.text.contains("Unsupported payload")))
         ));
         assert!(parsed
             .warnings
@@ -3708,6 +4032,7 @@ mod tests {
                         highlight_color: Some("#fff3bf".to_string()),
                     },
                     field: None,
+                    note_reference: None,
                     tracked_change: None,
                 }],
             }),
@@ -3789,6 +4114,7 @@ mod tests {
                     comment_ids: vec!["cmt-review".to_string()],
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: None,
                 },
                 Inline::text(" after"),
@@ -3831,6 +4157,247 @@ mod tests {
     }
 
     #[test]
+    fn notes_round_trip_through_odt_note_elements() {
+        let mut document = Document::new_untitled();
+        document.notes.insert(
+            "note-source".to_string(),
+            Note {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Source body".to_string(),
+            },
+        );
+        document.notes.insert(
+            "note-appendix".to_string(),
+            Note {
+                id: "note-appendix".to_string(),
+                kind: NoteKind::Endnote,
+                body: "Appendix body".to_string(),
+            },
+        );
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Claim"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-source".to_string(),
+                    kind: NoteKind::Footnote,
+                    label: "1".to_string(),
+                }),
+                Inline::text(" appendix"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-appendix".to_string(),
+                    kind: NoteKind::Endnote,
+                    label: "i".to_string(),
+                }),
+            ],
+        })];
+
+        let bytes = write_odt_bytes(&document).expect("write should succeed");
+        let content_xml = content_xml_from_package(&bytes);
+        assert!(content_xml.contains("<text:note "));
+        assert!(content_xml.contains("text:note-class=\"footnote\""));
+        assert!(content_xml.contains("text:note-class=\"endnote\""));
+        assert!(content_xml.contains("word900:note-id=\"note-source\""));
+        assert!(content_xml.contains("word900:note-id=\"note-appendix\""));
+        assert!(content_xml.contains("<text:note-citation>1</text:note-citation>"));
+        assert!(content_xml.contains("<text:note-citation>i</text:note-citation>"));
+        assert!(content_xml.contains("<text:p>Source body</text:p>"));
+        assert!(content_xml.contains("<text:p>Appendix body</text:p>"));
+
+        let parsed = read_odt_bytes(&bytes).expect("read should succeed");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        assert_eq!(parsed.notes["note-source"].body, "Source body");
+        assert_eq!(parsed.notes["note-appendix"].body, "Appendix body");
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("block should remain a paragraph");
+        };
+        assert_eq!(
+            paragraph.inlines[1].note_reference,
+            Some(InlineNoteReference {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                label: "1".to_string(),
+            })
+        );
+        assert_eq!(
+            paragraph.inlines[3].note_reference,
+            Some(InlineNoteReference {
+                id: "note-appendix".to_string(),
+                kind: NoteKind::Endnote,
+                label: "i".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn external_notes_degrade_to_visible_text_with_warning() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:p>Claim<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>External body</text:p></text:note-body></text:note></text:p>
+              </office:text></office:body>
+            </office:document-content>"#;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        assert!(parsed.notes.is_empty());
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsupported_note"));
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("block should be a paragraph");
+        };
+        let text = paragraph
+            .inlines
+            .iter()
+            .map(|inline| inline.text.as_str())
+            .collect::<String>();
+        assert!(text.contains("Claim[footnote 1: External body]"));
+    }
+
+    #[test]
+    fn non_word900_notes_with_safe_looking_ids_degrade_to_visible_text() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:p>Claim<text:note text:id="note-smuggle" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>External body</text:p></text:note-body></text:note></text:p>
+              </office:text></office:body>
+            </office:document-content>"#;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        assert!(parsed.notes.is_empty());
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsupported_note"));
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("block should be a paragraph");
+        };
+        let text = paragraph
+            .inlines
+            .iter()
+            .map(|inline| inline.text.as_str())
+            .collect::<String>();
+        assert!(text.contains("Claim[footnote 1: External body]"));
+    }
+
+    #[test]
+    fn word900_notes_without_odf_kind_degrade_to_visible_text() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:word900="https://900labs.example/ns/word"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:p>Claim<text:note text:id="note-missing-kind" word900:note-id="note-missing-kind" word900:note-kind="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>External body</text:p></text:note-body></text:note></text:p>
+              </office:text></office:body>
+            </office:document-content>"#;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        assert!(parsed.notes.is_empty());
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsupported_note"));
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("block should be a paragraph");
+        };
+        let text = paragraph
+            .inlines
+            .iter()
+            .map(|inline| inline.text.as_str())
+            .collect::<String>();
+        assert!(text.contains("Claim[footnote 1: External body]"));
+    }
+
+    #[test]
+    fn oversized_word900_note_degrades_to_visible_text_with_warning() {
+        let oversized_body = "x".repeat(word_core::MAX_NOTE_BODY_CHARS + 1);
+        let content = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:word900="https://900labs.example/ns/word"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:p>Claim<text:note text:id="note-overflow" text:note-class="footnote" word900:note-id="note-overflow" word900:note-kind="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>{oversized_body}</text:p></text:note-body></text:note></text:p>
+              </office:text></office:body>
+            </office:document-content>"#
+        );
+
+        let parsed = read_odt_bytes(&test_package_with_content(&content)).expect("package parses");
+
+        assert!(parsed.notes.is_empty());
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_invalid_note"));
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("block should be a paragraph");
+        };
+        let text = paragraph
+            .inlines
+            .iter()
+            .map(|inline| inline.text.as_str())
+            .collect::<String>();
+        assert!(text.starts_with("Claim[footnote 1: "));
+    }
+
+    #[test]
+    fn excess_word900_notes_degrade_to_visible_text_with_warning() {
+        let mut notes = String::new();
+        for index in 0..=word_core::MAX_NOTES {
+            notes.push_str(&format!(
+                r#"<text:note text:id="note-{index}" text:note-class="footnote" word900:note-id="note-{index}" word900:note-kind="footnote"><text:note-citation>{}</text:note-citation><text:note-body><text:p>Body {index}</text:p></text:note-body></text:note>"#,
+                index + 1
+            ));
+        }
+        let content = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:word900="https://900labs.example/ns/word"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:p>Claim{notes}</text:p>
+              </office:text></office:body>
+            </office:document-content>"#
+        );
+
+        let parsed = read_odt_bytes(&test_package_with_content(&content)).expect("package parses");
+
+        assert_eq!(parsed.notes.len(), word_core::MAX_NOTES);
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_too_many_notes"));
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("block should be a paragraph");
+        };
+        let text = paragraph
+            .inlines
+            .iter()
+            .map(|inline| inline.text.as_str())
+            .collect::<String>();
+        assert!(text.contains("[footnote 513: Body 512]"));
+    }
+
+    #[test]
     fn tracked_changes_round_trip_through_word900_odt_metadata() {
         let created_at = DateTime::parse_from_rfc3339("2026-06-25T12:00:00Z")
             .unwrap()
@@ -3850,6 +4417,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: Some(TrackedChange {
                         id: "chg-insert".to_string(),
                         kind: TrackedChangeKind::Insertion,
@@ -3864,6 +4432,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: Some(TrackedChange {
                         id: "chg-delete".to_string(),
                         kind: TrackedChangeKind::Deletion,
@@ -4028,6 +4597,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    note_reference: None,
                     tracked_change: None,
                 }],
             }),
@@ -4329,6 +4899,7 @@ mod tests {
                         comment_ids: Vec::new(),
                         style: Default::default(),
                         field: None,
+                        note_reference: None,
                         tracked_change: None,
                     },
                     Inline {
@@ -4338,6 +4909,7 @@ mod tests {
                         comment_ids: Vec::new(),
                         style: Default::default(),
                         field: None,
+                        note_reference: None,
                         tracked_change: None,
                     },
                 ],

@@ -1131,6 +1131,51 @@ select:focus-visible {
   font-weight: 760;
 }
 
+.notes-list {
+  display: grid;
+  gap: 0.48rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notes-list li {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.48rem;
+  border: 1px solid #d2d9d6;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.note-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.note-kind {
+  min-width: 0;
+  color: #26313b;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.note-label {
+  flex: 0 0 auto;
+  color: #0f6b5f;
+  font-size: 0.74rem;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+}
+
+.note-body {
+  overflow-wrap: anywhere;
+  color: #313b45;
+  line-height: 1.35;
+}
+
 .empty-sidebar-note {
   margin: 0.25rem 0 0;
   color: #68727a;
@@ -1589,6 +1634,16 @@ select:focus-visible {
   background: #fff4cf;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
+}
+
+.note-reference {
+  color: #0f6b5f;
+  cursor: default;
+  font-size: 0.72em;
+  font-weight: 700;
+  line-height: 0;
+  margin-left: 0.05rem;
+  vertical-align: super;
 }
 
 .tracked-change {

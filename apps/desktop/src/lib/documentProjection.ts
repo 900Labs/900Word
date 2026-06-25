@@ -7,10 +7,28 @@ export interface Inline {
   comment_ids?: string[];
   style?: InlineStyle;
   field?: PageField | null;
+  note_reference?: InlineNoteReference | null;
   tracked_change?: TrackedChange | null;
 }
 
 export type PageField = 'page_number' | 'page_count' | 'date';
+export type NoteKind = 'footnote' | 'endnote';
+
+export interface InlineNoteReference {
+  id: string;
+  kind: NoteKind;
+  label: string;
+}
+
+export interface Note {
+  id: string;
+  kind: NoteKind;
+  body: string;
+}
+
+export interface NoteSummary extends Note {
+  label: string;
+}
 
 export type TrackedChangeKind = 'insertion' | 'deletion';
 
@@ -200,6 +218,7 @@ export interface DocumentState {
   lists?: Record<string, ListDefinition>;
   assets?: Record<string, AssetRef>;
   comments?: Record<string, CommentThread>;
+  notes?: Record<string, Note>;
   sections: Array<{
     blocks: Block[];
     page?: PageSetup;
@@ -217,10 +236,17 @@ export interface EditorTextNode {
   marks?: Array<{ type: string; attrs?: Record<string, string | number | null> }>;
 }
 
+export interface EditorNoteReferenceNode {
+  type: 'note_reference';
+  attrs: InlineNoteReference;
+}
+
+export type EditorInlineNode = EditorTextNode | EditorNoteReferenceNode;
+
 export interface EditorParagraphNode {
   type: 'paragraph';
   attrs?: EditorParagraphAttrs;
-  content?: EditorTextNode[];
+  content?: EditorInlineNode[];
 }
 
 export interface EditorHeadingNode {
@@ -229,7 +255,7 @@ export interface EditorHeadingNode {
     level?: number;
     bookmarkId?: string | null;
   };
-  content?: EditorTextNode[];
+  content?: EditorInlineNode[];
 }
 
 export interface EditorListItemNode {
@@ -404,6 +430,31 @@ export type DocumentCommand =
       type: 'reject_all_tracked_changes';
     }
   | {
+      type: 'insert_note';
+      section_index: number;
+      block_index: number;
+      inline_index: number;
+      id: string;
+      kind: NoteKind;
+      body: string;
+      label?: string | null;
+    }
+  | {
+      type: 'add_note';
+      id: string;
+      kind: NoteKind;
+      body: string;
+    }
+  | {
+      type: 'update_note';
+      id: string;
+      body: string;
+    }
+  | {
+      type: 'delete_note';
+      id: string;
+    }
+  | {
       type: 'add_comment';
       id: string;
       author?: string | null;
@@ -430,7 +481,9 @@ export function documentToText(document: DocumentState): string {
   for (const section of document.sections) {
     blocks.push(...section.blocks);
   }
-  return blocks.map(blockToText).filter(Boolean).join('\n');
+  const text = blocks.map(blockToText).filter(Boolean).join('\n');
+  const notes = documentNotesToText(document);
+  return [text, notes].filter(Boolean).join('\n\n');
 }
 
 export function documentOutline(document: DocumentState): DocumentOutlineEntry[] {
@@ -471,6 +524,33 @@ export function trackedChangesInDocument(document: DocumentState | undefined): T
     }
   }
   return [...changes.values()].sort((left, right) => left.created_at.localeCompare(right.created_at));
+}
+
+export function noteSummariesInDocument(document: DocumentState | undefined): NoteSummary[] {
+  if (!document) {
+    return [];
+  }
+  return orderedNoteReferencesInDocument(document)
+    .map((reference) => {
+      const note = normalizeNote(document.notes?.[reference.id]);
+      if (!note || note.kind !== reference.kind) {
+        return null;
+      }
+      return {
+        ...note,
+        label: reference.label
+      };
+    })
+    .filter((note): note is NoteSummary => note !== null);
+}
+
+export function nextNoteLabelInDocument(document: DocumentState | undefined, kind: NoteKind): string {
+  const references = document ? orderedNoteReferencesInDocument(document).filter((reference) => reference.kind === kind) : [];
+  const maxNumericLabel = references.reduce((max, reference) => {
+    const parsed = Number.parseInt(reference.label, 10);
+    return Number.isFinite(parsed) && String(parsed) === reference.label ? Math.max(max, parsed) : max;
+  }, 0);
+  return String(Math.max(maxNumericLabel, references.length) + 1);
 }
 
 export function documentOutlineFromEditableBlocks(blocks: EditableBlock[]): DocumentOutlineEntry[] {
@@ -833,7 +913,7 @@ function blockToEditorNode(
     return readOnlyPlaceholderNode(block.type);
   }
 
-  const content = block.value.inlines.map(inlineToEditorText).filter((inline) => inline.text.length > 0);
+  const content = block.value.inlines.map(inlineToEditorInline).filter(editorInlineHasContent);
   if (block.type === 'Heading') {
     return {
       type: 'heading',
@@ -896,7 +976,7 @@ function editorBlockToWordCoreBlock(block: EditorBlockNode, styles?: Record<stri
     case 'ordered_list':
       return editorListToWordCoreBlock(block, styles);
     case 'heading': {
-      const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
+      const inlines = (block.content ?? []).map(editorInlineToInline).filter(inlineHasContent);
       return {
         type: 'Heading',
         value: {
@@ -907,7 +987,7 @@ function editorBlockToWordCoreBlock(block: EditorBlockNode, styles?: Record<stri
       };
     }
     case 'paragraph': {
-      const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
+      const inlines = (block.content ?? []).map(editorInlineToInline).filter(inlineHasContent);
       const format = editorParagraphAttrsToFormat(block.attrs, styles);
       return {
         type: 'Paragraph',
@@ -982,6 +1062,101 @@ function tableOfContentsToText(block: TableOfContentsBlock): string {
     .join('\n');
 }
 
+function documentNotesToText(document: DocumentState): string {
+  const references = orderedNoteReferencesInDocument(document);
+  const footnotes = noteLinesForKind(references, document, 'footnote');
+  const endnotes = noteLinesForKind(references, document, 'endnote');
+  return [
+    footnotes.length > 0 ? ['Footnotes', ...footnotes].join('\n') : '',
+    endnotes.length > 0 ? ['Endnotes', ...endnotes].join('\n') : ''
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function noteLinesForKind(
+  references: InlineNoteReference[],
+  document: DocumentState,
+  kind: NoteKind
+): string[] {
+  return references
+    .filter((reference) => reference.kind === kind)
+    .map((reference) => {
+      const note = normalizeNote(document.notes?.[reference.id]);
+      if (!note || note.kind !== reference.kind) {
+        return null;
+      }
+      return `[${reference.label}] ${note.body}`;
+    })
+    .filter((line): line is string => line !== null);
+}
+
+function orderedNoteReferencesInDocument(document: DocumentState): InlineNoteReference[] {
+  const references: InlineNoteReference[] = [];
+  const seen = new Set<string>();
+  for (const section of document.sections) {
+    for (const block of section.blocks) {
+      collectNoteReferencesFromBlock(block, references, seen);
+    }
+  }
+  return references;
+}
+
+function collectNoteReferencesFromBlock(
+  block: Block,
+  references: InlineNoteReference[],
+  seen: Set<string>
+) {
+  if (hasInlineContent(block)) {
+    collectNoteReferencesFromInlines(block.value.inlines, references, seen);
+    return;
+  }
+  if (isListBlock(block)) {
+    for (const item of block.value.items) {
+      for (const child of item.blocks) {
+        collectNoteReferencesFromBlock(child, references, seen);
+      }
+    }
+  } else if (isTableBlock(block)) {
+    for (const row of block.value.rows) {
+      for (const cell of row.cells) {
+        for (const child of cell.blocks) {
+          collectNoteReferencesFromBlock(child, references, seen);
+        }
+      }
+    }
+  }
+}
+
+function collectNoteReferencesFromInlines(
+  inlines: Inline[],
+  references: InlineNoteReference[],
+  seen: Set<string>
+) {
+  for (const inline of inlines) {
+    const reference = normalizeNoteReference(inline.note_reference);
+    if (!reference || seen.has(reference.id)) {
+      continue;
+    }
+    seen.add(reference.id);
+    references.push(reference);
+  }
+}
+
+function normalizeNote(value: unknown): Note | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const candidate = value as Partial<Note>;
+  const id = sanitizeNoteId(candidate.id);
+  const kind = normalizeNoteKind(candidate.kind);
+  const body = typeof candidate.body === 'string' ? candidate.body.trim() : '';
+  if (!id || !kind || body.length === 0 || Array.from(body).length > 4000) {
+    return null;
+  }
+  return { id, kind, body };
+}
+
 function normalizeImageAlignment(value: unknown): 'inline' | 'left' | 'center' | 'right' {
   return value === 'left' || value === 'center' || value === 'right' || value === 'inline'
     ? value
@@ -1029,6 +1204,22 @@ function base64FromBytes(bytes: number[]): string {
     output += index + 2 < bytes.length ? alphabet[value & 63] : '=';
   }
   return output;
+}
+
+function editorInlineToInline(node: EditorInlineNode): Inline {
+  if (node.type === 'note_reference') {
+    const reference = normalizeNoteReference(node.attrs);
+    if (!reference) {
+      return { text: '', marks: [], link: null };
+    }
+    return {
+      text: reference.label,
+      marks: [],
+      link: null,
+      note_reference: reference
+    };
+  }
+  return editorTextToInline(node);
 }
 
 function editorTextToInline(textNode: EditorTextNode): Inline {
@@ -1090,7 +1281,15 @@ function editorTextToInline(textNode: EditorTextNode): Inline {
   return inline;
 }
 
-function inlineToEditorText(inline: Inline): EditorTextNode {
+function inlineToEditorInline(inline: Inline): EditorInlineNode {
+  const reference = normalizeNoteReference(inline.note_reference);
+  if (reference) {
+    return {
+      type: 'note_reference',
+      attrs: reference
+    };
+  }
+
   const marks = [];
   for (const mark of inline.marks ?? []) {
     const mapped = mapInlineMark(mark);
@@ -1141,6 +1340,14 @@ function inlineToEditorText(inline: Inline): EditorTextNode {
   };
 }
 
+function editorInlineHasContent(node: EditorInlineNode): boolean {
+  return node.type === 'note_reference' || node.text.length > 0;
+}
+
+function inlineHasContent(inline: Inline): boolean {
+  return inline.text.length > 0 || normalizeNoteReference(inline.note_reference) !== null;
+}
+
 export function pageRegionToText(region: PageRegion | undefined): string {
   return (region?.blocks ?? [])
     .map((block) => block.value.inlines.map(inlineToTokenText).join(''))
@@ -1164,6 +1371,10 @@ export function pageRegionIsReadOnly(region: PageRegion | undefined): boolean {
 }
 
 function inlineToPlainText(inline: Inline): string {
+  const reference = normalizeNoteReference(inline.note_reference);
+  if (reference) {
+    return reference.label;
+  }
   if (inline.field === 'page_number' || inline.field === 'page_count') {
     return '1';
   }
@@ -1403,6 +1614,44 @@ export function sanitizeTrackedChangeId(value: unknown): string | null {
   return /^[A-Za-z0-9_-]+$/.test(suffix) ? trimmed : null;
 }
 
+export function sanitizeNoteId(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  const suffix = trimmed.startsWith('note-') ? trimmed.slice(5) : '';
+  if (trimmed.length > 64 || suffix.length === 0) {
+    return null;
+  }
+  return /^[A-Za-z0-9_-]+$/.test(suffix) ? trimmed : null;
+}
+
+export function sanitizeNoteLabel(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const label = value.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return label.length > 0 && Array.from(label).length <= 16 ? label : null;
+}
+
+function normalizeNoteKind(value: unknown): NoteKind | null {
+  return value === 'footnote' || value === 'endnote' ? value : null;
+}
+
+function normalizeNoteReference(value: unknown): InlineNoteReference | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const candidate = value as Partial<InlineNoteReference>;
+  const id = sanitizeNoteId(candidate.id);
+  const kind = normalizeNoteKind(candidate.kind);
+  const label = sanitizeNoteLabel(candidate.label);
+  if (!id || !kind || !label) {
+    return null;
+  }
+  return { id, kind, label };
+}
+
 function normalizeTrackedChangeKind(value: unknown): TrackedChangeKind | null {
   return value === 'insertion' || value === 'deletion' ? value : null;
 }
@@ -1476,7 +1725,7 @@ function editorChildBlockToWordCore(
   block: EditorParagraphNode | EditorHeadingNode,
   styles?: Record<string, DocumentStyle>
 ): ParagraphBlock | HeadingBlock | undefined {
-  const inlines = (block.content ?? []).map(editorTextToInline).filter((inline) => inline.text.length > 0);
+  const inlines = (block.content ?? []).map(editorInlineToInline).filter(inlineHasContent);
   if (block.type === 'heading') {
     return {
       type: 'Heading',
