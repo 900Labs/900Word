@@ -225,6 +225,7 @@ pub fn run() {
             list_personal_dictionary_words,
             remove_from_personal_dictionary,
             list_dictionaries,
+            install_user_dictionary,
             get_settings,
             update_settings,
             reset_settings,
@@ -563,6 +564,18 @@ fn list_dictionaries(app: tauri::AppHandle) -> Result<Vec<DictionaryInfo>, Strin
 }
 
 #[tauri::command]
+fn install_user_dictionary(
+    language_tag: String,
+    aff_path: String,
+    dic_path: String,
+    app: tauri::AppHandle,
+) -> Result<DictionaryInfo, String> {
+    let user_root = user_dictionary_dir(&app)?;
+    ensure_user_dictionary_dir(&user_root)?;
+    install_user_dictionary_with_root(&language_tag, &aff_path, &dic_path, &user_root)
+}
+
+#[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Settings {
     let Ok(path) = settings_path(&app) else {
         return Settings::default();
@@ -700,12 +713,45 @@ fn remove_personal_dictionary_word_with_root(
         .map_err(safe_personal_dictionary_error)
 }
 
+fn install_user_dictionary_with_root(
+    language_tag: &str,
+    aff_path: &str,
+    dic_path: &str,
+    user_root: &Path,
+) -> Result<DictionaryInfo, String> {
+    let aff_path = validate_dictionary_install_path(aff_path, "aff")?;
+    let dic_path = validate_dictionary_install_path(dic_path, "dic")?;
+    word_spell::install_user_dictionary(user_root, language_tag, &aff_path, &dic_path)
+        .map_err(safe_dictionary_install_error)
+}
+
 fn safe_personal_dictionary_error(error: word_spell::SpellError) -> String {
     match error {
         word_spell::SpellError::InvalidDictionary {
             reason: "personal dictionary word is invalid",
         } => "personal dictionary word is invalid".to_string(),
         _ => "personal dictionary is unavailable".to_string(),
+    }
+}
+
+fn safe_dictionary_install_error(error: word_spell::SpellError) -> String {
+    match error {
+        word_spell::SpellError::InvalidDictionary {
+            reason: "language tag is invalid",
+        } => "invalid language".to_string(),
+        word_spell::SpellError::InvalidDictionary {
+            reason: "dictionary source file is unsupported",
+        }
+        | word_spell::SpellError::InvalidDictionary {
+            reason: "dictionary file is too large",
+        }
+        | word_spell::SpellError::InvalidDictionary {
+            reason: "only UTF-8 Hunspell dictionaries are supported",
+        }
+        | word_spell::SpellError::InvalidDictionary {
+            reason: "dictionary word list is empty",
+        } => "unsupported file".to_string(),
+        _ => "dictionary could not be installed".to_string(),
     }
 }
 
@@ -728,6 +774,34 @@ fn ensure_user_dictionary_dir(path: &Path) -> Result<(), String> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(safe_io_error)?;
     }
     Ok(())
+}
+
+fn validate_dictionary_install_path(
+    path: &str,
+    expected_extension: &str,
+) -> Result<PathBuf, String> {
+    if path.trim().is_empty() {
+        return Err("unsupported file".to_string());
+    }
+
+    let path = PathBuf::from(path);
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        return Err("unsupported file".to_string());
+    }
+
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension != expected_extension {
+        return Err("unsupported file".to_string());
+    }
+
+    Ok(path)
 }
 
 fn normalize_language_setting(language_tag: &str) -> String {
@@ -1816,6 +1890,20 @@ mod tests {
         let mut files = regular_files_in(root);
         assert_eq!(files.len(), 1);
         files.remove(0)
+    }
+
+    fn write_test_dictionary(root: &Path, stem: &str, words: &[&str]) {
+        std::fs::write(
+            root.join(format!("{stem}.aff")),
+            format!("SET UTF-8\n# test dictionary for {stem}\n"),
+        )
+        .expect("aff should write");
+        let mut dic = format!("{}\n", words.len());
+        for word in words {
+            dic.push_str(word);
+            dic.push('\n');
+        }
+        std::fs::write(root.join(format!("{stem}.dic")), dic).expect("dic should write");
     }
 
     #[test]
@@ -2993,6 +3081,83 @@ mod tests {
         assert_eq!(err, "personal dictionary is unavailable");
         assert!(!err.contains(invalid_language));
         assert!(!err.contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn install_user_dictionary_helper_returns_installed_dictionary() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        write_test_dictionary(source_dir.path(), "sv-SE", &["hej", "dokument"]);
+
+        let installed = install_user_dictionary_with_root(
+            "sv-SE",
+            source_dir
+                .path()
+                .join("sv-SE.aff")
+                .to_string_lossy()
+                .as_ref(),
+            source_dir
+                .path()
+                .join("sv-SE.dic")
+                .to_string_lossy()
+                .as_ref(),
+            user_dir.path(),
+        )
+        .expect("dictionary should install");
+
+        assert_eq!(installed.language_tag, "sv-SE");
+        assert!(installed.user);
+        let dictionaries = word_spell::list_dictionaries_with_user_root(user_dir.path());
+        assert!(dictionaries
+            .iter()
+            .any(|dictionary| dictionary.language_tag == "sv-SE" && dictionary.user));
+    }
+
+    #[test]
+    fn install_user_dictionary_helper_sanitizes_invalid_language_error() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        write_test_dictionary(source_dir.path(), "sv-SE", &["hej"]);
+        let invalid_language = "privateclient";
+
+        let err = install_user_dictionary_with_root(
+            invalid_language,
+            source_dir
+                .path()
+                .join("sv-SE.aff")
+                .to_string_lossy()
+                .as_ref(),
+            source_dir
+                .path()
+                .join("sv-SE.dic")
+                .to_string_lossy()
+                .as_ref(),
+            user_dir.path(),
+        )
+        .expect_err("invalid language should fail");
+
+        assert_eq!(err, "invalid language");
+        assert!(!err.contains(invalid_language));
+        assert!(!err.contains(user_dir.path().to_string_lossy().as_ref()));
+        assert!(!err.contains(source_dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn install_user_dictionary_helper_sanitizes_source_path_errors() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let private_path = "private-client-name.txt";
+
+        let err = install_user_dictionary_with_root(
+            "sv-SE",
+            private_path,
+            "dictionary.dic",
+            user_dir.path(),
+        )
+        .expect_err("wrong extension should fail");
+
+        assert_eq!(err, "unsupported file");
+        assert!(!err.contains(private_path));
+        assert!(!err.contains(user_dir.path().to_string_lossy().as_ref()));
     }
 
     #[cfg(unix)]

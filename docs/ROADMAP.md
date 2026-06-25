@@ -427,3 +427,12 @@ Status: complete.
 - Reuse the existing app-data user dictionary root validation and owner-only local file permissions where supported.
 - Add a compact Settings personal dictionary section with refresh, remove, empty, and generic unavailable states.
 - Keep dictionary import/export, downloads, remote lookup, cloud sync, accounts, telemetry, network behavior, plugin-managed dictionaries, and document metadata changes out of scope.
+
+## Sprint 046: Local Hunspell Dictionary Install MVP
+
+Status: complete.
+
+- Add compact Settings controls to choose local `.aff` and `.dic` Hunspell files through native dialogs and install them into the existing app-data dictionary folder.
+- Validate language tags and source files in Rust, copy accepted pairs to normalized `<language-tag>.aff` and `<language-tag>.dic` filenames, and validate the copied pair before listing it.
+- Refresh installed dictionaries, select the installed language, refresh personal dictionary words, and show generic success/failure statuses without rendering selected local paths or filenames.
+- Keep downloads, remote lookup, cloud sync, accounts, telemetry, plugin-managed dictionaries, document metadata changes, and rich install diagnostics that expose private file details out of scope.

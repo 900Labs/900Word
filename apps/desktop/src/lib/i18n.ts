@@ -64,6 +64,20 @@ export type UiStringKey =
   | 'deleteRow'
   | 'deleteTable'
   | 'dictionary'
+  | 'dictionaryAffFile'
+  | 'dictionaryAffNotSelected'
+  | 'dictionaryAffSelected'
+  | 'dictionaryChooseAff'
+  | 'dictionaryChooseDic'
+  | 'dictionaryDicFile'
+  | 'dictionaryDicNotSelected'
+  | 'dictionaryDicSelected'
+  | 'dictionaryInstall'
+  | 'dictionaryInstallFailed'
+  | 'dictionaryInstallInvalidLanguage'
+  | 'dictionaryInstallLocal'
+  | 'dictionaryInstallSuccess'
+  | 'dictionaryInstallUnsupportedFile'
   | 'dictionaryLanguageTag'
   | 'dictionaryLicense'
   | 'dictionaryListRefreshed'
@@ -446,6 +460,20 @@ const english: UiStrings = {
   deleteRow: 'Delete row',
   deleteTable: 'Delete table',
   dictionary: 'Dictionary',
+  dictionaryAffFile: 'AFF file',
+  dictionaryAffNotSelected: 'No AFF selected',
+  dictionaryAffSelected: 'AFF selected',
+  dictionaryChooseAff: 'Choose AFF',
+  dictionaryChooseDic: 'Choose DIC',
+  dictionaryDicFile: 'DIC file',
+  dictionaryDicNotSelected: 'No DIC selected',
+  dictionaryDicSelected: 'DIC selected',
+  dictionaryInstall: 'Install',
+  dictionaryInstallFailed: 'Dictionary could not be installed',
+  dictionaryInstallInvalidLanguage: 'Language tag is invalid',
+  dictionaryInstallLocal: 'Install local Hunspell dictionary',
+  dictionaryInstallSuccess: 'Dictionary installed',
+  dictionaryInstallUnsupportedFile: 'Dictionary files are unsupported',
   dictionaryLanguageTag: 'Language tag',
   dictionaryLicense: 'License',
   dictionaryListRefreshed: 'Dictionary list refreshed',
@@ -775,6 +803,20 @@ const spanish: Partial<UiStrings> = {
   checkSpelling: 'Revisar ortografia',
   custom: 'Personalizado',
   dictionary: 'Diccionario',
+  dictionaryAffFile: 'Archivo AFF',
+  dictionaryAffNotSelected: 'AFF no seleccionado',
+  dictionaryAffSelected: 'AFF seleccionado',
+  dictionaryChooseAff: 'Elegir AFF',
+  dictionaryChooseDic: 'Elegir DIC',
+  dictionaryDicFile: 'Archivo DIC',
+  dictionaryDicNotSelected: 'DIC no seleccionado',
+  dictionaryDicSelected: 'DIC seleccionado',
+  dictionaryInstall: 'Instalar',
+  dictionaryInstallFailed: 'No se pudo instalar el diccionario',
+  dictionaryInstallInvalidLanguage: 'La etiqueta de idioma no es valida',
+  dictionaryInstallLocal: 'Instalar diccionario Hunspell local',
+  dictionaryInstallSuccess: 'Diccionario instalado',
+  dictionaryInstallUnsupportedFile: 'Los archivos de diccionario no son compatibles',
   dictionaryLanguageTag: 'Etiqueta de idioma',
   dictionaryLicense: 'Licencia',
   dictionaryListRefreshed: 'Lista de diccionarios actualizada',

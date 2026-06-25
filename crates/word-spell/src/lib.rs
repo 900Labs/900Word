@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const BUNDLED_LANGUAGE_TAG: &str = "en-US";
@@ -318,6 +319,70 @@ pub fn list_user_dictionaries(user_root: &Path) -> Vec<DictionaryInfo> {
     dictionaries
 }
 
+pub fn install_user_dictionary(
+    user_root: &Path,
+    language_tag: &str,
+    aff_source: &Path,
+    dic_source: &Path,
+) -> Result<DictionaryInfo, SpellError> {
+    let language_tag = language_tag.trim();
+    validate_language_tag(language_tag)?;
+    ensure_private_dictionary_root(user_root)?;
+    validate_dictionary_source_path(aff_source, "aff")?;
+    validate_dictionary_source_path(dic_source, "dic")?;
+    reject_same_source_file(aff_source, dic_source)?;
+
+    let normalized = normalize_language_tag(language_tag);
+    let target_aff = matching_aff_path(user_root, &normalized);
+    let target_dic = matching_dic_path(user_root, &normalized);
+    reject_source_target_overlap(aff_source, &target_aff)?;
+    reject_source_target_overlap(dic_source, &target_dic)?;
+
+    let temp_aff = install_temp_path(user_root, &normalized, "aff");
+    let temp_dic = install_temp_path(user_root, &normalized, "dic");
+    let backup_aff = install_temp_path(user_root, &normalized, "aff-backup");
+    let backup_dic = install_temp_path(user_root, &normalized, "dic-backup");
+    let install_result = (|| {
+        copy_dictionary_source(aff_source, &temp_aff)?;
+        copy_dictionary_source(dic_source, &temp_dic)?;
+
+        let aff = read_limited_dictionary_file(&temp_aff)?;
+        let dic = read_limited_dictionary_file(&temp_dic)?;
+        SpellChecker::from_hunspell_parts(
+            &normalized,
+            &format!("User dictionary ({normalized})"),
+            &aff,
+            &dic,
+        )?;
+
+        commit_dictionary_install(
+            &temp_aff,
+            &temp_dic,
+            &target_aff,
+            &target_dic,
+            &backup_aff,
+            &backup_dic,
+        )?;
+
+        Ok(DictionaryInfo {
+            language_tag: normalized.clone(),
+            display_name: format!("User dictionary ({normalized})"),
+            bundled: false,
+            user: true,
+            license: "User-provided; verify before distribution".to_string(),
+            source: "user dictionary folder".to_string(),
+        })
+    })();
+
+    if install_result.is_err() {
+        let _ = fs::remove_file(&temp_aff);
+        let _ = fs::remove_file(&temp_dic);
+        let _ = fs::remove_file(&backup_aff);
+        let _ = fs::remove_file(&backup_dic);
+    }
+    install_result
+}
+
 pub fn user_dictionary_template(language_tag: &str) -> Result<(String, String), SpellError> {
     validate_language_tag(language_tag)?;
     Ok((
@@ -382,6 +447,166 @@ fn read_limited_dictionary_file(path: &Path) -> Result<String, SpellError> {
     fs::read_to_string(path).map_err(|_| SpellError::DictionaryIo)
 }
 
+fn ensure_private_dictionary_root(user_root: &Path) -> Result<(), SpellError> {
+    fs::create_dir_all(user_root).map_err(|_| SpellError::DictionaryIo)?;
+    let metadata = fs::symlink_metadata(user_root).map_err(|_| SpellError::DictionaryIo)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(SpellError::InvalidDictionary {
+            reason: "dictionary directory is invalid",
+        });
+    }
+    set_private_directory_permissions(user_root)
+}
+
+fn validate_dictionary_source_path(
+    path: &Path,
+    expected_extension: &str,
+) -> Result<(), SpellError> {
+    if path.as_os_str().is_empty()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(SpellError::InvalidDictionary {
+            reason: "dictionary source file is unsupported",
+        });
+    }
+
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension != expected_extension {
+        return Err(SpellError::InvalidDictionary {
+            reason: "dictionary source file is unsupported",
+        });
+    }
+
+    let metadata = fs::symlink_metadata(path).map_err(|_| SpellError::DictionaryIo)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(SpellError::InvalidDictionary {
+            reason: "dictionary source file is unsupported",
+        });
+    }
+    if metadata.len() > MAX_USER_DICTIONARY_BYTES {
+        return Err(SpellError::InvalidDictionary {
+            reason: "dictionary file is too large",
+        });
+    }
+    fs::read_to_string(path).map_err(|_| SpellError::DictionaryIo)?;
+    Ok(())
+}
+
+fn reject_same_source_file(left: &Path, right: &Path) -> Result<(), SpellError> {
+    let left = fs::canonicalize(left).map_err(|_| SpellError::DictionaryIo)?;
+    let right = fs::canonicalize(right).map_err(|_| SpellError::DictionaryIo)?;
+    if left == right {
+        return Err(SpellError::InvalidDictionary {
+            reason: "dictionary source file is unsupported",
+        });
+    }
+    Ok(())
+}
+
+fn reject_source_target_overlap(source: &Path, target: &Path) -> Result<(), SpellError> {
+    if !target.exists() {
+        return Ok(());
+    }
+    let source = fs::canonicalize(source).map_err(|_| SpellError::DictionaryIo)?;
+    let target = fs::canonicalize(target).map_err(|_| SpellError::DictionaryIo)?;
+    if source == target {
+        return Err(SpellError::InvalidDictionary {
+            reason: "dictionary source file is unsupported",
+        });
+    }
+    Ok(())
+}
+
+fn copy_dictionary_source(source: &Path, target: &Path) -> Result<(), SpellError> {
+    fs::copy(source, target).map_err(|_| SpellError::DictionaryIo)?;
+    set_private_file_permissions(target)
+}
+
+fn commit_dictionary_install(
+    temp_aff: &Path,
+    temp_dic: &Path,
+    target_aff: &Path,
+    target_dic: &Path,
+    backup_aff: &Path,
+    backup_dic: &Path,
+) -> Result<(), SpellError> {
+    let had_aff = target_aff.exists();
+    let had_dic = target_dic.exists();
+
+    if had_aff {
+        fs::rename(target_aff, backup_aff).map_err(|_| SpellError::DictionaryIo)?;
+    }
+    if had_dic && fs::rename(target_dic, backup_dic).is_err() {
+        restore_dictionary_install_targets(
+            target_aff, target_dic, backup_aff, backup_dic, had_aff, false,
+        );
+        return Err(SpellError::DictionaryIo);
+    }
+
+    if fs::rename(temp_aff, target_aff).is_err() {
+        restore_dictionary_install_targets(
+            target_aff, target_dic, backup_aff, backup_dic, had_aff, had_dic,
+        );
+        return Err(SpellError::DictionaryIo);
+    }
+    if fs::rename(temp_dic, target_dic).is_err() {
+        restore_dictionary_install_targets(
+            target_aff, target_dic, backup_aff, backup_dic, had_aff, had_dic,
+        );
+        return Err(SpellError::DictionaryIo);
+    }
+
+    cleanup_dictionary_install_backups(backup_aff, backup_dic);
+    Ok(())
+}
+
+fn restore_dictionary_install_targets(
+    target_aff: &Path,
+    target_dic: &Path,
+    backup_aff: &Path,
+    backup_dic: &Path,
+    had_aff: bool,
+    had_dic: bool,
+) {
+    let _ = fs::remove_file(target_aff);
+    let _ = fs::remove_file(target_dic);
+    if had_aff {
+        let _ = fs::rename(backup_aff, target_aff);
+    }
+    if had_dic {
+        let _ = fs::rename(backup_dic, target_dic);
+    }
+}
+
+fn cleanup_dictionary_install_backups(backup_aff: &Path, backup_dic: &Path) {
+    let _ = fs::remove_file(backup_aff);
+    let _ = fs::remove_file(backup_dic);
+}
+
+fn install_temp_path(user_root: &Path, language_tag: &str, kind: &str) -> PathBuf {
+    user_root.join(format!(
+        ".900word-dictionary-install-{language_tag}-{kind}-{}-{}.tmp",
+        std::process::id(),
+        current_unix_nanos()
+    ))
+}
+
+fn current_unix_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
 fn is_regular_dictionary_file(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .map(|metadata| {
@@ -433,6 +658,18 @@ fn write_personal_words(
     fs::write(&path, output).map_err(|_| SpellError::DictionaryIo)?;
     set_private_file_permissions(&path)?;
     Ok(words.iter().cloned().collect())
+}
+
+#[cfg(unix)]
+fn set_private_directory_permissions(path: &Path) -> Result<(), SpellError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|_| SpellError::DictionaryIo)
+}
+
+#[cfg(not(unix))]
+fn set_private_directory_permissions(_path: &Path) -> Result<(), SpellError> {
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -828,6 +1065,288 @@ mod tests {
             checker_for_with_user_root("fr-FR", dir.path()).expect("user dictionary should load");
         assert!(checker.check("bonjour document").is_empty());
         assert_eq!(checker.check("bonjour unknown").len(), 1);
+    }
+
+    #[test]
+    fn install_user_dictionary_copies_lists_and_loads_local_pair() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        write_user_dictionary(source_dir.path(), "sv-SE", &["hej", "dokument"])
+            .expect("source dictionary should write");
+
+        let installed = install_user_dictionary(
+            user_dir.path(),
+            "sv_SE",
+            &source_dir.path().join("sv-SE.aff"),
+            &source_dir.path().join("sv-SE.dic"),
+        )
+        .expect("dictionary should install");
+
+        assert_eq!(installed.language_tag, "sv-SE");
+        assert!(installed.user);
+        assert!(user_dir.path().join("sv-SE.aff").is_file());
+        assert!(user_dir.path().join("sv-SE.dic").is_file());
+        let dictionaries = list_dictionaries_with_user_root(user_dir.path());
+        assert!(dictionaries
+            .iter()
+            .any(|dictionary| dictionary.language_tag == "sv-SE" && dictionary.user));
+        let checker = checker_for_with_user_root("sv-SE", user_dir.path())
+            .expect("installed dictionary should load");
+        assert!(checker.check("hej dokument").is_empty());
+    }
+
+    #[test]
+    fn install_user_dictionary_replaces_existing_pair_cleanly() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        write_user_dictionary(user_dir.path(), "sv-SE", &["gammal"])
+            .expect("existing dictionary should write");
+        write_user_dictionary(source_dir.path(), "sv-SE", &["ny", "ordlista"])
+            .expect("source dictionary should write");
+
+        install_user_dictionary(
+            user_dir.path(),
+            "sv-SE",
+            &source_dir.path().join("sv-SE.aff"),
+            &source_dir.path().join("sv-SE.dic"),
+        )
+        .expect("replacement dictionary should install");
+
+        let checker = checker_for_with_user_root("sv-SE", user_dir.path())
+            .expect("replacement dictionary should load");
+        assert!(checker.check("ny ordlista").is_empty());
+        assert_eq!(checker.check("gammal").len(), 1);
+        assert!(regular_files_in(user_dir.path()).iter().all(|path| !path
+            .to_string_lossy()
+            .contains(".900word-dictionary-install")));
+    }
+
+    #[test]
+    fn install_user_dictionary_rejects_invalid_language() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        write_user_dictionary(source_dir.path(), "sv-SE", &["hej"])
+            .expect("source dictionary should write");
+
+        let err = install_user_dictionary(
+            user_dir.path(),
+            "privateclient",
+            &source_dir.path().join("sv-SE.aff"),
+            &source_dir.path().join("sv-SE.dic"),
+        )
+        .expect_err("invalid language should fail");
+
+        assert_eq!(
+            err,
+            SpellError::InvalidDictionary {
+                reason: "language tag is invalid"
+            }
+        );
+        assert!(regular_files_in(user_dir.path()).is_empty());
+    }
+
+    #[test]
+    fn install_user_dictionary_rejects_wrong_extension() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        fs::write(source_dir.path().join("sv-SE.txt"), "SET UTF-8\n").expect("aff should write");
+        fs::write(source_dir.path().join("sv-SE.dic"), "1\nhej\n").expect("dic should write");
+
+        let err = install_user_dictionary(
+            user_dir.path(),
+            "sv-SE",
+            &source_dir.path().join("sv-SE.txt"),
+            &source_dir.path().join("sv-SE.dic"),
+        )
+        .expect_err("wrong extension should fail");
+
+        assert_eq!(
+            err,
+            SpellError::InvalidDictionary {
+                reason: "dictionary source file is unsupported"
+            }
+        );
+        assert!(regular_files_in(user_dir.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_user_dictionary_rejects_symlink_source() {
+        use std::os::unix::fs::symlink;
+
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        write_user_dictionary(source_dir.path(), "sv-SE", &["hej"])
+            .expect("source dictionary should write");
+        symlink(
+            source_dir.path().join("sv-SE.aff"),
+            source_dir.path().join("linked.aff"),
+        )
+        .expect("symlink should write");
+
+        let err = install_user_dictionary(
+            user_dir.path(),
+            "sv-SE",
+            &source_dir.path().join("linked.aff"),
+            &source_dir.path().join("sv-SE.dic"),
+        )
+        .expect_err("symlink source should fail");
+
+        assert_eq!(
+            err,
+            SpellError::InvalidDictionary {
+                reason: "dictionary source file is unsupported"
+            }
+        );
+        assert!(regular_files_in(user_dir.path()).is_empty());
+    }
+
+    #[test]
+    fn install_user_dictionary_rejects_oversized_source() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        fs::write(source_dir.path().join("sv-SE.aff"), "SET UTF-8\n").expect("aff should write");
+        fs::write(
+            source_dir.path().join("sv-SE.dic"),
+            "a".repeat(MAX_USER_DICTIONARY_BYTES as usize + 1),
+        )
+        .expect("oversized dic should write");
+
+        let err = install_user_dictionary(
+            user_dir.path(),
+            "sv-SE",
+            &source_dir.path().join("sv-SE.aff"),
+            &source_dir.path().join("sv-SE.dic"),
+        )
+        .expect_err("oversized source should fail");
+
+        assert_eq!(
+            err,
+            SpellError::InvalidDictionary {
+                reason: "dictionary file is too large"
+            }
+        );
+        assert!(regular_files_in(user_dir.path()).is_empty());
+    }
+
+    #[test]
+    fn install_user_dictionary_cleans_up_failed_validation() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        fs::write(source_dir.path().join("sv-SE.aff"), "SET UTF-8\n").expect("aff should write");
+        fs::write(source_dir.path().join("sv-SE.dic"), "0\n").expect("dic should write");
+
+        let err = install_user_dictionary(
+            user_dir.path(),
+            "sv-SE",
+            &source_dir.path().join("sv-SE.aff"),
+            &source_dir.path().join("sv-SE.dic"),
+        )
+        .expect_err("empty dictionary should fail validation");
+
+        assert_eq!(
+            err,
+            SpellError::InvalidDictionary {
+                reason: "dictionary word list is empty"
+            }
+        );
+        assert!(regular_files_in(user_dir.path()).is_empty());
+        assert!(list_user_dictionaries(user_dir.path()).is_empty());
+    }
+
+    #[test]
+    fn install_user_dictionary_restores_existing_pair_when_second_target_replace_fails() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        write_user_dictionary(user_dir.path(), "sv-SE", &["gammal"])
+            .expect("existing dictionary should write");
+        let temp_aff = user_dir.path().join("pending.aff.tmp");
+        let missing_temp_dic = user_dir.path().join("missing.dic.tmp");
+        let target_aff = user_dir.path().join("sv-SE.aff");
+        let target_dic = user_dir.path().join("sv-SE.dic");
+        let backup_aff = user_dir.path().join("backup.aff.tmp");
+        let backup_dic = user_dir.path().join("backup.dic.tmp");
+        fs::write(&temp_aff, "SET UTF-8\n").expect("pending aff should write");
+
+        let err = commit_dictionary_install(
+            &temp_aff,
+            &missing_temp_dic,
+            &target_aff,
+            &target_dic,
+            &backup_aff,
+            &backup_dic,
+        )
+        .expect_err("missing second temp file should fail");
+
+        assert_eq!(err, SpellError::DictionaryIo);
+        assert!(!fs::read_to_string(&target_aff)
+            .expect("restored aff should be readable")
+            .contains("pending"));
+        let checker = checker_for_with_user_root("sv-SE", user_dir.path())
+            .expect("existing dictionary should remain usable");
+        assert!(checker.check("gammal").is_empty());
+        assert!(!backup_aff.exists());
+        assert!(!backup_dic.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_user_dictionary_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        write_user_dictionary(source_dir.path(), "sv-SE", &["hej"])
+            .expect("source dictionary should write");
+
+        install_user_dictionary(
+            user_dir.path(),
+            "sv-SE",
+            &source_dir.path().join("sv-SE.aff"),
+            &source_dir.path().join("sv-SE.dic"),
+        )
+        .expect("dictionary should install");
+
+        let dir_mode = fs::metadata(user_dir.path())
+            .expect("dictionary dir metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        let aff_mode = fs::metadata(user_dir.path().join("sv-SE.aff"))
+            .expect("aff metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        let dic_mode = fs::metadata(user_dir.path().join("sv-SE.dic"))
+            .expect("dic metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(aff_mode, 0o600);
+        assert_eq!(dic_mode, 0o600);
+    }
+
+    #[test]
+    fn install_user_dictionary_error_text_stays_private() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let source_dir = tempfile::tempdir().expect("source dir should exist");
+        fs::write(source_dir.path().join("private-client.aff"), "SET UTF-8\n")
+            .expect("aff should write");
+        fs::write(source_dir.path().join("private-client.dic"), "0\n").expect("dic should write");
+
+        let err = install_user_dictionary(
+            user_dir.path(),
+            "sv-SE",
+            &source_dir.path().join("private-client.aff"),
+            &source_dir.path().join("private-client.dic"),
+        )
+        .expect_err("invalid dictionary should fail");
+        let error = err.to_string();
+
+        assert!(!error.contains(user_dir.path().to_string_lossy().as_ref()));
+        assert!(!error.contains(source_dir.path().to_string_lossy().as_ref()));
+        assert!(!error.contains("private-client"));
     }
 
     #[test]

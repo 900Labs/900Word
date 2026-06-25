@@ -324,6 +324,9 @@
   let dictionaries = $state<DictionaryInfo[]>([]);
   let personalDictionaryWords = $state<string[]>([]);
   let personalDictionaryError = $state<string | null>(null);
+  let installDictionaryLanguageTag = $state('en-US');
+  let installDictionaryAffPath = $state<string | null>(null);
+  let installDictionaryDicPath = $state<string | null>(null);
   let settings = $state<Settings>({
     telemetry_enabled: false,
     language_tag: 'en-US',
@@ -340,6 +343,9 @@
     dictionaries.find((dictionary) => dictionaryMatchesSelectedLanguage(dictionary, normalizedDictionaryLanguageTag))
   );
   let personalDictionaryLanguageTag = $derived(selectedDictionary?.language_tag ?? normalizedDictionaryLanguageTag);
+  let canInstallDictionary = $derived(
+    installDictionaryLanguageTag.trim().length > 0 && Boolean(installDictionaryAffPath && installDictionaryDicPath)
+  );
   const shortcutPlatform = shortcutPlatformFromNavigator();
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
@@ -640,6 +646,7 @@
 
   async function loadShellState() {
     settings = await invoke<Settings>('get_settings');
+    installDictionaryLanguageTag = normalizeDictionaryLanguageTag(settings.language_tag);
     dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
     await refreshPersonalDictionaryWords(false);
     templates = await invoke<TemplateSummary[]>('list_templates');
@@ -652,6 +659,52 @@
       status = tr('dictionaryListRefreshed');
     } catch (error) {
       setStatusFromError(error);
+    }
+  }
+
+  async function chooseDictionaryAffFile() {
+    const selected = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: tr('dictionaryAffFile'), extensions: ['aff'] }]
+    });
+    if (typeof selected === 'string') {
+      installDictionaryAffPath = selected;
+    }
+  }
+
+  async function chooseDictionaryDicFile() {
+    const selected = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: tr('dictionaryDicFile'), extensions: ['dic'] }]
+    });
+    if (typeof selected === 'string') {
+      installDictionaryDicPath = selected;
+    }
+  }
+
+  async function installDictionary() {
+    const languageTag = normalizeDictionaryLanguageTag(installDictionaryLanguageTag);
+    if (!languageTag || !installDictionaryAffPath || !installDictionaryDicPath) {
+      return;
+    }
+    try {
+      const installed = await invoke<DictionaryInfo>('install_user_dictionary', {
+        languageTag,
+        affPath: installDictionaryAffPath,
+        dicPath: installDictionaryDicPath
+      });
+      dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
+      settings.language_tag = installed.language_tag;
+      installDictionaryLanguageTag = installed.language_tag;
+      installDictionaryAffPath = null;
+      installDictionaryDicPath = null;
+      await refreshPersonalDictionaryWords(false);
+      await checkSpelling();
+      status = tr('dictionaryInstallSuccess');
+    } catch (error) {
+      status = dictionaryInstallErrorStatus(error);
     }
   }
 
@@ -679,6 +732,17 @@
         status = tr('personalDictionaryUnavailable');
       }
     }
+  }
+
+  function dictionaryInstallErrorStatus(error: unknown) {
+    const message = typeof error === 'string' ? error : '';
+    if (message === 'invalid language') {
+      return tr('dictionaryInstallInvalidLanguage');
+    }
+    if (message === 'unsupported file') {
+      return tr('dictionaryInstallUnsupportedFile');
+    }
+    return tr('dictionaryInstallFailed');
   }
 
   async function handleDictionarySelectionChanged() {
@@ -3565,6 +3629,27 @@
           {#if !selectedDictionary}
             <p class="compact">{tr('dictionaryUnavailable')}</p>
           {/if}
+
+          <div class="personal-dictionary-panel">
+            <p class="compact"><strong>{tr('dictionaryInstallLocal')}</strong></p>
+            <label>
+              {tr('dictionaryLanguageTag')}
+              <input bind:value={installDictionaryLanguageTag} autocomplete="off" spellcheck="false" />
+            </label>
+            <div class="field-button-row" role="group" aria-label={tr('dictionaryInstallLocal')}>
+              <button type="button" onclick={chooseDictionaryAffFile}>{tr('dictionaryChooseAff')}</button>
+              <span class="compact muted">
+                {installDictionaryAffPath ? tr('dictionaryAffSelected') : tr('dictionaryAffNotSelected')}
+              </span>
+              <button type="button" onclick={chooseDictionaryDicFile}>{tr('dictionaryChooseDic')}</button>
+              <span class="compact muted">
+                {installDictionaryDicPath ? tr('dictionaryDicSelected') : tr('dictionaryDicNotSelected')}
+              </span>
+              <button type="button" disabled={!canInstallDictionary} onclick={installDictionary}>
+                {tr('dictionaryInstall')}
+              </button>
+            </div>
+          </div>
 
           <div class="personal-dictionary-panel">
             <div class="field-button-row">
