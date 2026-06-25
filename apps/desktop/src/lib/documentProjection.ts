@@ -212,6 +212,11 @@ export interface PageSetup {
 export interface DocumentState {
   meta: {
     title: string;
+    created_at?: string;
+    modified_at?: string;
+    subject?: string | null;
+    keywords?: string[];
+    generator?: string;
   };
   track_changes?: TrackChangesState;
   styles?: Record<string, DocumentStyle>;

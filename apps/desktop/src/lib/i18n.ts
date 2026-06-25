@@ -55,6 +55,7 @@ export type UiStringKey =
   | 'commentSelected'
   | 'commentSelectionRequired'
   | 'custom'
+  | 'created'
   | 'dateField'
   | 'decreaseIndent'
   | 'deleteColumn'
@@ -65,6 +66,7 @@ export type UiStringKey =
   | 'differentFirstPage'
   | 'documentActions'
   | 'documentFormat'
+  | 'documentInspector'
   | 'documentOpened'
   | 'documentSaved'
   | 'documentSavedAs'
@@ -132,6 +134,16 @@ export type UiStringKey =
   | 'imageScale'
   | 'imageUpdated'
   | 'images'
+  | 'inspectorBackendOnlyLocation'
+  | 'inspectorNoSavedLocation'
+  | 'inspectorPrivacyComments'
+  | 'inspectorPrivacyMetadata'
+  | 'inspectorPrivacyRecovery'
+  | 'inspectorPrivacyTrackedChanges'
+  | 'inspectorPrivacyUnsaved'
+  | 'inspectorSaved'
+  | 'inspectorSavedWithUnsavedChanges'
+  | 'inspectorUnsaved'
   | 'insertion'
   | 'insertImage'
   | 'insertFootnote'
@@ -164,6 +176,7 @@ export type UiStringKey =
   | 'markToggled'
   | 'markUnavailable'
   | 'mainMenu'
+  | 'modified'
   | 'navigator'
   | 'new'
   | 'next'
@@ -172,7 +185,9 @@ export type UiStringKey =
   | 'noSuggestions'
   | 'no'
   | 'noComments'
+  | 'noPrivacyWarnings'
   | 'noTrackedChanges'
+  | 'notAvailable'
   | 'notRecording'
   | 'notes'
   | 'noNotes'
@@ -184,6 +199,8 @@ export type UiStringKey =
   | 'endnoteInserted'
   | 'endnotePrompt'
   | 'embeddedAssets'
+  | 'embeddedImageBytes'
+  | 'embeddedImages'
   | 'endnotes'
   | 'estimatedPages'
   | 'estimatedReadingTime'
@@ -213,6 +230,7 @@ export type UiStringKey =
   | 'print'
   | 'printFrame'
   | 'printPrepared'
+  | 'privacyWarnings'
   | 'projection'
   | 'recent'
   | 'recover'
@@ -242,6 +260,8 @@ export type UiStringKey =
   | 'saveAs'
   | 'saveSettings'
   | 'saved'
+  | 'savedLocation'
+  | 'savedStatus'
   | 'settings'
   | 'settingsUpdated'
   | 'selectionWords'
@@ -379,6 +399,7 @@ const english: UiStrings = {
   commentSelected: 'Comment selected',
   commentSelectionRequired: 'Select non-empty text before adding a comment.',
   custom: 'Custom',
+  created: 'Created',
   dateField: 'Date',
   decreaseIndent: 'Decrease indent',
   deleteColumn: 'Delete column',
@@ -389,6 +410,7 @@ const english: UiStrings = {
   differentFirstPage: 'Different first page',
   documentActions: 'Document actions',
   documentFormat: 'Document format',
+  documentInspector: 'Document Inspector',
   documentOpened: 'Document opened',
   documentSaved: 'Document saved',
   documentSavedAs: 'Document saved as',
@@ -456,6 +478,16 @@ const english: UiStrings = {
   imageScale: 'Scale',
   imageUpdated: 'Image updated',
   images: 'Images',
+  inspectorBackendOnlyLocation: 'Saved location known to backend only',
+  inspectorNoSavedLocation: 'No saved location',
+  inspectorPrivacyComments: 'Comments may contain review notes that are saved with the document.',
+  inspectorPrivacyMetadata: 'Document title metadata is saved in the ODT package.',
+  inspectorPrivacyRecovery: 'Recovery drafts are local files that may contain document content.',
+  inspectorPrivacyTrackedChanges: 'Tracked changes can reveal edit history and deleted text in saved files.',
+  inspectorPrivacyUnsaved: 'Unsaved changes may exist only in this session or local recovery drafts.',
+  inspectorSaved: 'Saved',
+  inspectorSavedWithUnsavedChanges: 'Saved with unsaved changes',
+  inspectorUnsaved: 'Unsaved',
   insertion: 'Insertion',
   insertFootnote: 'Footnote',
   insertEndnote: 'Endnote',
@@ -488,12 +520,15 @@ const english: UiStrings = {
   markToggled: '{label} toggled',
   markUnavailable: '{label} unavailable',
   mainMenu: 'Main menu',
+  modified: 'Modified',
   navigator: 'Navigator',
   new: 'New',
   next: 'Next',
   no: 'No',
   noComments: 'No comments',
+  noPrivacyWarnings: 'No privacy warnings.',
   noTrackedChanges: 'No tracked changes',
+  notAvailable: 'Not available',
   notRecording: 'Not recording',
   notes: 'Notes',
   noNotes: 'No footnotes or endnotes',
@@ -505,6 +540,8 @@ const english: UiStrings = {
   endnoteInserted: 'Endnote inserted',
   endnotePrompt: 'Endnote text',
   embeddedAssets: 'Embedded assets',
+  embeddedImageBytes: 'Embedded image bytes',
+  embeddedImages: 'Embedded images',
   endnotes: 'Endnotes',
   estimatedPages: 'Estimated pages',
   estimatedReadingTime: 'Estimated reading time',
@@ -537,6 +574,7 @@ const english: UiStrings = {
   print: 'Print',
   printFrame: 'Print document',
   printPrepared: 'Print view prepared',
+  privacyWarnings: 'Privacy warnings',
   projection: 'Projection',
   recent: 'Recent',
   recover: 'Open',
@@ -566,6 +604,8 @@ const english: UiStrings = {
   saveAs: 'Save As...',
   saveSettings: 'Save Settings',
   saved: 'Saved',
+  savedLocation: 'Saved location',
+  savedStatus: 'Saved status',
   settings: 'Settings',
   settingsUpdated: 'Settings updated',
   selectionWords: 'Selection words',
