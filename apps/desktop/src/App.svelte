@@ -322,6 +322,8 @@
   let navigatorHeadings = $state<DocumentOutlineEntry[]>([]);
   let linkTargets = $state<DocumentLinkTarget[]>([]);
   let dictionaries = $state<DictionaryInfo[]>([]);
+  let personalDictionaryWords = $state<string[]>([]);
+  let personalDictionaryError = $state<string | null>(null);
   let settings = $state<Settings>({
     telemetry_enabled: false,
     language_tag: 'en-US',
@@ -337,6 +339,7 @@
   let selectedDictionary = $derived(
     dictionaries.find((dictionary) => dictionaryMatchesSelectedLanguage(dictionary, normalizedDictionaryLanguageTag))
   );
+  let personalDictionaryLanguageTag = $derived(selectedDictionary?.language_tag ?? normalizedDictionaryLanguageTag);
   const shortcutPlatform = shortcutPlatformFromNavigator();
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
@@ -638,15 +641,64 @@
   async function loadShellState() {
     settings = await invoke<Settings>('get_settings');
     dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
+    await refreshPersonalDictionaryWords(false);
     templates = await invoke<TemplateSummary[]>('list_templates');
   }
 
   async function refreshDictionaries() {
     try {
       dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
+      await refreshPersonalDictionaryWords(false);
       status = tr('dictionaryListRefreshed');
     } catch (error) {
       setStatusFromError(error);
+    }
+  }
+
+  async function refreshPersonalDictionaryWords(announce = true) {
+    if (personalDictionaryLanguageTag.trim().length === 0) {
+      personalDictionaryWords = [];
+      personalDictionaryError = tr('personalDictionaryUnavailable');
+      if (announce) {
+        status = tr('personalDictionaryUnavailable');
+      }
+      return;
+    }
+    try {
+      personalDictionaryWords = await invoke<string[]>('list_personal_dictionary_words', {
+        languageTag: personalDictionaryLanguageTag
+      });
+      personalDictionaryError = null;
+      if (announce) {
+        status = tr('personalDictionaryRefreshed');
+      }
+    } catch {
+      personalDictionaryWords = [];
+      personalDictionaryError = tr('personalDictionaryUnavailable');
+      if (announce) {
+        status = tr('personalDictionaryUnavailable');
+      }
+    }
+  }
+
+  async function handleDictionarySelectionChanged() {
+    await tick();
+    await refreshPersonalDictionaryWords(false);
+  }
+
+  async function removePersonalDictionaryWord(word: string) {
+    try {
+      personalDictionaryWords = await invoke<string[]>('remove_from_personal_dictionary', {
+        word,
+        languageTag: personalDictionaryLanguageTag
+      });
+      personalDictionaryError = null;
+      ignoredSpellWords.delete(normalizeSpellWord(word));
+      await checkSpelling();
+      status = tr('personalDictionaryWordRemoved');
+    } catch {
+      personalDictionaryError = tr('personalDictionaryUnavailable');
+      status = tr('personalDictionaryUnavailable');
     }
   }
 
@@ -655,6 +707,7 @@
       settings = await invoke<Settings>('update_settings', {
         settings
       });
+      await refreshPersonalDictionaryWords(false);
       status = tr('settingsUpdated');
     } catch (error) {
       setStatusFromError(error);
@@ -664,6 +717,7 @@
   async function resetSettings() {
     try {
       settings = await invoke<Settings>('reset_settings');
+      await refreshPersonalDictionaryWords(false);
       status = tr('settingsReset');
     } catch (error) {
       setStatusFromError(error);
@@ -853,12 +907,13 @@
     try {
       await invoke('add_to_personal_dictionary', {
         word,
-        languageTag: settings.language_tag
+        languageTag: personalDictionaryLanguageTag
       });
       ignoredSpellWords.add(normalizeSpellWord(word));
       refreshVisibleSpellIssues();
       dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
-      status = tr('spellAddedToDictionary', { word });
+      await refreshPersonalDictionaryWords(false);
+      status = tr('spellAddedToDictionary');
     } catch (error) {
       setStatusFromError(error);
     }
@@ -3491,7 +3546,7 @@
 
           <label>
             {tr('activeDictionary')}
-            <select bind:value={settings.language_tag}>
+            <select bind:value={settings.language_tag} onchange={handleDictionarySelectionChanged}>
               {#if !selectedDictionary && settings.language_tag.trim().length > 0}
                 <option value={settings.language_tag}>
                   {tr('dictionaryUnavailableOption', { languageTag: settings.language_tag })}
@@ -3510,6 +3565,38 @@
           {#if !selectedDictionary}
             <p class="compact">{tr('dictionaryUnavailable')}</p>
           {/if}
+
+          <div class="personal-dictionary-panel">
+            <div class="field-button-row">
+              <p class="compact"><strong>{tr('personalDictionary')}</strong></p>
+              <button type="button" onclick={() => refreshPersonalDictionaryWords()}>
+                {tr('personalDictionaryRefresh')}
+              </button>
+            </div>
+
+            {#if personalDictionaryError}
+              <p class="compact">{personalDictionaryError}</p>
+            {:else if personalDictionaryWords.length === 0}
+              <p class="compact muted">{tr('personalDictionaryEmpty')}</p>
+            {:else}
+              <div class="page-regions-grid" role="list" aria-label={tr('personalDictionaryWords')}>
+                {#each personalDictionaryWords as word (word)}
+                  <article role="listitem">
+                    <p class="compact">
+                      <strong>{word}</strong>
+                    </p>
+                    <button
+                      aria-label={`${tr('personalDictionaryRemove')} ${word}`}
+                      type="button"
+                      onclick={() => removePersonalDictionaryWord(word)}
+                    >
+                      {tr('personalDictionaryRemove')}
+                    </button>
+                  </article>
+                {/each}
+              </div>
+            {/if}
+          </div>
 
           <div class="page-regions-grid" role="list" aria-label={tr('installedDictionaries')}>
             {#if dictionaries.length === 0}

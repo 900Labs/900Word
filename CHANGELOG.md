@@ -44,6 +44,7 @@ All notable changes to 900Word are tracked here.
 - Dictionary Manager MVP under Settings with offline/local-only status, existing local dictionary refresh, active dictionary selection through the current settings flow, installed bundled/user dictionary metadata, and privacy-safe source labels without downloads, cloud sync, telemetry, or plugin runtime behavior.
 - Persistent local settings MVP with sanitized app-data storage, forced-disabled telemetry on save/load, private atomic writes where supported, safe malformed-file fallback to defaults, and no document paths, filenames, usernames, hostnames, account/cloud identity, telemetry IDs, network state, document text, or recent paths stored.
 - Local settings reset MVP with a Settings button and backend command that rewrites sanitized defaults through the existing private atomic settings path, returns telemetry-disabled defaults to the UI, and keeps errors free of path or identity details.
+- Personal Dictionary Manager MVP under Settings with local normalized word listing, per-word removal, generic unavailable states, privacy-safe IPC errors, and owner-only personal dictionary rewrites where supported.
 
 ### Fixed
 

@@ -249,6 +249,14 @@ export type UiStringKey =
   | 'paragraphUnchanged'
   | 'pageSetupUpdated'
   | 'pageSize'
+  | 'personalDictionary'
+  | 'personalDictionaryEmpty'
+  | 'personalDictionaryRefresh'
+  | 'personalDictionaryRefreshed'
+  | 'personalDictionaryRemove'
+  | 'personalDictionaryUnavailable'
+  | 'personalDictionaryWordRemoved'
+  | 'personalDictionaryWords'
   | 'pdf'
   | 'pdfAllPages'
   | 'pdfPageRange'
@@ -624,6 +632,14 @@ const english: UiStrings = {
   paragraphs: 'Paragraphs',
   pageSetupUpdated: 'Page setup updated',
   pageSize: 'Page size',
+  personalDictionary: 'Personal dictionary',
+  personalDictionaryEmpty: 'No personal words for this dictionary.',
+  personalDictionaryRefresh: 'Refresh words',
+  personalDictionaryRefreshed: 'Personal dictionary refreshed',
+  personalDictionaryRemove: 'Remove',
+  personalDictionaryUnavailable: 'Personal dictionary is unavailable.',
+  personalDictionaryWordRemoved: 'Removed word from the personal dictionary',
+  personalDictionaryWords: 'Personal dictionary words',
   pdf: 'PDF',
   pdfAllPages: 'All pages',
   pdfPageRange: 'PDF pages',
@@ -675,7 +691,7 @@ const english: UiStrings = {
   smartListTriggers: 'Turn - and 1. starters into lists',
   smartQuotes: 'Use smart quotes',
   smartTyping: 'Smart typing',
-  spellAddedToDictionary: 'Added "{word}" to the personal dictionary',
+  spellAddedToDictionary: 'Added word to the personal dictionary',
   spellIgnoredAll: 'Word ignored for this session',
   spellIgnoredOnce: 'Spelling issue ignored once',
   spellIssueCount: '{count} spelling issue(s)',
@@ -831,6 +847,14 @@ const spanish: Partial<UiStrings> = {
   page: 'Pagina',
   pageSetupUpdated: 'Pagina actualizada',
   pageSize: 'Tamano de pagina',
+  personalDictionary: 'Diccionario personal',
+  personalDictionaryEmpty: 'No hay palabras personales para este diccionario.',
+  personalDictionaryRefresh: 'Actualizar palabras',
+  personalDictionaryRefreshed: 'Diccionario personal actualizado',
+  personalDictionaryRemove: 'Quitar',
+  personalDictionaryUnavailable: 'El diccionario personal no esta disponible.',
+  personalDictionaryWordRemoved: 'Se quito la palabra del diccionario personal',
+  personalDictionaryWords: 'Palabras del diccionario personal',
   pdf: 'PDF',
   pdfAllPages: 'Todas las paginas',
   pdfPageRange: 'Paginas PDF',
