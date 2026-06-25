@@ -11,8 +11,8 @@ use word_core::{
     ImageAlignment, ImageBlock, ImagePresentation, Inline, InlineMark, InlineStyle, ListBlock,
     ListDefinition, ListItem, PageField, PageRegion, PageRegionBlock, PageRegionKind,
     PageRegionParagraph, PageRegions, PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat,
-    Section, Style, StyleId, StyleKind, Table, TableCell, TableRow, TrackChangesState,
-    TrackedChange, TrackedChangeKind,
+    Section, Style, StyleId, StyleKind, Table, TableCell, TableOfContents, TableOfContentsEntry,
+    TableRow, TrackChangesState, TrackedChange, TrackedChangeKind,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -23,6 +23,7 @@ const PARAGRAPH_STYLE_PREFIX: &str = "900wp";
 const ORDERED_LIST_STYLE: &str = "900w-ordered";
 const UNORDERED_LIST_STYLE: &str = "900w-unordered";
 const IMAGE_PARAGRAPH_STYLE: &str = "900w-image";
+const TOC_PARAGRAPH_STYLE: &str = "900w-toc";
 const PAGE_LAYOUT_STYLE: &str = "900w-page-layout";
 const MASTER_PAGE_STYLE: &str = "900w-master-page";
 
@@ -450,7 +451,8 @@ fn render_automatic_styles(document: &Document) -> String {
          <text:list-style style:name=\"900w-ordered\">\
          <text:list-level-style-number text:level=\"1\" style:num-format=\"1\"/>\
          </text:list-style>\
-         <style:style style:name=\"900w-image\" style:family=\"paragraph\"/>",
+         <style:style style:name=\"900w-image\" style:family=\"paragraph\"/>\
+         <style:style style:name=\"900w-toc\" style:family=\"paragraph\"/>",
     );
 
     for style in document.styles.values() {
@@ -614,6 +616,9 @@ fn render_block(block: &Block, document: &Document, output: &mut String) -> Resu
             render_inlines(&heading.inlines, Some(document), output);
             output.push_str("</text:h>");
         }
+        Block::TableOfContents(table_of_contents) => {
+            render_table_of_contents(table_of_contents, output);
+        }
         Block::List(list) => render_list(list, document, output)?,
         Block::Table(table) => render_table(table, document, output)?,
         Block::Image(image) => render_image(image, document, output)?,
@@ -622,6 +627,37 @@ fn render_block(block: &Block, document: &Document, output: &mut String) -> Resu
         }
     }
     Ok(())
+}
+
+fn render_table_of_contents(table_of_contents: &TableOfContents, output: &mut String) {
+    let entries_json =
+        serde_json::to_string(&table_of_contents.entries).unwrap_or_else(|_| "[]".to_string());
+    let title = if table_of_contents.title.trim().is_empty() {
+        "Contents"
+    } else {
+        table_of_contents.title.trim()
+    };
+    output.push_str(&format!(
+        "<text:p text:style-name=\"{TOC_PARAGRAPH_STYLE}\" word900:block-type=\"table-of-contents\" word900:toc-title=\"{}\" word900:toc-entries=\"{}\">",
+        escape_xml(title),
+        escape_xml(&entries_json)
+    ));
+    output.push_str(&escape_xml(title));
+    for entry in &table_of_contents.entries {
+        let Some(target) = sanitize_bookmark_id(&entry.target_bookmark_id) else {
+            continue;
+        };
+        output.push_str("<text:line-break/>");
+        for _ in 1..entry.level.clamp(1, 3) {
+            output.push_str("  ");
+        }
+        output.push_str(&format!(
+            "<text:a xlink:href=\"#{}\">{}</text:a>",
+            escape_xml(&target),
+            escape_xml(&entry.text)
+        ));
+    }
+    output.push_str("</text:p>");
 }
 
 fn render_list(list: &ListBlock, document: &Document, output: &mut String) -> Result<(), OdtError> {
@@ -1206,7 +1242,7 @@ fn collect_imported_comment_anchor_ids_from_blocks(blocks: &[Block], ids: &mut B
                     }
                 }
             }
-            Block::Image(_) | Block::PageBreak => {}
+            Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
         }
     }
 }
@@ -1863,6 +1899,24 @@ impl<'a> ParseState<'a> {
             );
             return Ok(());
         }
+        if attr_value_exact(start, b"word900:block-type")?.as_deref() == Some("table-of-contents") {
+            let title = attr_value_exact(start, b"word900:toc-title")?
+                .map(|value| sanitize_toc_title(&value))
+                .unwrap_or_else(|| "Contents".to_string());
+            match attr_value_exact(start, b"word900:toc-entries")?
+                .as_deref()
+                .and_then(parse_toc_entries_metadata)
+            {
+                Some(entries) => {
+                    self.active_text = Some(ActiveText::table_of_contents(title, entries));
+                    return Ok(());
+                }
+                None => self.warn(
+                    "odt_unsupported_toc_metadata",
+                    "Unsupported 900Word table-of-contents metadata was imported as normal text",
+                ),
+            }
+        }
         let style = attr_value(start, b"style-name")?.unwrap_or_else(|| "body".to_string());
         let (style, format) = paragraph_style_from_name(&style);
         let bookmark_id = self.read_bookmark_id(start)?;
@@ -2209,6 +2263,22 @@ impl<'a> ParseState<'a> {
                 level,
                 inlines: active.inlines,
             }),
+            ActiveTextKind::TableOfContents { title, entries } => {
+                if visible_table_of_contents_matches_metadata(&title, &entries, &active.inlines) {
+                    Block::TableOfContents(TableOfContents { title, entries })
+                } else {
+                    self.warn(
+                        "odt_unsupported_toc_metadata",
+                        "Unsupported 900Word table-of-contents metadata was imported as normal text",
+                    );
+                    Block::Paragraph(Paragraph {
+                        bookmark_id: None,
+                        style: StyleId::from(TOC_PARAGRAPH_STYLE),
+                        format: Default::default(),
+                        inlines: active.inlines,
+                    })
+                }
+            }
         };
         self.push_block(block);
         for block in embedded {
@@ -2492,6 +2562,10 @@ enum ActiveTextKind {
         bookmark_id: Option<String>,
         level: u8,
     },
+    TableOfContents {
+        title: String,
+        entries: Vec<TableOfContentsEntry>,
+    },
 }
 
 #[derive(Debug)]
@@ -2540,6 +2614,20 @@ impl ActiveText {
         }
     }
 
+    fn table_of_contents(title: String, entries: Vec<TableOfContentsEntry>) -> Self {
+        Self {
+            kind: ActiveTextKind::TableOfContents { title, entries },
+            text: String::new(),
+            inlines: Vec::new(),
+            mark_stack: Vec::new(),
+            style_stack: Vec::new(),
+            link_stack: Vec::new(),
+            comment_stack: Vec::new(),
+            tracked_change_stack: Vec::new(),
+            embedded_blocks: Vec::new(),
+        }
+    }
+
     fn set_bookmark_id(&mut self, bookmark_id: String) {
         match &mut self.kind {
             ActiveTextKind::Paragraph {
@@ -2552,6 +2640,7 @@ impl ActiveText {
                     *slot = Some(bookmark_id);
                 }
             }
+            ActiveTextKind::TableOfContents { .. } => {}
         }
     }
 
@@ -2999,6 +3088,102 @@ fn sanitize_text_href(value: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn sanitize_toc_title(value: &str) -> String {
+    let title = value
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(word_core::MAX_TABLE_OF_CONTENTS_TITLE_CHARS)
+        .collect::<String>();
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        "Contents".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn parse_toc_entries_metadata(value: &str) -> Option<Vec<TableOfContentsEntry>> {
+    if value.len() > 16 * 1024 {
+        return None;
+    }
+    let entries = serde_json::from_str::<Vec<TableOfContentsEntry>>(value).ok()?;
+    if entries.len() > word_core::MAX_TABLE_OF_CONTENTS_ENTRIES {
+        return None;
+    }
+    let mut safe_entries = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let text = sanitize_toc_entry_text(&entry.text)?;
+        if !(1..=3).contains(&entry.level) {
+            return None;
+        }
+        let target_bookmark_id = sanitize_bookmark_id(&entry.target_bookmark_id)?;
+        safe_entries.push(TableOfContentsEntry {
+            level: entry.level,
+            text,
+            target_bookmark_id,
+        });
+    }
+    Some(safe_entries)
+}
+
+fn sanitize_toc_entry_text(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed != value {
+        return None;
+    }
+    if trimmed.chars().count() > word_core::MAX_TABLE_OF_CONTENTS_ENTRY_TEXT_CHARS {
+        return None;
+    }
+    if trimmed.chars().any(|ch| ch.is_control()) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn visible_table_of_contents_matches_metadata(
+    title: &str,
+    entries: &[TableOfContentsEntry],
+    inlines: &[Inline],
+) -> bool {
+    let visible = inlines
+        .iter()
+        .flat_map(|inline| {
+            let link = inline.link.clone();
+            inline.text.chars().map(move |ch| (ch, link.clone()))
+        })
+        .collect::<Vec<_>>();
+    let visible_text = visible.iter().map(|(ch, _)| *ch).collect::<String>();
+    let mut expected = title.trim().to_string();
+    let mut linked_ranges = Vec::new();
+
+    for entry in entries {
+        expected.push('\n');
+        for _ in 1..entry.level.clamp(1, 3) {
+            expected.push_str("  ");
+        }
+        let start = expected.chars().count();
+        expected.push_str(&entry.text);
+        let end = expected.chars().count();
+        linked_ranges.push((start, end, format!("#{}", entry.target_bookmark_id)));
+    }
+
+    if visible_text != expected {
+        return false;
+    }
+
+    for (index, (_, link)) in visible.iter().enumerate() {
+        let expected_link = linked_ranges
+            .iter()
+            .find(|(start, end, _)| *start <= index && index < *end)
+            .map(|(_, _, target)| target.as_str());
+        if link.as_deref() != expected_link {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn sanitize_bookmark_id(value: &str) -> Option<String> {
@@ -3863,6 +4048,137 @@ mod tests {
         };
         assert_eq!(paragraph.bookmark_id.as_deref(), Some("bm-body"));
         assert_eq!(paragraph.inlines[0].link.as_deref(), Some("#bm-heading"));
+    }
+
+    #[test]
+    fn table_of_contents_round_trips_through_word900_metadata() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::TableOfContents(TableOfContents {
+                title: "Contents".to_string(),
+                entries: vec![
+                    TableOfContentsEntry {
+                        level: 1,
+                        text: "Intro".to_string(),
+                        target_bookmark_id: "bm-intro".to_string(),
+                    },
+                    TableOfContentsEntry {
+                        level: 3,
+                        text: "Details".to_string(),
+                        target_bookmark_id: "bm-details".to_string(),
+                    },
+                ],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-intro".to_string()),
+                level: 1,
+                inlines: vec![Inline::text("Intro")],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-details".to_string()),
+                level: 3,
+                inlines: vec![Inline::text("Details")],
+            }),
+        ];
+
+        let bytes = write_odt_bytes(&document).expect("write should succeed");
+        let content_xml = content_xml_from_package(&bytes);
+        assert!(content_xml.contains("word900:block-type=\"table-of-contents\""));
+        assert!(content_xml.contains("word900:toc-entries="));
+        assert!(content_xml.contains("xlink:href=\"#bm-intro\""));
+        assert!(!content_xml.contains("<text:page-number"));
+        assert!(!content_xml.contains("<text:page-count"));
+
+        let parsed = read_odt_bytes(&bytes).expect("read should succeed");
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        let Block::TableOfContents(table_of_contents) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should remain a toc");
+        };
+        assert_eq!(table_of_contents.title, "Contents");
+        assert_eq!(
+            table_of_contents.entries,
+            vec![
+                TableOfContentsEntry {
+                    level: 1,
+                    text: "Intro".to_string(),
+                    target_bookmark_id: "bm-intro".to_string(),
+                },
+                TableOfContentsEntry {
+                    level: 3,
+                    text: "Details".to_string(),
+                    target_bookmark_id: "bm-details".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn mismatched_table_of_contents_metadata_imports_as_visible_text() {
+        let hidden_entries =
+            escape_xml(r#"[{"level":1,"text":"Hidden payload","target_bookmark_id":"bm-hidden"}]"#);
+        let content = format!(
+            r##"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:xlink="http://www.w3.org/1999/xlink"
+              xmlns:word900="urn:900labs:900word:metadata"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:p text:style-name="900w-toc" word900:block-type="table-of-contents" word900:toc-title="Contents" word900:toc-entries="{hidden_entries}">
+                  Contents<text:line-break/><text:a xlink:href="#bm-visible">Visible heading</text:a>
+                </text:p>
+              </office:text></office:body>
+            </office:document-content>"##
+        );
+
+        let parsed = read_odt_bytes(&test_package_with_content(&content)).expect("package parses");
+
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsupported_toc_metadata"));
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("mismatched toc should import as a paragraph");
+        };
+        let visible_text = paragraph
+            .inlines
+            .iter()
+            .map(|inline| inline.text.as_str())
+            .collect::<String>();
+        assert!(visible_text.contains("Visible heading"));
+        assert!(!visible_text.contains("Hidden payload"));
+    }
+
+    #[test]
+    fn oversized_table_of_contents_metadata_imports_as_visible_text() {
+        let oversized_entries = escape_xml(&format!(
+            r#"[{{"level":1,"text":"{}","target_bookmark_id":"bm-visible"}}]"#,
+            "A".repeat(17 * 1024)
+        ));
+        let content = format!(
+            r##"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:xlink="http://www.w3.org/1999/xlink"
+              xmlns:word900="urn:900labs:900word:metadata"
+              office:version="1.3">
+              <office:body><office:text>
+                <text:p text:style-name="900w-toc" word900:block-type="table-of-contents" word900:toc-title="Contents" word900:toc-entries="{oversized_entries}">
+                  Contents<text:line-break/><text:a xlink:href="#bm-visible">Visible heading</text:a>
+                </text:p>
+              </office:text></office:body>
+            </office:document-content>"##
+        );
+
+        let parsed = read_odt_bytes(&test_package_with_content(&content)).expect("package parses");
+
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsupported_toc_metadata"));
+        assert!(matches!(&parsed.sections[0].blocks[0], Block::Paragraph(_)));
     }
 
     #[test]

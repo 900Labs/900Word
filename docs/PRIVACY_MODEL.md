@@ -26,6 +26,8 @@ Sprint 022 comments are stored as bounded local document metadata plus inline se
 
 Sprint 023 tracked changes are stored as local document metadata on inline text anchors. The default author string is `Local User`; no operating-system username, hostname, account identifier, contact record, local path, source filename, or cloud identity is read or serialized for tracked-change authorship. Unaccepted tracked deletions intentionally keep deleted text in the saved document package, so shared files may reveal edit history until changes are accepted or rejected.
 
+Sprint 024 table-of-contents entries are stored as generated local document content. Entry text is copied from supported document headings, and generated bookmark IDs are compact document-local identifiers. The feature does not read operating-system usernames, hostnames, account identifiers, contact records, local paths, source filenames, cloud identity, network state, or external services.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -43,6 +45,8 @@ Sprint 014 HTML and print HTML exporters embed allowlisted in-document image byt
 Sprint 022 stores 900Word-authored comments in ODT with ODF annotation elements and `word900` metadata for local comment ID and resolved state. TXT, HTML, print HTML, and basic PDF export do not claim comment fidelity or active annotations; they continue to avoid local usernames, hostnames, absolute paths, account metadata, and private build metadata.
 
 Sprint 023 stores 900Word-authored tracked changes in ODT with `word900` metadata on inline text spans for local change ID, kind, author, and timestamp, plus document-level recording state. This is a 900Word-authored text-only compatibility boundary, not a claim of DOCX/PDF track changes or full external ODT change-tracking fidelity.
+
+Sprint 024 stores 900Word-authored table-of-contents metadata in ODT with `word900:block-type="table-of-contents"` and safe generated bookmark targets. TXT/basic PDF exports render TOCs as ordinary text, and HTML/print HTML exports render safe local fragment links without deterministic page-number claims or local/private build metadata.
 
 ## Network
 

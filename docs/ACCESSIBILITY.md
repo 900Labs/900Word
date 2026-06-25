@@ -19,4 +19,6 @@ Sprint 022 adds a comments sidebar using native buttons and textareas. Comment c
 
 Sprint 023 adds a track changes toolbar toggle and review sidebar using native checkbox and button controls. Accept/reject, accept all/reject all, and jump-to-change actions are keyboard-focusable and not hover-only. Insertions and deletions receive visible inline text styling in addition to the review list labels.
 
+Sprint 024 adds the table-of-contents insert/update command inside the existing File menu as a native button. Generated TOC blocks render in the editor as a visible document block with normal focusable internal links where safe bookmark targets exist; the command and links are not hover-only.
+
 Accessibility smoke checks are part of the release hardening roadmap.

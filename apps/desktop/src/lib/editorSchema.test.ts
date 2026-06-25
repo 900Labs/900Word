@@ -21,6 +21,7 @@ describe('supportedSchema', () => {
       'paragraph',
       'table',
       'table_cell',
+      'table_of_contents',
       'table_row',
       'text'
     ]);
@@ -343,6 +344,43 @@ describe('supportedSchema', () => {
         content: [{ type: 'paragraph', attrs: { style: 'body', bookmarkId: '../bad' }, content: [] }]
       })
     ).toThrow('unsupported paragraph bookmark');
+  });
+
+  it('accepts safe table of contents entries and rejects unsafe targets', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'table_of_contents',
+          attrs: {
+            title: 'Contents',
+            entries: [
+              { level: 1, text: 'Overview', target_bookmark_id: 'bm-overview' },
+              { level: 3, text: 'Details', target_bookmark_id: 'bm-details' }
+            ]
+          }
+        }
+      ]
+    });
+
+    expect(doc.firstChild?.attrs.entries).toEqual([
+      { level: 1, text: 'Overview', target_bookmark_id: 'bm-overview' },
+      { level: 3, text: 'Details', target_bookmark_id: 'bm-details' }
+    ]);
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'table_of_contents',
+            attrs: {
+              title: 'Contents',
+              entries: [{ level: 1, text: 'Bad', target_bookmark_id: '../bad' }]
+            }
+          }
+        ]
+      })
+    ).toThrow('unsupported table of contents entries');
   });
 
   it('rejects unsafe link schemes before schema projection', () => {

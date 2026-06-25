@@ -1369,6 +1369,27 @@ describe('findEditorDocMatches', () => {
     expect(editorDocPlainText(doc)).toBe('Hello\nqwerty');
   });
 
+  it('includes table of contents atoms in editor plain text', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'table_of_contents',
+          attrs: {
+            title: 'Contents',
+            entries: [
+              { level: 1, text: 'Overview', target_bookmark_id: 'bm-overview' },
+              { level: 3, text: 'Details', target_bookmark_id: 'bm-details' }
+            ]
+          }
+        },
+        { type: 'heading', attrs: { level: 1, bookmarkId: 'bm-overview' }, content: [{ type: 'text', text: 'Overview' }] }
+      ]
+    });
+
+    expect(editorDocPlainText(doc)).toBe('Contents\nOverview\n    Details\nOverview');
+  });
+
   it('selects a top-level block by navigator index', () => {
     const doc = supportedSchema.nodeFromJSON({
       type: 'doc',

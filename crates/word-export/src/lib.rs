@@ -3,6 +3,7 @@ use thiserror::Error;
 use word_core::{
     Block, Document, Heading, ImageBlock, Inline, InlineMark, PageField, PageRegion,
     PageRegionBlock, PageSetup, Paragraph, ParagraphFormat, Section, Style, StyleKind,
+    TableOfContents,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -165,6 +166,9 @@ fn push_block_text(block: &Block, document: &Document, output: &mut String) {
     match block {
         Block::Paragraph(paragraph) => push_paragraph_text(paragraph, document, output),
         Block::Heading(heading) => push_heading_text(heading, document, output),
+        Block::TableOfContents(table_of_contents) => {
+            push_table_of_contents_text(table_of_contents, output)
+        }
         Block::List(list) => {
             for item in &list.items {
                 for block in &item.blocks {
@@ -221,6 +225,22 @@ fn push_paragraph_text(paragraph: &Paragraph, document: &Document, output: &mut 
 fn push_heading_text(heading: &Heading, document: &Document, output: &mut String) {
     for inline in &heading.inlines {
         output.push_str(&inline_export_text(inline, document));
+    }
+}
+
+fn push_table_of_contents_text(table_of_contents: &TableOfContents, output: &mut String) {
+    let title = table_of_contents.title.trim();
+    if !title.is_empty() {
+        output.push_str(title);
+    }
+    for entry in &table_of_contents.entries {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        for _ in 1..entry.level.clamp(1, 3) {
+            output.push_str("  ");
+        }
+        output.push_str(&entry.text);
     }
 }
 
@@ -298,6 +318,9 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
             push_inlines_html(&heading.inlines, document, output);
             output.push_str(&format!("</h{level}>"));
         }
+        Block::TableOfContents(table_of_contents) => {
+            push_table_of_contents_html(table_of_contents, output);
+        }
         Block::List(list) => {
             let tag = if document
                 .lists
@@ -365,6 +388,33 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
         }
         Block::PageBreak => output.push_str("<hr data-page-break=\"true\">"),
     }
+}
+
+fn push_table_of_contents_html(table_of_contents: &TableOfContents, output: &mut String) {
+    output.push_str(
+        "<nav data-900word-block=\"table-of-contents\" aria-label=\"Table of contents\">",
+    );
+    let title = table_of_contents.title.trim();
+    if !title.is_empty() {
+        output.push_str("<p class=\"toc-title\">");
+        output.push_str(&escape_html(title));
+        output.push_str("</p>");
+    }
+    output.push_str("<ol class=\"toc-list\">");
+    for entry in &table_of_contents.entries {
+        let Some(target) = sanitize_bookmark_id(&entry.target_bookmark_id) else {
+            continue;
+        };
+        let level = entry.level.clamp(1, 3);
+        output.push_str("<li data-toc-level=\"");
+        output.push_str(&level.to_string());
+        output.push_str("\"><a href=\"#");
+        output.push_str(&escape_html(target));
+        output.push_str("\">");
+        output.push_str(&escape_html(&entry.text));
+        output.push_str("</a></li>");
+    }
+    output.push_str("</ol></nav>");
 }
 
 fn image_html_attrs(image: &ImageBlock) -> String {
@@ -704,7 +754,7 @@ fn push_export_css(document: &Document, options: HtmlExportOptions, output: &mut
         .unwrap_or_default();
     output.push_str("<style>");
     output.push_str("body{font-family:system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;line-height:1.55;color:#1d2433;background:#fff;margin:2rem;}");
-    output.push_str("section{max-width:48rem;margin:0 auto;}table{border-collapse:collapse;width:100%;}td{border:1px solid #9aa7b8;padding:.35rem;vertical-align:top;}figure{margin:1rem 0;padding:.75rem;border:1px solid #d6dce5;}figcaption{color:#526070;}a{color:#0b63b6;}hr[data-page-break=\"true\"]{break-after:page;border:0;border-top:1px dashed #9aa7b8;}");
+    output.push_str("section{max-width:48rem;margin:0 auto;}table{border-collapse:collapse;width:100%;}td{border:1px solid #9aa7b8;padding:.35rem;vertical-align:top;}figure{margin:1rem 0;padding:.75rem;border:1px solid #d6dce5;}figcaption{color:#526070;}a{color:#0b63b6;}nav[data-900word-block=\"table-of-contents\"]{margin:1rem 0;padding:.75rem;border-left:3px solid #0f6b5f;background:#f3f7f5;}nav[data-900word-block=\"table-of-contents\"] .toc-title{margin:.1rem 0 .45rem;font-weight:700;}nav[data-900word-block=\"table-of-contents\"] ol{margin:.25rem 0 0;padding-left:1.25rem;}nav[data-900word-block=\"table-of-contents\"] li[data-toc-level=\"2\"]{margin-left:1rem;}nav[data-900word-block=\"table-of-contents\"] li[data-toc-level=\"3\"]{margin-left:2rem;}hr[data-page-break=\"true\"]{break-after:page;border:0;border-top:1px dashed #9aa7b8;}");
     if options.print_ready {
         output.push_str(&format!(
             "@page{{size:{}mm {}mm;margin:{}mm {}mm {}mm {}mm;}}body{{margin:0;}}section{{max-width:none;}}",
@@ -821,7 +871,7 @@ mod tests {
     use super::*;
     use word_core::{
         ImageAlignment, ImageBlock, ImagePresentation, ListBlock, ListDefinition, ListItem,
-        PageRegionParagraph, Table, TableCell, TableRow,
+        PageRegionParagraph, Table, TableCell, TableOfContents, TableOfContentsEntry, TableRow,
     };
 
     #[test]
@@ -969,6 +1019,52 @@ mod tests {
         assert!(html.contains("<p id=\"bm-body\" data-style=\"body\">"));
         assert!(html.contains("href=\"#bm-heading\""));
         assert!(!html.contains("#../bad"));
+    }
+
+    #[test]
+    fn exports_table_of_contents_as_text_and_safe_html_links_without_page_claims() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::TableOfContents(TableOfContents {
+                title: "Contents".to_string(),
+                entries: vec![
+                    TableOfContentsEntry {
+                        level: 1,
+                        text: "Intro".to_string(),
+                        target_bookmark_id: "bm-intro".to_string(),
+                    },
+                    TableOfContentsEntry {
+                        level: 3,
+                        text: "Details".to_string(),
+                        target_bookmark_id: "bm-details".to_string(),
+                    },
+                    TableOfContentsEntry {
+                        level: 2,
+                        text: "Unsafe skipped".to_string(),
+                        target_bookmark_id: "../bad".to_string(),
+                    },
+                ],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-intro".to_string()),
+                level: 1,
+                inlines: vec![Inline::text("Intro")],
+            }),
+        ];
+
+        let text = export_txt(&document).expect("txt export should succeed");
+        let html = export_html(&document).expect("html export should succeed");
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+
+        assert!(text.contains("Contents\nIntro\n    Details\n  Unsafe skipped"));
+        assert!(html.contains("data-900word-block=\"table-of-contents\""));
+        assert!(html.contains("href=\"#bm-intro\""));
+        assert!(html.contains("data-toc-level=\"3\""));
+        assert!(!html.contains("../bad"));
+        assert!(!html.contains("data-page-field"));
+        assert!(pdf
+            .windows("Contents".len())
+            .any(|window| window == b"Contents"));
     }
 
     #[test]

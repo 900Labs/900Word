@@ -1838,9 +1838,16 @@ mod tests {
                 .expect("file formats doc must be readable");
 
         assert!(privacy.contains("Tracked changes can reveal edit history and deleted text"));
+        assert!(
+            privacy.contains("local table-of-contents generation from supported document headings")
+        );
         assert!(privacy_model.contains("The default author string is `Local User`"));
         assert!(privacy_model.contains("no operating-system username"));
+        assert!(
+            privacy_model.contains("generated bookmark IDs are compact document-local identifiers")
+        );
         assert!(file_formats.contains("900Word-authored text-only tracked changes"));
+        assert!(file_formats.contains("generated table-of-contents blocks"));
         assert!(file_formats.contains("`word900` metadata"));
         assert!(file_formats.contains("DOCX track changes"));
     }

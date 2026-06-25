@@ -75,6 +75,20 @@ export interface HeadingBlock {
   };
 }
 
+export interface TableOfContentsEntry {
+  level: number;
+  text: string;
+  target_bookmark_id: string;
+}
+
+export interface TableOfContentsBlock {
+  type: 'TableOfContents';
+  value: {
+    title: string;
+    entries: TableOfContentsEntry[];
+  };
+}
+
 export interface ListDefinition {
   ordered: boolean;
   marker?: string | null;
@@ -141,7 +155,7 @@ export interface CommentThread {
 }
 
 export type TableCellEditableBlock = ParagraphBlock | HeadingBlock | ListBlock;
-export type EditableBlock = ParagraphBlock | HeadingBlock | ListBlock | TableBlock | ImageBlock;
+export type EditableBlock = ParagraphBlock | HeadingBlock | TableOfContentsBlock | ListBlock | TableBlock | ImageBlock;
 export type Block = EditableBlock | { type: string; value?: unknown };
 
 export interface PageRegionParagraphBlock {
@@ -267,6 +281,14 @@ export interface EditorImageNode {
   };
 }
 
+export interface EditorTableOfContentsNode {
+  type: 'table_of_contents';
+  attrs: {
+    title: string;
+    entries: TableOfContentsEntry[];
+  };
+}
+
 export interface EditorParagraphAttrs {
   bookmarkId?: string | null;
   style?: string;
@@ -282,6 +304,7 @@ export interface EditorParagraphAttrs {
 export type EditorBlockNode =
   | EditorParagraphNode
   | EditorHeadingNode
+  | EditorTableOfContentsNode
   | EditorListNode
   | EditorTableNode
   | EditorImageNode;
@@ -334,6 +357,11 @@ export type DocumentCommand =
     }
   | {
       type: 'delete_block';
+      section_index: number;
+      block_index: number;
+    }
+  | {
+      type: 'insert_or_update_table_of_contents';
       section_index: number;
       block_index: number;
     }
@@ -482,6 +510,12 @@ export function documentProjectionWarnings(document: DocumentState): string[] {
         continue;
       }
       if (isImageBlock(block)) {
+        continue;
+      }
+      if (isTableOfContentsBlock(block)) {
+        if (normalizeTableOfContentsEntries(block.value.entries).length !== block.value.entries.length) {
+          warnings.push('Table of contents entries with unsafe targets are preserved but read-only in the editor projection.');
+        }
         continue;
       }
       if (!hasInlineContent(block) && !isEditableListBlock(block)) {
@@ -693,6 +727,9 @@ function blockToText(block: Block): string {
   if (isImageBlock(block)) {
     return imageToText(block);
   }
+  if (isTableOfContentsBlock(block)) {
+    return tableOfContentsToText(block);
+  }
   return '';
 }
 
@@ -758,6 +795,15 @@ function isImageBlock(block: Block): block is ImageBlock {
   );
 }
 
+function isTableOfContentsBlock(block: Block): block is TableOfContentsBlock {
+  return (
+    block.type === 'TableOfContents' &&
+    typeof block.value === 'object' &&
+    block.value !== null &&
+    Array.isArray((block.value as { entries?: unknown }).entries)
+  );
+}
+
 function blockToEditorNode(
   block: Block,
   lists?: Record<string, ListDefinition>,
@@ -766,6 +812,10 @@ function blockToEditorNode(
 ): EditorBlockNode {
   if (isImageBlock(block)) {
     return wordCoreImageToEditorNode(block, assets);
+  }
+
+  if (isTableOfContentsBlock(block)) {
+    return wordCoreTableOfContentsToEditorNode(block);
   }
 
   if (isTableBlock(block)) {
@@ -819,6 +869,14 @@ function readOnlyPlaceholderNode(blockType: string): EditorParagraphNode {
 
 function editorBlockToWordCoreBlock(block: EditorBlockNode, styles?: Record<string, DocumentStyle>): EditableBlock {
   switch (block.type) {
+    case 'table_of_contents':
+      return {
+        type: 'TableOfContents',
+        value: {
+          title: normalizeOptionalString(block.attrs.title) ?? 'Contents',
+          entries: normalizeTableOfContentsEntries(block.attrs.entries)
+        }
+      };
     case 'image':
       return {
         type: 'Image',
@@ -878,9 +936,48 @@ function wordCoreImageToEditorNode(block: ImageBlock, assets?: Record<string, As
   };
 }
 
+function wordCoreTableOfContentsToEditorNode(block: TableOfContentsBlock): EditorTableOfContentsNode {
+  return {
+    type: 'table_of_contents',
+    attrs: {
+      title: normalizeOptionalString(block.value.title) ?? 'Contents',
+      entries: normalizeTableOfContentsEntries(block.value.entries)
+    }
+  };
+}
+
+function normalizeTableOfContentsEntries(value: unknown): TableOfContentsEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry): TableOfContentsEntry | undefined => {
+      if (typeof entry !== 'object' || entry === null) {
+        return undefined;
+      }
+      const level = Math.trunc(Number((entry as { level?: unknown }).level));
+      const text = normalizeOptionalString((entry as { text?: unknown }).text);
+      const target = sanitizeBookmarkId(String((entry as { target_bookmark_id?: unknown }).target_bookmark_id ?? ''));
+      if (!text || !target || level < 1 || level > 3) {
+        return undefined;
+      }
+      return { level, text, target_bookmark_id: target };
+    })
+    .filter((entry): entry is TableOfContentsEntry => entry !== undefined);
+}
+
 function imageToText(block: ImageBlock): string {
   return [block.value.alt_text, block.value.presentation?.caption]
     .map((value) => value?.trim() ?? '')
+    .filter(Boolean)
+    .join('\n');
+}
+
+function tableOfContentsToText(block: TableOfContentsBlock): string {
+  return [
+    block.value.title?.trim() ?? '',
+    ...block.value.entries.map((entry) => `${'  '.repeat(Math.max(0, Math.min(2, entry.level - 1)))}${entry.text}`)
+  ]
     .filter(Boolean)
     .join('\n');
 }

@@ -34,6 +34,31 @@ describe('documentToText', () => {
     expect(documentToText(document)).toBe('Title\nBody');
   });
 
+  it('projects table of contents blocks as visible summary text', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'TableOfContents',
+              value: {
+                title: 'Contents',
+                entries: [
+                  { level: 1, text: 'Overview', target_bookmark_id: 'bm-overview' },
+                  { level: 3, text: 'Details', target_bookmark_id: 'bm-details' }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(documentToText(document)).toBe('Contents\nOverview\n    Details');
+    expect(documentProjectionWarnings(document)).toEqual([]);
+  });
+
   it('converts page region tokens to typed field inlines and back', () => {
     const blocks = pageRegionTextToBlocks(`Page ${pageFieldTokens.page_number} of ${pageFieldTokens.page_count}\n${pageFieldTokens.date}`);
 
@@ -354,6 +379,63 @@ describe('documentToText', () => {
         sectionIndex: 0,
         blockIndex: 1,
         editorBlockIndex: 1
+      }
+    ]);
+  });
+
+  it('round-trips table of contents blocks through editor projection with safe links', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'TableOfContents',
+              value: {
+                title: 'Contents',
+                entries: [
+                  { level: 1, text: 'Overview', target_bookmark_id: 'bm-overview' },
+                  { level: 2, text: 'Unsafe', target_bookmark_id: '../bad' }
+                ]
+              }
+            },
+            {
+              type: 'Heading',
+              value: {
+                bookmark_id: 'bm-overview',
+                level: 1,
+                inlines: [{ text: 'Overview' }]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+
+    expect(editorDoc.content[0]).toEqual({
+      type: 'table_of_contents',
+      attrs: {
+        title: 'Contents',
+        entries: [{ level: 1, text: 'Overview', target_bookmark_id: 'bm-overview' }]
+      }
+    });
+    expect(editorDocToWordCoreBlocks(editorDoc)).toEqual([
+      {
+        type: 'TableOfContents',
+        value: {
+          title: 'Contents',
+          entries: [{ level: 1, text: 'Overview', target_bookmark_id: 'bm-overview' }]
+        }
+      },
+      {
+        type: 'Heading',
+        value: {
+          bookmark_id: 'bm-overview',
+          level: 1,
+          inlines: [{ text: 'Overview', marks: [], link: null }]
+        }
       }
     ]);
   });

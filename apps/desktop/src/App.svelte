@@ -1021,6 +1021,37 @@
       : tr('paragraphUnchanged');
   }
 
+  async function insertOrUpdateTableOfContents() {
+    if (!documentState) {
+      return;
+    }
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    try {
+      await waitForEditorSync();
+      const existingIndex = tableOfContentsBlockIndex(documentState);
+      const insertionIndex =
+        existingIndex >= 0 ? existingIndex : editorTopLevelInsertionIndex(view, lastEditorSelection) ?? 0;
+      const document = await invoke<DocumentState>('apply_document_command', {
+        command: {
+          type: 'insert_or_update_table_of_contents',
+          section_index: 0,
+          block_index: insertionIndex
+        }
+      });
+      await loadDocumentIntoEditor(document, tr('tableOfContentsUpdated'));
+      await refreshFileState();
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  function tableOfContentsBlockIndex(document: DocumentState): number {
+    return document.sections[0]?.blocks.findIndex((block) => block.type === 'TableOfContents') ?? -1;
+  }
+
   function editTable(action: SupportedTableEditAction) {
     if (!editorEditable) {
       status = tr('editorReadOnly');
@@ -1902,6 +1933,18 @@
             <span class="menu-glyph glyph-image" aria-hidden="true"></span>
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('insertImage')}</span>
+            </span>
+          </button>
+          <button
+            class="menu-command"
+            disabled={!editorEditable}
+            title={tr('tableOfContents')}
+            type="button"
+            onclick={() => runFileMenuAction(insertOrUpdateTableOfContents)}
+          >
+            <span class="menu-glyph glyph-toc" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('insertOrUpdateTableOfContents')}</span>
             </span>
           </button>
 
