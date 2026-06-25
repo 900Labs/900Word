@@ -187,6 +187,11 @@
   type ViewId = 'editor' | 'settings' | 'about';
   const viewOrder: ViewId[] = ['editor', 'settings', 'about'];
   const odtFileFilters = [{ name: 'OpenDocument Text', extensions: ['odt'] }];
+  const documentFileFilters = [
+    { name: 'Documents', extensions: ['odt', 'docx'] },
+    ...odtFileFilters,
+    { name: 'Word Document', extensions: ['docx'] }
+  ];
   const imageFileFilters = [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }];
   const pageFormats: PageFormat[] = [
     { id: 'a4', label: 'A4 (210 x 297 mm)', width_mm: 210, height_mm: 297 },
@@ -503,17 +508,18 @@
 
   async function openDocumentAtPath(path: string) {
     await waitForEditorSync();
-    const document = await invoke<DocumentState>('open_document', {
+    const isDocx = path.trim().toLocaleLowerCase().endsWith('.docx');
+    const document = await invoke<DocumentState>(isDocx ? 'open_docx_document' : 'open_document', {
       path
     });
-    await loadDocumentIntoEditor(document, tr('documentOpened'));
+    await loadDocumentIntoEditor(document, isDocx ? tr('docxImported') : tr('documentOpened'));
     await refreshFileState();
   }
 
   async function openDocumentWithDialog() {
     const selected = await openDialog({
       multiple: false,
-      filters: odtFileFilters
+      filters: documentFileFilters
     });
     if (typeof selected !== 'string') {
       return;
@@ -654,6 +660,18 @@
         path: exportPathInput
       });
       status = tr('exportPdfSaved', { bytes: result.byte_len });
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  async function exportDocx() {
+    try {
+      await waitForEditorSync();
+      const result = await invoke<ExportFileResult>('export_docx_to_path', {
+        path: exportPathInput
+      });
+      status = tr('exportDocxSaved', { bytes: result.byte_len });
     } catch (error) {
       setStatusFromError(error);
     }
@@ -2117,6 +2135,9 @@
                 >
                   <span>{tr('pdf')}</span>
                   <span class="format-shortcut">{shortcut('exportPdf')}</span>
+                </button>
+                <button class="format-option" type="button" onclick={() => runFileMenuAction(exportDocx)}>
+                  <span>{tr('docx')}</span>
                 </button>
               </div>
             </div>

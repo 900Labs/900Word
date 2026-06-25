@@ -14,7 +14,7 @@
 
 900Word is a local-first desktop word processor designed for communities where expensive subscriptions, constant connectivity, and high-end hardware are not realistic assumptions.
 
-The first release track focuses on safe local document editing with OpenDocument Text (`.odt`) as the native format. Network sync, real-time collaboration, runtime plugins, legacy binary `.doc`, and full encryption are intentionally deferred until their security and privacy designs are documented and tested.
+The first release track focuses on safe local document editing with OpenDocument Text (`.odt`) as the native format. DOCX support is import/export conversion only. Network sync, real-time collaboration, runtime plugins, legacy binary `.doc`, and full encryption are intentionally deferred until their security and privacy designs are documented and tested.
 
 ## Features
 
@@ -25,11 +25,12 @@ Current foundation:
 - Editor, Settings, and About shell views for the desktop workspace.
 - Constrained ProseMirror schema for the current `word-core` projection.
 - ODT MVP package read/write for paragraphs, headings, inline marks, links, lists, tables, page breaks, metadata, named styles, and allowlisted embedded image bytes.
+- Bounded DOCX import/export conversion for paragraphs, Heading 1-3, basic inline marks, safe hyperlinks, simple lists, and simple tables, with warnings for degraded imports.
 - Local file workflow commands for new/open/save/save-as, autosave, recovery drafts, and privacy-preserving recent document tokens.
 - Editing toolbar controls for undo/redo, inline marks, paragraph/heading styles, find/replace, sanitized starter templates, ODT-backed page setup metadata, and keyboard-accessible view traversal.
 - Hunspell-shaped word-list spell-check loading with a generated minimal `en-US` bootstrap dictionary, user dictionary folder support, missing-dictionary fallback, and initial UI localization.
-- Local TXT, sanitized HTML, and basic PDF export-to-path workflows, plus a WebView print flow using sanitized print HTML.
-- Rust workspace crates for document model, ODT handling, spell-check boundaries, export, and sanitized fixtures.
+- Local TXT, sanitized HTML, basic PDF, and minimal DOCX export-to-path workflows, plus a WebView print flow using sanitized print HTML.
+- Rust workspace crates for document model, ODT/DOCX handling, spell-check boundaries, export, and sanitized fixtures.
 - Generated JSON fixtures with multilingual sample content only.
 - No telemetry by default.
 - Offline startup smoke tests for the desktop boot path.
@@ -59,6 +60,7 @@ Repository layout:
 900Word/
 ├── apps/desktop/            # Tauri v2 + Svelte 5 desktop app
 ├── crates/word-core/        # Document model, commands, undo/redo, stats
+├── crates/word-docx/        # DOCX import/export conversion boundary
 ├── crates/word-odf/         # ODT package validation and read/write boundary
 ├── crates/word-spell/       # Spell-check dictionary boundary
 ├── crates/word-export/      # TXT, HTML, and basic PDF export adapters

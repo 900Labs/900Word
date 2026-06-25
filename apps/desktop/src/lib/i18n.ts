@@ -67,6 +67,8 @@ export type UiStringKey =
   | 'documentActions'
   | 'documentFormat'
   | 'documentInspector'
+  | 'docx'
+  | 'docxImported'
   | 'documentOpened'
   | 'documentSaved'
   | 'documentSavedAs'
@@ -83,6 +85,8 @@ export type UiStringKey =
   | 'exportHtml'
   | 'exportHtmlPrepared'
   | 'exportHtmlSaved'
+  | 'exportDocx'
+  | 'exportDocxSaved'
   | 'exportPath'
   | 'exportPathPlaceholder'
   | 'exportPdf'
@@ -411,6 +415,8 @@ const english: UiStrings = {
   documentActions: 'Document actions',
   documentFormat: 'Document format',
   documentInspector: 'Document Inspector',
+  docx: 'DOCX',
+  docxImported: 'DOCX imported as an unsaved ODT document',
   documentOpened: 'Document opened',
   documentSaved: 'Document saved',
   documentSavedAs: 'Document saved as',
@@ -427,8 +433,10 @@ const english: UiStrings = {
   exportHtml: 'Export HTML',
   exportHtmlPrepared: 'HTML export prepared ({characters} characters)',
   exportHtmlSaved: 'HTML export written ({bytes} bytes)',
+  exportDocx: 'Export DOCX',
+  exportDocxSaved: 'DOCX export written ({bytes} bytes)',
   exportPath: 'Export path',
-  exportPathPlaceholder: 'Export .txt, .html, or .pdf path',
+  exportPathPlaceholder: 'Export .txt, .html, .pdf, or .docx path',
   exportPdf: 'Export PDF',
   exportPdfPathRequired: 'Enter a PDF export path in File > Export.',
   exportPdfPrepared: 'PDF export prepared ({bytes} bytes)',

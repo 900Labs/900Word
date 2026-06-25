@@ -282,3 +282,14 @@ Status: complete.
 - Add local privacy warnings for comments, tracked changes, document title metadata, recovery drafts, and unsaved state.
 - Keep paths, private filenames, source image filenames, usernames, hostnames, recovery locations, and document text out of inspector summaries.
 - Keep the feature local-only and frontend-only with no cloud, accounts, telemetry, network behavior, heavy dependencies, import/export changes, or saved metadata changes.
+
+## Sprint 031: DOCX Compatibility MVP
+
+Status: complete.
+
+- Add a lightweight `word-docx` conversion crate using existing ZIP and XML tooling.
+- Keep ODT canonical: `.docx` import opens as an unsaved dirty document, and `.docx` export does not change the current save path.
+- Support simple DOCX paragraphs, Heading 1-3, bold/italic/underline, safe hyperlinks, basic list fallback, and simple tables.
+- Emit generic warnings for degraded or ignored DOCX import content.
+- Export minimal valid `.docx` packages with paragraphs, headings, basic inline marks, safe hyperlinks, simple lists, and simple tables.
+- Keep cloud, accounts, telemetry, network behavior, external converters, heavy dependencies, macros, media import, comments, tracked changes, notes, headers/footers, and full DOCX fidelity deferred.
