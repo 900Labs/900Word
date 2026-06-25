@@ -23,6 +23,10 @@ const PDF_FIGURE_PADDING: f32 = 6.0;
 const PDF_FIGURE_BASE_HEIGHT: f32 = 72.0;
 const PDF_FIGURE_MIN_HEIGHT: f32 = 48.0;
 const PDF_FIGURE_GAP_POINTS: f32 = 4.0;
+const PDF_TEXT_WIDTH_FACTOR: f32 = 0.52;
+const PDF_MAX_LINK_ANNOTATIONS_PER_DOCUMENT: usize = 512;
+const PDF_MAX_LINK_ANNOTATIONS_PER_PAGE: usize = 64;
+const PDF_MAX_URI_BYTES: usize = 2048;
 const PDF_PAGE_NUMBER_TOKEN: &str = "\u{e000}page-number\u{e001}";
 const PDF_PAGE_COUNT_TOKEN: &str = "\u{e000}page-count\u{e001}";
 const PDF_DATE_TOKEN: &str = "\u{e000}date\u{e001}";
@@ -92,13 +96,167 @@ pub fn export_pdf_with_options(
 #[derive(Debug, Clone)]
 struct PdfProjectedText {
     section_index: usize,
+    text: PdfLinkedText,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PdfLinkedText {
+    runs: Vec<PdfLinkedRun>,
+}
+
+#[derive(Debug, Clone)]
+struct PdfLinkedRun {
     text: String,
+    uri: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PdfLinkedLine {
+    text: String,
+    links: Vec<PdfLineLink>,
+}
+
+#[derive(Debug, Clone)]
+struct PdfLineLink {
+    start: usize,
+    end: usize,
+    uri: String,
+}
+
+#[derive(Debug, Clone)]
+struct PdfLinkedChar {
+    ch: char,
+    uri: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PdfLinkAnnotation {
+    rect: PdfRect,
+    uri: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PdfRect {
+    left: f32,
+    bottom: f32,
+    right: f32,
+    top: f32,
+}
+
+#[derive(Debug, Clone)]
+struct PdfRenderedPage {
+    stream: String,
+    annotations: Vec<PdfLinkAnnotation>,
+}
+
+struct PdfAnnotationCollector<'a> {
+    annotations: &'a mut Vec<PdfLinkAnnotation>,
+    remaining: &'a mut usize,
+}
+
+impl PdfLinkedText {
+    fn from_plain(text: impl AsRef<str>) -> Self {
+        let mut linked = Self::default();
+        linked.push_plain(text.as_ref());
+        linked
+    }
+
+    fn push_plain(&mut self, text: &str) {
+        self.push_run(text, None);
+    }
+
+    fn push_uri(&mut self, text: &str, uri: &str) {
+        self.push_run(text, Some(uri));
+    }
+
+    fn append(&mut self, other: &PdfLinkedText) {
+        for run in &other.runs {
+            self.push_run(&run.text, run.uri.as_deref());
+        }
+    }
+
+    fn split_lines(&self) -> Vec<PdfLinkedText> {
+        let mut lines = Vec::new();
+        let mut current = Vec::new();
+        let mut saw_any = false;
+        let mut last_was_newline = false;
+
+        for linked_char in self.to_chars() {
+            saw_any = true;
+            if linked_char.ch == '\n' {
+                lines.push(PdfLinkedText::from_chars(current));
+                current = Vec::new();
+                last_was_newline = true;
+            } else {
+                current.push(linked_char);
+                last_was_newline = false;
+            }
+        }
+
+        if saw_any && (!current.is_empty() || !last_was_newline) {
+            lines.push(PdfLinkedText::from_chars(current));
+        }
+
+        lines
+    }
+
+    fn trimmed(&self) -> PdfLinkedText {
+        let chars = self.to_chars();
+        let Some(start) = chars
+            .iter()
+            .position(|linked_char| !linked_char.ch.is_whitespace())
+        else {
+            return PdfLinkedText::default();
+        };
+        let end = chars
+            .iter()
+            .rposition(|linked_char| !linked_char.ch.is_whitespace())
+            .map(|index| index + 1)
+            .unwrap_or(start);
+        PdfLinkedText::from_chars(chars[start..end].to_vec())
+    }
+
+    fn push_run(&mut self, text: &str, uri: Option<&str>) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(last) = self.runs.last_mut().filter(|run| run.uri.as_deref() == uri) {
+            last.text.push_str(text);
+            return;
+        }
+        self.runs.push(PdfLinkedRun {
+            text: text.to_string(),
+            uri: uri.map(str::to_string),
+        });
+    }
+
+    fn to_chars(&self) -> Vec<PdfLinkedChar> {
+        self.runs
+            .iter()
+            .flat_map(|run| {
+                run.text.chars().map(|ch| PdfLinkedChar {
+                    ch,
+                    uri: run.uri.clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn from_chars(chars: Vec<PdfLinkedChar>) -> PdfLinkedText {
+        let mut linked = PdfLinkedText::default();
+        for linked_char in chars {
+            let mut text = String::new();
+            text.push(linked_char.ch);
+            linked.push_run(&text, linked_char.uri.as_deref());
+        }
+        linked
+    }
 }
 
 #[derive(Debug, Clone)]
 struct PdfProjectedTableRow {
     section_index: usize,
-    cells: Vec<String>,
+    cells: Vec<PdfLinkedText>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,7 +278,7 @@ enum PdfFlowItem {
 
 #[derive(Debug, Clone)]
 enum PdfPageBodyItem {
-    TextLine(String),
+    TextLine(PdfLinkedLine),
     TableRow(PdfTableRowLayout),
     Figure(PdfFigureLayout),
 }
@@ -144,7 +302,7 @@ struct PdfTableRowLayout {
 
 #[derive(Debug, Clone)]
 struct PdfTableCellLayout {
-    lines: Vec<String>,
+    lines: Vec<PdfLinkedLine>,
 }
 
 #[derive(Debug, Clone)]
@@ -198,7 +356,7 @@ fn paginate_pdf(document: &Document) -> Result<Vec<PdfPage>, ExportError> {
                 );
                 let page_setup = &document.sections[text.section_index].page;
                 let max_chars = pdf_wrap_char_limit(page_setup);
-                for wrapped in wrap_pdf_line(&text.text, max_chars) {
+                for wrapped in wrap_pdf_linked_line(&text.text, max_chars) {
                     push_pdf_body_item(
                         document,
                         &mut pages,
@@ -384,7 +542,7 @@ fn split_oversized_pdf_table_row(
                 let lines = if start < cell.lines.len() {
                     cell.lines[start..end.min(cell.lines.len())].to_vec()
                 } else {
-                    vec![String::new()]
+                    vec![empty_pdf_linked_line()]
                 };
                 PdfTableCellLayout { lines }
             })
@@ -488,14 +646,14 @@ fn pdf_flow_items(document: &Document) -> Result<Vec<PdfFlowItem>, ExportError> 
     for line in notes.lines() {
         items.push(PdfFlowItem::Text(PdfProjectedText {
             section_index: note_section_index,
-            text: line.to_string(),
+            text: PdfLinkedText::from_plain(line),
         }));
     }
 
     if items.is_empty() {
         items.push(PdfFlowItem::Text(PdfProjectedText {
             section_index: 0,
-            text: String::new(),
+            text: PdfLinkedText::default(),
         }));
     }
 
@@ -516,11 +674,11 @@ fn push_block_pdf_items(
                     .cells
                     .iter()
                     .map(|cell| {
-                        let mut cell_text = String::new();
+                        let mut cell_text = PdfLinkedText::default();
                         for block in &cell.blocks {
-                            push_block_pdf_text(block, document, &mut cell_text);
+                            cell_text.append(&pdf_block_linked_text(block, document));
                         }
-                        cell_text.trim().to_string()
+                        cell_text.trimmed()
                     })
                     .collect();
                 items.push(PdfFlowItem::TableRow(PdfProjectedTableRow {
@@ -530,7 +688,7 @@ fn push_block_pdf_items(
             }
             items.push(PdfFlowItem::Text(PdfProjectedText {
                 section_index,
-                text: String::new(),
+                text: PdfLinkedText::default(),
             }));
         }
         Block::Image(image) => {
@@ -554,32 +712,38 @@ fn push_block_pdf_items(
             }));
             items.push(PdfFlowItem::Text(PdfProjectedText {
                 section_index,
-                text: String::new(),
+                text: PdfLinkedText::default(),
             }));
         }
         _ => {
-            let mut text = String::new();
-            push_block_pdf_text(block, document, &mut text);
-            for line in text.lines() {
+            let text = pdf_block_linked_text(block, document);
+            for line in text.split_lines() {
                 items.push(PdfFlowItem::Text(PdfProjectedText {
                     section_index,
-                    text: line.to_string(),
+                    text: line,
                 }));
             }
             items.push(PdfFlowItem::Text(PdfProjectedText {
                 section_index,
-                text: String::new(),
+                text: PdfLinkedText::default(),
             }));
         }
     }
 }
 
-fn push_block_pdf_text(block: &Block, document: &Document, output: &mut String) {
+fn pdf_block_linked_text(block: &Block, document: &Document) -> PdfLinkedText {
+    let mut output = PdfLinkedText::default();
     match block {
-        Block::Paragraph(paragraph) => push_inlines_pdf_text(&paragraph.inlines, document, output),
-        Block::Heading(heading) => push_inlines_pdf_text(&heading.inlines, document, output),
+        Block::Paragraph(paragraph) => {
+            push_inlines_pdf_linked_text(&paragraph.inlines, document, &mut output)
+        }
+        Block::Heading(heading) => {
+            push_inlines_pdf_linked_text(&heading.inlines, document, &mut output)
+        }
         Block::TableOfContents(table_of_contents) => {
-            push_table_of_contents_text(table_of_contents, output)
+            let mut text = String::new();
+            push_table_of_contents_text(table_of_contents, &mut text);
+            output.push_plain(&text);
         }
         Block::List(list) => {
             let ordered = document
@@ -589,17 +753,17 @@ fn push_block_pdf_text(block: &Block, document: &Document, output: &mut String) 
                 .unwrap_or(false);
             for (index, item) in list.items.iter().enumerate() {
                 for _ in 0..item.level {
-                    output.push_str("  ");
+                    output.push_plain("  ");
                 }
                 if ordered {
-                    output.push_str(&(index + 1).to_string());
-                    output.push_str(". ");
+                    output.push_plain(&(index + 1).to_string());
+                    output.push_plain(". ");
                 } else {
-                    output.push_str("- ");
+                    output.push_plain("- ");
                 }
                 for block in &item.blocks {
-                    push_block_pdf_text(block, document, output);
-                    output.push('\n');
+                    output.append(&pdf_block_linked_text(block, document));
+                    output.push_plain("\n");
                 }
             }
         }
@@ -608,16 +772,16 @@ fn push_block_pdf_text(block: &Block, document: &Document, output: &mut String) 
                 let mut first_cell = true;
                 for cell in &row.cells {
                     if !first_cell {
-                        output.push_str("    ");
+                        output.push_plain("    ");
                     }
                     first_cell = false;
-                    let mut cell_text = String::new();
+                    let mut cell_text = PdfLinkedText::default();
                     for block in &cell.blocks {
-                        push_block_pdf_text(block, document, &mut cell_text);
+                        cell_text.append(&pdf_block_linked_text(block, document));
                     }
-                    output.push_str(cell_text.trim());
+                    output.append(&cell_text.trimmed());
                 }
-                output.push('\n');
+                output.push_plain("\n");
             }
         }
         Block::Image(image) => {
@@ -626,7 +790,7 @@ fn push_block_pdf_text(block: &Block, document: &Document, output: &mut String) 
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
             {
-                output.push_str(alt_text);
+                output.push_plain(alt_text);
             }
             if let Some(caption) = image
                 .presentation
@@ -634,19 +798,35 @@ fn push_block_pdf_text(block: &Block, document: &Document, output: &mut String) 
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
             {
-                if !output.is_empty() {
-                    output.push('\n');
+                if !output.runs.is_empty() {
+                    output.push_plain("\n");
                 }
-                output.push_str(caption);
+                output.push_plain(caption);
             }
         }
         Block::PageBreak => {}
     }
+    output
 }
 
 fn push_inlines_pdf_text(inlines: &[Inline], document: &Document, output: &mut String) {
     for inline in inlines {
         output.push_str(&inline_pdf_text(inline, document));
+    }
+}
+
+fn push_inlines_pdf_linked_text(
+    inlines: &[Inline],
+    document: &Document,
+    output: &mut PdfLinkedText,
+) {
+    for inline in inlines {
+        let text = inline_pdf_text(inline, document);
+        if let Some(uri) = inline.link.as_deref().and_then(sanitize_pdf_uri_href) {
+            output.push_uri(&text, uri);
+        } else {
+            output.push_plain(&text);
+        }
     }
 }
 
@@ -724,7 +904,9 @@ fn pdf_wrap_char_limit(page_setup: &PageSetup) -> usize {
 }
 
 fn pdf_wrap_char_limit_for_width(width: f32, font_size: f32, minimum: usize) -> usize {
-    (width / (font_size * 0.52)).floor().max(minimum as f32) as usize
+    (width / (font_size * PDF_TEXT_WIDTH_FACTOR))
+        .floor()
+        .max(minimum as f32) as usize
 }
 
 fn pdf_region_height(line_count: usize) -> f32 {
@@ -1518,6 +1700,19 @@ fn sanitize_href(href: &str) -> Option<&str> {
     }
 }
 
+fn sanitize_pdf_uri_href(href: &str) -> Option<&str> {
+    let safe_href = sanitize_href(href)?;
+    if safe_href.starts_with('#')
+        || safe_href.len() > PDF_MAX_URI_BYTES
+        || safe_href
+            .chars()
+            .any(|ch| ch.is_ascii_control() || ch.is_whitespace())
+    {
+        return None;
+    }
+    Some(safe_href)
+}
+
 fn bookmark_html_attr(bookmark_id: Option<&str>) -> String {
     let Some(bookmark_id) = bookmark_id.and_then(sanitize_bookmark_id) else {
         return String::new();
@@ -1604,6 +1799,136 @@ fn wrap_pdf_line(line: &str, limit: usize) -> Vec<String> {
     chunks
 }
 
+fn wrap_pdf_linked_line(line: &PdfLinkedText, limit: usize) -> Vec<PdfLinkedLine> {
+    let limit = limit.max(1);
+    let mut words: Vec<Vec<PdfLinkedChar>> = Vec::new();
+    let mut current_word = Vec::new();
+
+    for linked_char in line.to_chars() {
+        if linked_char.ch.is_whitespace() {
+            if !current_word.is_empty() {
+                words.push(current_word);
+                current_word = Vec::new();
+            }
+        } else {
+            current_word.push(linked_char);
+        }
+    }
+    if !current_word.is_empty() {
+        words.push(current_word);
+    }
+    if words.is_empty() {
+        return vec![empty_pdf_linked_line()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = Vec::new();
+    for word in words {
+        let word_len = word.len();
+        if word_len > limit {
+            if !current.is_empty() {
+                lines.push(pdf_linked_line_from_chars(current));
+                current = Vec::new();
+            }
+
+            let mut start = 0;
+            while start < word.len() {
+                let end = (start + limit).min(word.len());
+                let chunk = word[start..end].to_vec();
+                if end == word.len() {
+                    current = chunk;
+                } else {
+                    lines.push(pdf_linked_line_from_chars(chunk));
+                }
+                start = end;
+            }
+        } else if current.is_empty() {
+            current = word;
+        } else if current.len() + 1 + word_len <= limit {
+            let space_uri = {
+                let last_uri = current
+                    .last()
+                    .and_then(|linked_char| linked_char.uri.as_deref());
+                let first_uri = word
+                    .first()
+                    .and_then(|linked_char| linked_char.uri.as_deref());
+                if last_uri.is_some() && last_uri == first_uri {
+                    last_uri.map(str::to_string)
+                } else {
+                    None
+                }
+            };
+            current.push(PdfLinkedChar {
+                ch: ' ',
+                uri: space_uri,
+            });
+            current.extend(word);
+        } else {
+            lines.push(pdf_linked_line_from_chars(current));
+            current = word;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(pdf_linked_line_from_chars(current));
+    }
+    if lines.is_empty() {
+        lines.push(empty_pdf_linked_line());
+    }
+    lines
+}
+
+fn wrap_pdf_linked_text_lines(text: &PdfLinkedText, limit: usize) -> Vec<PdfLinkedLine> {
+    let mut lines = Vec::new();
+    for line in text.split_lines() {
+        lines.extend(wrap_pdf_linked_line(&line, limit));
+    }
+    if lines.is_empty() {
+        lines.push(empty_pdf_linked_line());
+    }
+    lines
+}
+
+fn empty_pdf_linked_line() -> PdfLinkedLine {
+    PdfLinkedLine {
+        text: String::new(),
+        links: Vec::new(),
+    }
+}
+
+fn pdf_linked_line_from_chars(chars: Vec<PdfLinkedChar>) -> PdfLinkedLine {
+    let mut text = String::new();
+    let mut links = Vec::new();
+    let mut active_uri: Option<String> = None;
+    let mut active_start = 0;
+
+    for (index, linked_char) in chars.iter().enumerate() {
+        if linked_char.uri != active_uri {
+            if let Some(uri) = active_uri.take() {
+                links.push(PdfLineLink {
+                    start: active_start,
+                    end: index,
+                    uri,
+                });
+            }
+            if let Some(uri) = linked_char.uri.clone() {
+                active_uri = Some(uri);
+                active_start = index;
+            }
+        }
+        text.push(linked_char.ch);
+    }
+
+    if let Some(uri) = active_uri {
+        links.push(PdfLineLink {
+            start: active_start,
+            end: chars.len(),
+            uri,
+        });
+    }
+
+    PdfLinkedLine { text, links }
+}
+
 fn wrap_pdf_text_lines(text: &str, limit: usize) -> Vec<String> {
     let mut lines = Vec::new();
     for line in text.lines() {
@@ -1622,13 +1947,13 @@ fn layout_pdf_table_row(row: &PdfProjectedTableRow, content_width: f32) -> PdfTa
     let max_chars = pdf_wrap_char_limit_for_width(text_width, PDF_TABLE_FONT_SIZE, 6);
     let cells = if row.cells.is_empty() {
         vec![PdfTableCellLayout {
-            lines: vec![String::new()],
+            lines: vec![empty_pdf_linked_line()],
         }]
     } else {
         row.cells
             .iter()
             .map(|text| PdfTableCellLayout {
-                lines: wrap_pdf_text_lines(text, max_chars),
+                lines: wrap_pdf_linked_text_lines(text, max_chars),
             })
             .collect()
     };
@@ -1759,6 +2084,7 @@ fn build_pdf(document: &Document, pages: &[PdfPage], total_pages: usize) -> Vec<
     let mut objects = Vec::new();
     let font_object_number = 3;
     let mut kids = Vec::new();
+    let mut remaining_document_annotations = PDF_MAX_LINK_ANNOTATIONS_PER_DOCUMENT;
 
     objects.push("<< /Type /Catalog /Pages 2 0 R >>".to_string());
     objects.push(String::new());
@@ -1767,18 +2093,37 @@ fn build_pdf(document: &Document, pages: &[PdfPage], total_pages: usize) -> Vec<
     for page in pages {
         let page_object_number = objects.len() + 1;
         let content_object_number = page_object_number + 1;
+        let page_annotation_limit =
+            remaining_document_annotations.min(PDF_MAX_LINK_ANNOTATIONS_PER_PAGE);
+        let rendered = render_pdf_page(document, page, total_pages, page_annotation_limit);
+        remaining_document_annotations =
+            remaining_document_annotations.saturating_sub(rendered.annotations.len());
+        let first_annotation_object_number = content_object_number + 1;
+        let annotation_refs = rendered
+            .annotations
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format!("{} 0 R", first_annotation_object_number + index))
+            .collect::<Vec<_>>();
+        let annotations_entry = if annotation_refs.is_empty() {
+            String::new()
+        } else {
+            format!(" /Annots [{}]", annotation_refs.join(" "))
+        };
         kids.push(format!("{page_object_number} 0 R"));
         let page_width = mm_to_points(page.page_setup.width_mm);
         let page_height = mm_to_points(page.page_setup.height_mm);
         objects.push(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.1} {page_height:.1}] /Resources << /Font << /F1 {font_object_number} 0 R >> >> /Contents {content_object_number} 0 R >>"
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.1} {page_height:.1}] /Resources << /Font << /F1 {font_object_number} 0 R >> >> /Contents {content_object_number} 0 R{annotations_entry} >>"
         ));
-        let stream = pdf_page_stream(document, page, total_pages);
         objects.push(format!(
             "<< /Length {} >>\nstream\n{}\nendstream",
-            stream.len(),
-            stream
+            rendered.stream.len(),
+            rendered.stream
         ));
+        for annotation in rendered.annotations {
+            objects.push(pdf_link_annotation_object(&annotation));
+        }
     }
 
     objects[1] = format!(
@@ -1807,7 +2152,12 @@ fn build_pdf(document: &Document, pages: &[PdfPage], total_pages: usize) -> Vec<
     pdf.into_bytes()
 }
 
-fn pdf_page_stream(document: &Document, page: &PdfPage, total_pages: usize) -> String {
+fn render_pdf_page(
+    document: &Document,
+    page: &PdfPage,
+    total_pages: usize,
+    annotation_limit: usize,
+) -> PdfRenderedPage {
     let page_width = mm_to_points(page.page_setup.width_mm);
     let page_height = mm_to_points(page.page_setup.height_mm);
     let margin_left = mm_to_points(page.page_setup.margin_left_mm).max(PDF_MIN_MARGIN_POINTS);
@@ -1841,6 +2191,8 @@ fn pdf_page_stream(document: &Document, page: &PdfPage, total_pages: usize) -> S
         (margin_bottom + footer_height - PDF_REGION_LEADING).max(PDF_MIN_MARGIN_POINTS / 2.0);
 
     let mut stream = String::new();
+    let mut annotations = Vec::new();
+    let mut remaining_annotations = annotation_limit;
     if !header_lines.is_empty() {
         push_pdf_text_block(
             &mut stream,
@@ -1861,7 +2213,14 @@ fn pdf_page_stream(document: &Document, page: &PdfPage, total_pages: usize) -> S
         content_width,
     };
     for item in &page.body_items {
-        push_pdf_body_item_stream(&mut stream, &render_context, &mut cursor_y, item);
+        push_pdf_body_item_stream(
+            &mut stream,
+            &render_context,
+            &mut cursor_y,
+            item,
+            &mut annotations,
+            &mut remaining_annotations,
+        );
     }
 
     if !footer_lines.is_empty() {
@@ -1876,9 +2235,15 @@ fn pdf_page_stream(document: &Document, page: &PdfPage, total_pages: usize) -> S
     }
 
     if page_width > 0.0 {
-        stream
+        PdfRenderedPage {
+            stream,
+            annotations,
+        }
     } else {
-        String::new()
+        PdfRenderedPage {
+            stream: String::new(),
+            annotations: Vec::new(),
+        }
     }
 }
 
@@ -1887,22 +2252,28 @@ fn push_pdf_body_item_stream(
     context: &PdfPageRenderContext<'_>,
     cursor_y: &mut f32,
     item: &PdfPageBodyItem,
+    annotations: &mut Vec<PdfLinkAnnotation>,
+    remaining_annotations: &mut usize,
 ) {
     match item {
         PdfPageBodyItem::TextLine(line) => {
-            let resolved = resolve_pdf_page_fields(
+            let resolved = resolve_pdf_linked_line(
                 line,
                 context.page.page_number,
                 context.total_pages,
                 context.document,
             );
-            push_pdf_text_block(
+            push_pdf_linked_text_block(
                 stream,
                 PDF_FONT_SIZE,
                 PDF_LEADING,
                 context.margin_left,
                 *cursor_y,
                 &[resolved],
+                &mut PdfAnnotationCollector {
+                    annotations,
+                    remaining: remaining_annotations,
+                },
             );
             *cursor_y -= PDF_LEADING;
         }
@@ -1924,13 +2295,24 @@ fn push_pdf_body_item_stream(
                 let x =
                     context.margin_left + cell_index as f32 * cell_width + PDF_TABLE_CELL_PADDING;
                 let y = top_y - PDF_TABLE_CELL_PADDING - PDF_TABLE_FONT_SIZE;
-                let lines = resolve_pdf_text_lines(
+                let lines = resolve_pdf_linked_lines(
                     &cell.lines,
                     context.page.page_number,
                     context.total_pages,
                     context.document,
                 );
-                push_pdf_text_block(stream, PDF_TABLE_FONT_SIZE, PDF_TABLE_LEADING, x, y, &lines);
+                push_pdf_linked_text_block(
+                    stream,
+                    PDF_TABLE_FONT_SIZE,
+                    PDF_TABLE_LEADING,
+                    x,
+                    y,
+                    &lines,
+                    &mut PdfAnnotationCollector {
+                        annotations,
+                        remaining: remaining_annotations,
+                    },
+                );
             }
             *cursor_y -= row.block_height;
         }
@@ -1979,6 +2361,36 @@ fn resolve_pdf_text_lines(
         .collect()
 }
 
+fn resolve_pdf_linked_lines(
+    lines: &[PdfLinkedLine],
+    page_number: usize,
+    total_pages: usize,
+    document: &Document,
+) -> Vec<PdfLinkedLine> {
+    lines
+        .iter()
+        .map(|line| resolve_pdf_linked_line(line, page_number, total_pages, document))
+        .collect()
+}
+
+fn resolve_pdf_linked_line(
+    line: &PdfLinkedLine,
+    page_number: usize,
+    total_pages: usize,
+    document: &Document,
+) -> PdfLinkedLine {
+    let resolved = resolve_pdf_page_fields(&line.text, page_number, total_pages, document);
+    let links = if resolved == line.text {
+        line.links.clone()
+    } else {
+        Vec::new()
+    };
+    PdfLinkedLine {
+        text: resolved,
+        links,
+    }
+}
+
 fn pdf_aligned_x(
     margin_left: f32,
     content_width: f32,
@@ -2009,6 +2421,80 @@ fn push_pdf_text_block(
         stream.push_str(") Tj T*\n");
     }
     stream.push_str("ET\n");
+}
+
+fn push_pdf_linked_text_block(
+    stream: &mut String,
+    font_size: f32,
+    leading: f32,
+    x: f32,
+    y: f32,
+    lines: &[PdfLinkedLine],
+    annotation_collector: &mut PdfAnnotationCollector<'_>,
+) {
+    stream.push_str(&format!(
+        "BT /F1 {font_size:.1} Tf {x:.1} {y:.1} Td {leading:.1} TL\n"
+    ));
+    for (line_index, line) in lines.iter().enumerate() {
+        let baseline_y = y - line_index as f32 * leading;
+        push_pdf_line_annotations(
+            line,
+            font_size,
+            x,
+            baseline_y,
+            annotation_collector.annotations,
+            annotation_collector.remaining,
+        );
+        stream.push('(');
+        stream.push_str(&escape_pdf_text(&line.text));
+        stream.push_str(") Tj T*\n");
+    }
+    stream.push_str("ET\n");
+}
+
+fn push_pdf_line_annotations(
+    line: &PdfLinkedLine,
+    font_size: f32,
+    x: f32,
+    baseline_y: f32,
+    annotations: &mut Vec<PdfLinkAnnotation>,
+    remaining_annotations: &mut usize,
+) {
+    if *remaining_annotations == 0 {
+        return;
+    }
+    let char_width = font_size * PDF_TEXT_WIDTH_FACTOR;
+    for link in &line.links {
+        if *remaining_annotations == 0 {
+            break;
+        }
+        if link.start >= link.end {
+            continue;
+        }
+        let left = x + link.start as f32 * char_width;
+        let right = (x + link.end as f32 * char_width).max(left + font_size * 0.5);
+        annotations.push(PdfLinkAnnotation {
+            rect: PdfRect {
+                left,
+                bottom: baseline_y - font_size * 0.25,
+                right,
+                top: baseline_y + font_size,
+            },
+            uri: link.uri.clone(),
+        });
+        *remaining_annotations -= 1;
+    }
+}
+
+fn pdf_link_annotation_object(annotation: &PdfLinkAnnotation) -> String {
+    format!(
+        "<< /Type /Annot /Subtype /Link /Rect [{:.1} {:.1} {:.1} {:.1}] /Border [0 0 0] /A << /S /URI /URI ({}) >> >>",
+        annotation.rect.left,
+        annotation.rect.bottom,
+        annotation.rect.right,
+        annotation.rect.top,
+        escape_pdf_text(&annotation.uri)
+    )
 }
 
 fn mm_to_points(value: u16) -> f32 {
@@ -2484,6 +2970,262 @@ mod tests {
     }
 
     #[test]
+    fn pdf_export_emits_uri_annotations_for_safe_external_text_links() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![linked_inline("Website", "https://example.test/report")],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: None,
+                level: 2,
+                inlines: vec![linked_inline("Docs", "http://docs.example.test")],
+            }),
+            Block::List(ListBlock {
+                definition_id: "unordered".to_string(),
+                items: vec![ListItem {
+                    level: 0,
+                    blocks: vec![Block::Paragraph(Paragraph {
+                        bookmark_id: None,
+                        style: "body".into(),
+                        format: Default::default(),
+                        inlines: vec![linked_inline("Email", "mailto:team@example.test")],
+                    })],
+                }],
+            }),
+            Block::Table(Table {
+                rows: vec![TableRow {
+                    cells: vec![TableCell {
+                        blocks: vec![Block::Paragraph(Paragraph {
+                            bookmark_id: None,
+                            style: "body".into(),
+                            format: Default::default(),
+                            inlines: vec![linked_inline("Cell link", "https://example.test/cell")],
+                        })],
+                    }],
+                }],
+            }),
+        ];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_link_annotation_count(&text), 4);
+        assert!(text.contains("/Annots ["));
+        assert!(text.contains("/Subtype /Link"));
+        assert!(text.contains("/S /URI"));
+        assert!(text.contains("/URI (https://example.test/report)"));
+        assert!(text.contains("/URI (http://docs.example.test)"));
+        assert!(text.contains("/URI (mailto:team@example.test)"));
+        assert!(text.contains("/URI (https://example.test/cell)"));
+        assert!(pdf_contains(&pdf, "Website"));
+        assert!(pdf_contains(&pdf, "Docs"));
+        assert!(pdf_contains(&pdf, "Email"));
+        assert!(pdf_contains(&pdf, "Cell link"));
+    }
+
+    #[test]
+    fn pdf_export_bounds_uri_annotations_to_text_run_rectangles() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: "body".into(),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Before "),
+                linked_inline("Website", "https://example.test/report"),
+                Inline::text(" after"),
+            ],
+        })];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+        let rects = pdf_link_annotation_rects(&text);
+
+        assert_eq!(rects.len(), 1);
+        let [left, bottom, right, top] = rects[0];
+        let width = right - left;
+        let height = top - bottom;
+        assert!(left > 80.0, "link rect should start near linked text");
+        assert!(right < 180.0, "link rect should not span the page");
+        assert!(
+            (35.0..=70.0).contains(&width),
+            "link rect width should roughly match the linked label"
+        );
+        assert!(
+            (12.0..=18.0).contains(&height),
+            "link rect height should roughly match one text line"
+        );
+        assert!(bottom > 0.0);
+        assert!(top < mm_to_points(document.sections[0].page.height_mm));
+    }
+
+    #[test]
+    fn pdf_export_omits_unsafe_and_internal_link_annotations_without_leaking_hrefs() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-safe".to_string()),
+                level: 2,
+                inlines: vec![Inline::text("Target")],
+            }),
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![
+                    linked_inline("Script label", "javascript:alert(1)"),
+                    Inline::text(" "),
+                    linked_inline("File label", "file:///local/private-report.pdf"),
+                    Inline::text(" "),
+                    linked_inline("Path label", "local/private-report.pdf"),
+                    Inline::text(" "),
+                    linked_inline("Internal label", "#bm-safe"),
+                ],
+            }),
+        ];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_link_annotation_count(&text), 0);
+        assert!(!text.contains("/Annots ["));
+        assert!(!text.contains("javascript:"));
+        assert!(!text.contains("file://"));
+        assert!(!text.contains("local/private-report.pdf"));
+        assert!(!text.contains("#bm-safe"));
+        assert!(pdf_contains(
+            &pdf,
+            "Script label File label Path label Internal label"
+        ));
+    }
+
+    #[test]
+    fn pdf_export_bounds_link_annotations_per_page() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page = PageSetup {
+            width_mm: 210,
+            height_mm: 1000,
+            margin_top_mm: 10,
+            margin_right_mm: 10,
+            margin_bottom_mm: 10,
+            margin_left_mm: 10,
+        };
+        document.sections[0].blocks = (0..(PDF_MAX_LINK_ANNOTATIONS_PER_PAGE + 10))
+            .map(|index| {
+                Block::Paragraph(Paragraph {
+                    bookmark_id: None,
+                    style: "body".into(),
+                    format: Default::default(),
+                    inlines: vec![linked_inline(
+                        format!("Link {index}"),
+                        format!("https://example.test/{index}"),
+                    )],
+                })
+            })
+            .collect();
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(
+            pdf_link_annotation_count(&text),
+            PDF_MAX_LINK_ANNOTATIONS_PER_PAGE
+        );
+        assert!(text.contains("/URI (https://example.test/0)"));
+        assert!(text.contains(&format!(
+            "/URI (https://example.test/{})",
+            PDF_MAX_LINK_ANNOTATIONS_PER_PAGE - 1
+        )));
+        assert!(!text.contains(&format!(
+            "/URI (https://example.test/{})",
+            PDF_MAX_LINK_ANNOTATIONS_PER_PAGE
+        )));
+        assert!(pdf_contains(
+            &pdf,
+            &format!("Link {}", PDF_MAX_LINK_ANNOTATIONS_PER_PAGE)
+        ));
+    }
+
+    #[test]
+    fn pdf_export_bounds_link_annotations_per_document() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = (0..(PDF_MAX_LINK_ANNOTATIONS_PER_DOCUMENT + 25))
+            .map(|index| {
+                Block::Paragraph(Paragraph {
+                    bookmark_id: None,
+                    style: "body".into(),
+                    format: Default::default(),
+                    inlines: vec![linked_inline(
+                        format!("Doc link {index}"),
+                        format!("https://example.test/document/{index}"),
+                    )],
+                })
+            })
+            .collect();
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(
+            pdf_link_annotation_count(&text),
+            PDF_MAX_LINK_ANNOTATIONS_PER_DOCUMENT
+        );
+        assert!(text.contains("/URI (https://example.test/document/0)"));
+        assert!(text.contains(&format!(
+            "/URI (https://example.test/document/{})",
+            PDF_MAX_LINK_ANNOTATIONS_PER_DOCUMENT - 1
+        )));
+        assert!(!text.contains(&format!(
+            "/URI (https://example.test/document/{})",
+            PDF_MAX_LINK_ANNOTATIONS_PER_DOCUMENT
+        )));
+        assert!(pdf_contains(
+            &pdf,
+            &format!("Doc link {}", PDF_MAX_LINK_ANNOTATIONS_PER_DOCUMENT)
+        ));
+    }
+
+    #[test]
+    fn pdf_export_page_range_keeps_annotations_for_selected_pages() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![linked_inline("Page one link", "https://example.test/one")],
+            }),
+            Block::PageBreak,
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![linked_inline("Page two link", "https://example.test/two")],
+            }),
+        ];
+
+        let pdf = export_pdf_with_options(
+            &document,
+            PdfExportOptions {
+                page_range: Some(PdfPageRange { start: 2, end: 2 }),
+            },
+        )
+        .expect("valid range should export");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_page_object_count(&text), 1);
+        assert_eq!(pdf_link_annotation_count(&text), 1);
+        assert!(!text.contains("https://example.test/one"));
+        assert!(text.contains("/URI (https://example.test/two)"));
+        assert!(!pdf_contains(&pdf, "Page one link"));
+        assert!(pdf_contains(&pdf, "Page two link"));
+    }
+
+    #[test]
     fn pdf_export_paginates_into_multiple_page_objects() {
         let mut document = Document::new_untitled();
         document.sections[0].page = compact_test_page();
@@ -2907,8 +3649,45 @@ mod tests {
         })
     }
 
+    fn linked_inline(text: impl Into<String>, href: impl Into<String>) -> Inline {
+        Inline {
+            text: text.into(),
+            marks: Vec::new(),
+            link: Some(href.into()),
+            comment_ids: Vec::new(),
+            style: Default::default(),
+            field: None,
+            note_reference: None,
+            tracked_change: None,
+        }
+    }
+
     fn pdf_page_object_count(pdf: &str) -> usize {
         pdf.matches("/Type /Page ").count()
+    }
+
+    fn pdf_link_annotation_count(pdf: &str) -> usize {
+        pdf.matches("/Subtype /Link").count()
+    }
+
+    fn pdf_link_annotation_rects(pdf: &str) -> Vec<[f32; 4]> {
+        let mut rects = Vec::new();
+        let mut remaining = pdf;
+        while let Some(index) = remaining.find("/Rect [") {
+            remaining = &remaining[index + "/Rect [".len()..];
+            let Some(end) = remaining.find(']') else {
+                break;
+            };
+            let numbers = remaining[..end]
+                .split_whitespace()
+                .filter_map(|part| part.parse::<f32>().ok())
+                .collect::<Vec<_>>();
+            if numbers.len() == 4 {
+                rects.push([numbers[0], numbers[1], numbers[2], numbers[3]]);
+            }
+            remaining = &remaining[end + 1..];
+        }
+        rects
     }
 
     fn pdf_contains(pdf: &[u8], needle: &str) -> bool {
