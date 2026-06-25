@@ -95,6 +95,13 @@
     type ExpandedDocumentStats
   } from './lib/documentStats';
   import {
+    buildDocumentInspectorSummary,
+    type DocumentInspectorLocationStatus,
+    type DocumentInspectorPrivacyWarningKind,
+    type DocumentInspectorSavedStatus,
+    type DocumentInspectorSummary
+  } from './lib/documentInspector';
+  import {
     clampEditorZoom,
     editorViewportStyle,
     editorZoomStep,
@@ -267,6 +274,7 @@
     y: number;
   } | null>(null);
   let statsPanelOpen = $state(false);
+  let inspectorPanelOpen = $state(false);
   let ignoredSpellWords = new Set<string>();
   let ignoredSpellInstances = new Set<string>();
   let pageSetup = $state<PageSetup>(defaultPageSetup());
@@ -323,6 +331,15 @@
       plainText,
       selectionWordCount,
       pageSetup
+    })
+  );
+  let inspectorSummary = $derived<DocumentInspectorSummary>(
+    buildDocumentInspectorSummary({
+      coreStats: stats,
+      document: documentState,
+      fileState,
+      plainText,
+      selectionWordCount
     })
   );
   let fitWidthZoom = $derived(
@@ -1501,6 +1518,25 @@
     exportMenuOpen = false;
   }
 
+  function toggleDocumentInspector() {
+    inspectorPanelOpen = !inspectorPanelOpen;
+    if (inspectorPanelOpen) {
+      statsPanelOpen = false;
+    }
+  }
+
+  function openDocumentInspector() {
+    inspectorPanelOpen = true;
+    statsPanelOpen = false;
+  }
+
+  function toggleStatsPanel() {
+    statsPanelOpen = !statsPanelOpen;
+    if (statsPanelOpen) {
+      inspectorPanelOpen = false;
+    }
+  }
+
   function toggleFileMenu() {
     fileMenuOpen = !fileMenuOpen;
     if (!fileMenuOpen) {
@@ -1516,6 +1552,36 @@
   function selectView(viewId: ViewId) {
     activeView = viewId;
     closeFileMenu();
+  }
+
+  function inspectorSavedStatusLabel(status: DocumentInspectorSavedStatus) {
+    switch (status) {
+      case 'saved':
+        return tr('inspectorSaved');
+      case 'saved_with_unsaved_changes':
+        return tr('inspectorSavedWithUnsavedChanges');
+      case 'unsaved':
+        return tr('inspectorUnsaved');
+    }
+  }
+
+  function inspectorLocationStatusLabel(status: DocumentInspectorLocationStatus) {
+    return status === 'backend_only' ? tr('inspectorBackendOnlyLocation') : tr('inspectorNoSavedLocation');
+  }
+
+  function inspectorPrivacyWarningLabel(kind: DocumentInspectorPrivacyWarningKind) {
+    switch (kind) {
+      case 'comments':
+        return tr('inspectorPrivacyComments');
+      case 'tracked_changes':
+        return tr('inspectorPrivacyTrackedChanges');
+      case 'metadata':
+        return tr('inspectorPrivacyMetadata');
+      case 'recovery':
+        return tr('inspectorPrivacyRecovery');
+      case 'unsaved':
+        return tr('inspectorPrivacyUnsaved');
+    }
   }
 
   function setEditorViewMode(mode: EditorViewMode) {
@@ -1978,6 +2044,12 @@
             <span class="menu-glyph glyph-autosave" aria-hidden="true"></span>
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('autosave')}</span>
+            </span>
+          </button>
+          <button class="menu-command" type="button" onclick={() => runFileMenuAction(openDocumentInspector)}>
+            <span class="menu-glyph glyph-inspector" aria-hidden="true"></span>
+            <span class="menu-command-main">
+              <span class="menu-command-label">{tr('documentInspector')}</span>
             </span>
           </button>
 
@@ -3333,13 +3405,64 @@
         aria-expanded={statsPanelOpen}
         class="bottom-action"
         type="button"
-        onclick={() => (statsPanelOpen = !statsPanelOpen)}
+        onclick={toggleStatsPanel}
       >
         {tr('stats')}
+      </button>
+      <button
+        aria-expanded={inspectorPanelOpen}
+        class="bottom-action"
+        type="button"
+        onclick={toggleDocumentInspector}
+      >
+        {tr('documentInspector')}
       </button>
       <span>{tr('words')}: <strong>{expandedStats.wordCount}</strong></span>
       <span>{tr('selectionWords')}: <strong>{expandedStats.selectionWordCount}</strong></span>
       <span>{tr('estimatedPages')}: <strong>{expandedStats.estimatedPageCount}</strong></span>
+      {#if inspectorPanelOpen}
+        <div class="status-panel inspector-panel" role="dialog" aria-label={tr('documentInspector')}>
+          <div class="status-panel-heading">
+            <h2>{tr('documentInspector')}</h2>
+            <span>{inspectorSummary.format}</span>
+          </div>
+          <dl>
+            <div><dt>{tr('documentFormat')}</dt><dd>{inspectorSummary.format}</dd></div>
+            <div><dt>{tr('savedStatus')}</dt><dd>{inspectorSavedStatusLabel(inspectorSummary.savedStatus)}</dd></div>
+            <div><dt>{tr('savedLocation')}</dt><dd>{inspectorLocationStatusLabel(inspectorSummary.locationStatus)}</dd></div>
+            <div><dt>{tr('created')}</dt><dd>{inspectorSummary.createdAt || tr('notAvailable')}</dd></div>
+            <div><dt>{tr('modified')}</dt><dd>{inspectorSummary.modifiedAt || tr('notAvailable')}</dd></div>
+            <div><dt>{tr('pageSize')}</dt><dd>{inspectorSummary.pageSize || tr('notAvailable')}</dd></div>
+            <div><dt>{tr('words')}</dt><dd>{inspectorSummary.wordCount}</dd></div>
+            <div><dt>{tr('charactersWithSpaces')}</dt><dd>{inspectorSummary.characterCount}</dd></div>
+            <div><dt>{tr('charactersNoSpaces')}</dt><dd>{inspectorSummary.characterCountWithoutSpaces}</dd></div>
+            <div><dt>{tr('paragraphs')}</dt><dd>{inspectorSummary.paragraphCount}</dd></div>
+            <div><dt>{tr('blocks')}</dt><dd>{inspectorSummary.blockCount}</dd></div>
+            <div><dt>{tr('estimatedPages')}</dt><dd>{inspectorSummary.estimatedPageCount}</dd></div>
+            <div><dt>{tr('selectionWords')}</dt><dd>{inspectorSummary.selectionWordCount}</dd></div>
+            <div><dt>{tr('embeddedImages')}</dt><dd>{inspectorSummary.embeddedImageCount}</dd></div>
+            <div><dt>{tr('embeddedImageBytes')}</dt><dd>{inspectorSummary.embeddedImageBytesLabel}</dd></div>
+            <div><dt>{tr('comments')}</dt><dd>{inspectorSummary.commentCount}</dd></div>
+            <div><dt>{tr('unresolvedComments')}</dt><dd>{inspectorSummary.unresolvedCommentCount}</dd></div>
+            <div><dt>{tr('trackChangesStatus')}</dt><dd>{inspectorSummary.trackChangesRecording ? tr('recording') : tr('notRecording')}</dd></div>
+            <div><dt>{tr('trackedChanges')}</dt><dd>{inspectorSummary.trackedChangeCount}</dd></div>
+            <div><dt>{tr('footnotes')}</dt><dd>{inspectorSummary.footnoteCount}</dd></div>
+            <div><dt>{tr('endnotes')}</dt><dd>{inspectorSummary.endnoteCount}</dd></div>
+          </dl>
+          <section class="inspector-warning-section" aria-label={tr('privacyWarnings')}>
+            <h3>{tr('privacyWarnings')}</h3>
+            {#if inspectorSummary.privacyWarnings.length > 0}
+              <ul class="privacy-warning-list">
+                {#each inspectorSummary.privacyWarnings as warning}
+                  <li>{inspectorPrivacyWarningLabel(warning)}</li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="status-panel-note">{tr('noPrivacyWarnings')}</p>
+            {/if}
+          </section>
+        </div>
+      {/if}
       {#if statsPanelOpen}
         <div class="status-panel stats-panel" role="dialog" aria-label={tr('documentStatistics')}>
           <p class="status-panel-note">{tr('statsEstimateNote')}</p>

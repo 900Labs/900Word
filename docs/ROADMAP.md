@@ -272,3 +272,13 @@ Status: complete.
 - Bound recovery retention to 3 snapshots per document and 20 snapshots overall.
 - Preserve list, recover, and discard compatibility for legacy single-file recovery tokens while writing only the new versioned snapshot shape.
 - Keep the feature local-only with no cloud, accounts, telemetry, network behavior, AI services, encryption claims, import/export changes, or document metadata changes.
+
+## Sprint 030: Document Inspector MVP
+
+Status: complete.
+
+- Add a lightweight Document Inspector reachable from the File menu and bottom toolbar.
+- Show canonical `.odt` format, generic saved-location state, saved/unsaved status, created/modified metadata timestamps, page size, core stats, embedded image count/bytes, comments, unresolved comments, track changes status/count, footnotes, and endnotes.
+- Add local privacy warnings for comments, tracked changes, document title metadata, recovery drafts, and unsaved state.
+- Keep paths, private filenames, source image filenames, usernames, hostnames, recovery locations, and document text out of inspector summaries.
+- Keep the feature local-only and frontend-only with no cloud, accounts, telemetry, network behavior, heavy dependencies, import/export changes, or saved metadata changes.

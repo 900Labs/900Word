@@ -36,6 +36,8 @@ Sprint 027 document statistics are derived in the desktop UI from existing docum
 
 Sprint 028 accessibility and low-resource settings are local desktop UI preferences. They control toolbar sizing, app-controlled motion, and nonessential automatic UI surfaces only. They are not written into document content, saved packages, exports, document metadata, logs, or remote services.
 
+Sprint 030 document inspector summaries are derived in the desktop UI from existing local document state, backend count summaries, and generic file-session state. The frontend inspector shows aggregate format, saved/unsaved, document-created and document-modified metadata timestamps, page, stats, embedded-image-byte, review, note, and privacy-warning indicators only. Saved paths remain backend-only, and the inspector does not render private local paths, private filenames, source image filenames, operating-system usernames, hostnames, account identifiers, contacts, cloud identity, recovery locations, network state, external services, or document text beyond already visible editor content.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -63,6 +65,8 @@ Sprint 026 does not add ODT, TXT, HTML, print HTML, or PDF metadata. Text produc
 Sprint 027 does not add ODT, TXT, HTML, print HTML, PDF, or app metadata. The expanded stats panel is an ephemeral desktop UI projection and does not change saved document packages or exported files.
 
 Sprint 028 does not add ODT, TXT, HTML, print HTML, PDF, or app metadata. The accessibility and low-resource controls remain desktop UI settings and do not change saved document packages or exported files.
+
+Sprint 030 does not add ODT, TXT, HTML, print HTML, PDF, or app metadata. The Document Inspector is an ephemeral desktop UI projection and does not change saved document packages or exported files.
 
 ## Network
 

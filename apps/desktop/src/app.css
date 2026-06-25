@@ -294,6 +294,13 @@ select:focus-visible {
   content: "A";
 }
 
+.glyph-inspector::before {
+  content: "i";
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1rem;
+  font-style: italic;
+}
+
 .glyph-image::before {
   content: "I";
 }
@@ -1909,6 +1916,33 @@ select:focus-visible {
   width: min(30rem, calc(100vw - 1rem));
 }
 
+.inspector-panel {
+  width: min(36rem, calc(100vw - 1rem));
+}
+
+.status-panel-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.7rem;
+  margin-bottom: 0.55rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid #d9dfdc;
+}
+
+.status-panel-heading h2 {
+  margin: 0;
+  color: #20242c;
+  font-size: 0.92rem;
+}
+
+.status-panel-heading span {
+  color: #59636e;
+  font-size: 0.76rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .status-panel-note {
   margin: 0 0 0.55rem;
   color: #59636e;
@@ -1937,6 +1971,37 @@ select:focus-visible {
   color: #20242c;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
+}
+
+.inspector-warning-section {
+  margin-top: 0.65rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid #d9dfdc;
+}
+
+.inspector-warning-section h3 {
+  margin: 0 0 0.45rem;
+  color: #39434d;
+  font-size: 0.78rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.privacy-warning-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.privacy-warning-list li {
+  padding: 0.42rem 0.5rem;
+  border: 1px solid #d7c58f;
+  border-radius: 6px;
+  background: #fff8dd;
+  color: #5e4a09;
+  line-height: 1.35;
 }
 
 .print-frame {
