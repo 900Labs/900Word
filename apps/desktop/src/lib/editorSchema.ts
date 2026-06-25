@@ -215,12 +215,37 @@ const nodes: Record<string, NodeSpec> = {
     }
   },
   table: {
+    attrs: {
+      columnWidths: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !safeTableColumnWidths(value)) {
+            throw new RangeError('unsupported table column widths');
+          }
+        }
+      }
+    },
     content: 'table_row+',
     group: 'block',
     isolating: true,
-    parseDOM: [{ tag: 'table' }],
-    toDOM() {
-      return ['table', ['tbody', 0]];
+    parseDOM: [
+      {
+        tag: 'table',
+        getAttrs(node) {
+          return {
+            columnWidths: tableColumnWidthsAttr(node.getAttribute('data-column-widths'))
+          };
+        }
+      }
+    ],
+    toDOM(node) {
+      const columnWidths = normalizeTableColumnWidths(node.attrs.columnWidths);
+      return [
+        'table',
+        tableDomAttrs(columnWidths),
+        ...(columnWidths ? [['colgroup', ...columnWidths.map((width) => ['col', { style: `width:${tableColumnWidthPercent(width)}%` }])]] : []),
+        ['tbody', 0]
+      ];
     }
   },
   table_row: {
@@ -848,6 +873,52 @@ function blockBookmarkDomAttrs(attrs: Record<string, unknown>): Record<string, s
   }
   const bookmarkId = sanitizeBookmarkId(attrs.bookmarkId);
   return bookmarkId ? { id: bookmarkId, 'data-bookmark-id': bookmarkId } : {};
+}
+
+function tableDomAttrs(columnWidths: number[] | null): Record<string, string> {
+  if (!columnWidths) {
+    return {};
+  }
+  return {
+    'data-column-widths': columnWidths.join(','),
+    style: 'table-layout: fixed'
+  };
+}
+
+function tableColumnWidthsAttr(value: unknown): number[] | null {
+  if (typeof value !== 'string' || value.trim().length === 0 || value.length > 64) {
+    return null;
+  }
+  const widths = value.split(',').map((part) => {
+    if (!/^\d+$/.test(part)) {
+      return Number.NaN;
+    }
+    return Number(part);
+  });
+  return safeTableColumnWidths(widths) ? widths : null;
+}
+
+function normalizeTableColumnWidths(value: unknown): number[] | null {
+  return safeTableColumnWidths(value) ? [...value] : null;
+}
+
+function safeTableColumnWidths(value: unknown): value is number[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8) {
+    return false;
+  }
+  if (!value.every((width) => Number.isInteger(width))) {
+    return false;
+  }
+  if (value.length === 1) {
+    return value[0] === 1000;
+  }
+  const total = value.reduce((sum, width) => sum + width, 0);
+  return total === 1000 && value.every((width) => width >= 50 && width <= 950);
+}
+
+function tableColumnWidthPercent(width: number): string {
+  const percent = width / 10;
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(1);
 }
 
 function tableCellDomAttrs(attrs: Record<string, unknown>): Record<string, string> {

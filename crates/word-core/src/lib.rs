@@ -1095,6 +1095,8 @@ pub struct ListDefinition {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Table {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_widths: Vec<u16>,
     pub rows: Vec<TableRow>,
 }
 
@@ -1147,6 +1149,78 @@ pub fn sanitize_table_cell_background_color(value: &str) -> Option<String> {
 impl TableCellBorder {
     pub fn is_default(&self) -> bool {
         self == &Self::default()
+    }
+}
+
+pub const TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE: u16 = 1000;
+pub const MIN_TABLE_COLUMN_WIDTH_PER_MILLE: u16 = 50;
+pub const MAX_TABLE_COLUMN_WIDTH_PER_MILLE: u16 = 950;
+pub const MAX_TABLE_WIDTH_COLUMNS: usize = 8;
+
+impl Table {
+    pub fn editable_column_count(&self) -> Option<usize> {
+        let columns = self.rows.first()?.cells.len();
+        if columns == 0 || columns > MAX_TABLE_WIDTH_COLUMNS {
+            return None;
+        }
+        if self.rows.iter().any(|row| {
+            row.cells.len() != columns
+                || row.cells.iter().any(|cell| {
+                    cell.blocks.is_empty()
+                        || cell
+                            .blocks
+                            .iter()
+                            .any(|block| !editable_table_cell_block(block))
+                })
+        }) {
+            return None;
+        }
+        Some(columns)
+    }
+
+    pub fn sanitized_column_widths(&self) -> Option<Vec<u16>> {
+        sanitize_table_column_widths(&self.column_widths, self.editable_column_count()?)
+    }
+}
+
+pub fn sanitize_table_column_widths(widths: &[u16], column_count: usize) -> Option<Vec<u16>> {
+    if column_count == 0 || column_count > MAX_TABLE_WIDTH_COLUMNS || widths.len() != column_count {
+        return None;
+    }
+    if column_count == 1 {
+        return (widths[0] == TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE).then(|| widths.to_vec());
+    }
+    if widths.iter().any(|width| {
+        *width < MIN_TABLE_COLUMN_WIDTH_PER_MILLE || *width > MAX_TABLE_COLUMN_WIDTH_PER_MILLE
+    }) {
+        return None;
+    }
+    let total: u32 = widths.iter().map(|width| u32::from(*width)).sum();
+    (total == u32::from(TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE)).then(|| widths.to_vec())
+}
+
+pub fn equal_table_column_widths(column_count: usize) -> Option<Vec<u16>> {
+    if column_count == 0 || column_count > MAX_TABLE_WIDTH_COLUMNS {
+        return None;
+    }
+    let base = TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE / column_count as u16;
+    let remainder = TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE % column_count as u16;
+    Some(
+        (0..column_count)
+            .map(|index| base + u16::from((index as u16) < remainder))
+            .collect(),
+    )
+}
+
+fn editable_table_cell_block(block: &Block) -> bool {
+    match block {
+        Block::Paragraph(_) | Block::Heading(_) => true,
+        Block::List(list) => list.items.iter().all(|item| {
+            item.blocks
+                .iter()
+                .all(|block| matches!(block, Block::Paragraph(_) | Block::Heading(_)))
+        }),
+        Block::TableOfContents(_) | Block::Table(_) | Block::Image(_) | Block::PageBreak => false,
     }
 }
 
@@ -2226,6 +2300,18 @@ fn default_list_definitions() -> BTreeMap<String, ListDefinition> {
 mod tests {
     use super::*;
 
+    fn text_table_cell(text: &str) -> TableCell {
+        TableCell {
+            presentation: Default::default(),
+            blocks: vec![Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: StyleId::from("body"),
+                format: Default::default(),
+                inlines: vec![Inline::text(text)],
+            })],
+        }
+    }
+
     #[test]
     fn new_document_starts_with_empty_body_paragraph() {
         let document = Document::new_untitled();
@@ -2265,6 +2351,46 @@ mod tests {
             Some("#f1f5f9")
         );
         assert_eq!(sanitize_table_cell_background_color("red"), None);
+    }
+
+    #[test]
+    fn table_column_widths_are_bounded_and_backward_compatible() {
+        let parsed: Table =
+            serde_json::from_str(r#"{"rows":[]}"#).expect("missing widths should deserialize");
+        assert!(parsed.column_widths.is_empty());
+        let serialized = serde_json::to_string(&parsed).expect("table should serialize");
+        assert!(!serialized.contains("column_widths"));
+
+        let table = Table {
+            column_widths: vec![250, 750],
+            rows: vec![TableRow {
+                cells: vec![text_table_cell("A"), text_table_cell("B")],
+            }],
+        };
+        assert_eq!(table.editable_column_count(), Some(2));
+        assert_eq!(table.sanitized_column_widths(), Some(vec![250, 750]));
+
+        assert_eq!(sanitize_table_column_widths(&[960, 40], 2), None);
+        assert_eq!(sanitize_table_column_widths(&[250, 750, 0], 2), None);
+        assert_eq!(
+            sanitize_table_column_widths(&[333, 333, 334], 3),
+            Some(vec![333, 333, 334])
+        );
+        assert_eq!(equal_table_column_widths(3), Some(vec![334, 333, 333]));
+
+        let source_empty = Table {
+            column_widths: vec![500, 500],
+            rows: vec![TableRow {
+                cells: vec![
+                    TableCell {
+                        presentation: Default::default(),
+                        blocks: Vec::new(),
+                    },
+                    text_table_cell("B"),
+                ],
+            }],
+        };
+        assert_eq!(source_empty.sanitized_column_widths(), None);
     }
 
     #[test]

@@ -1114,6 +1114,7 @@ describe('documentToText', () => {
             {
               type: 'Table',
               value: {
+                column_widths: [250, 750],
                 rows: [
                   {
                     cells: [
@@ -1171,6 +1172,7 @@ describe('documentToText', () => {
       content: [
         {
           type: 'table',
+          attrs: { columnWidths: [250, 750] },
           content: [
             {
               type: 'table_row',
@@ -1245,6 +1247,96 @@ describe('documentToText', () => {
     expect(editorDocToWordCoreBlocks(editorDoc)).toEqual(document.sections[0].blocks);
     expect(documentProjectionWarnings(document)).toEqual([]);
     expect(canEditProjectedDocument(document)).toBe(true);
+  });
+
+  it('ignores invalid table column width metadata during projection sync', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Table',
+              value: {
+                column_widths: [900, 900],
+                rows: [
+                  {
+                    cells: [
+                      { blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'A', marks: [], link: null }] } }] },
+                      { blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'B', marks: [], link: null }] } }] }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+    const table = editorDoc.content[0];
+    if (table.type !== 'table') {
+      throw new Error('Expected table projection');
+    }
+
+    expect(table.attrs?.columnWidths).toBeUndefined();
+    expect(editorDocToWordCoreBlocks(editorDoc)[0]).toEqual({
+      type: 'Table',
+      value: {
+        rows: [
+          {
+            cells: [
+              { blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'A', marks: [], link: null }] } }] },
+              { blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'B', marks: [], link: null }] } }] }
+            ]
+          }
+        ]
+      }
+    });
+  });
+
+  it('drops table column widths from unsupported table projections', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Table',
+              value: {
+                column_widths: [1000],
+                rows: [
+                  {
+                    cells: [{ blocks: [{ type: 'Image', value: { asset_id: 'asset-1', alt_text: 'Diagram' } }] }]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+    const table = editorDoc.content[0];
+    if (table.type !== 'table') {
+      throw new Error('Expected table projection');
+    }
+
+    expect(table.attrs?.columnWidths).toBeUndefined();
+    expect(editorDocToWordCoreBlocks(editorDoc)[0]).toEqual({
+      type: 'Table',
+      value: {
+        rows: [
+          {
+            cells: [{ blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [] } }] }]
+          }
+        ]
+      }
+    });
+    expect(canEditProjectedDocument(document)).toBe(false);
+    expect(buildEditorSyncCommands(document, editorDocToWordCoreBlocks(editorDoc))).toEqual([]);
   });
 
   it('syncs edited table cell text back to word-core table blocks', () => {

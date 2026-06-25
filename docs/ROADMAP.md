@@ -485,3 +485,14 @@ Status: complete.
 - Use generated opaque user-template IDs and reject traversal, plain paths, symlinks, non-regular files, malformed ODT packages, and oversized template files with generic errors.
 - Keep generated template IDs stable and undeletable, with source/description summaries that do not include local paths, filenames, document text, usernames, hostnames, account/cloud identifiers, or telemetry identifiers.
 - Keep downloadable template packs, network catalogs, accounts, cloud sync, telemetry, remote assets, template previews, and richer browsing deferred.
+
+## Sprint 052: Table Column Widths MVP
+
+Status: complete.
+
+- Add durable `word-core` table column width hints as bounded per-mille integers for rectangular editable tables with 1-8 columns.
+- Preserve valid width hints through ProseMirror schema/projection and keep add/delete column operations metadata-consistent.
+- Add compact contextual selected-column width controls using the existing selection-preserving toolbar command path.
+- Preserve 900Word-authored widths through ODT `word900` table metadata and safely ignore invalid external values.
+- Reflect valid hints in sanitized HTML/print HTML colgroups and proportional lightweight PDF table layout where practical.
+- Keep merged cells, formulas, arbitrary CSS, rich table themes, spreadsheet import, remote behavior, telemetry, accounts, cloud sync, heavy dependencies, and full table layout fidelity deferred.

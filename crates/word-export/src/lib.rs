@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 use word_core::{
-    collect_ordered_note_references, sanitize_table_cell_background_color, AssetRef, Block,
-    Document, Heading, ImageAlignment, ImageBlock, Inline, InlineMark, NoteKind, PageField,
-    PageRegion, PageRegionBlock, PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat,
-    Section, Style, StyleKind, TableCellBorder, TableCellPresentation, TableOfContents,
+    collect_ordered_note_references, sanitize_table_cell_background_color,
+    sanitize_table_column_widths, AssetRef, Block, Document, Heading, ImageAlignment, ImageBlock,
+    Inline, InlineMark, NoteKind, PageField, PageRegion, PageRegionBlock, PageSetup, Paragraph,
+    ParagraphAlignment, ParagraphFormat, Section, Style, StyleKind, TableCellBorder,
+    TableCellPresentation, TableOfContents,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -286,6 +287,7 @@ impl PdfLinkedText {
 #[derive(Debug, Clone)]
 struct PdfProjectedTableRow {
     section_index: usize,
+    column_widths: Vec<u16>,
     cells: Vec<PdfProjectedTableCell>,
 }
 
@@ -341,6 +343,7 @@ impl PdfPageBodyItem {
 #[derive(Debug, Clone)]
 struct PdfTableRowLayout {
     cells: Vec<PdfTableCellLayout>,
+    cell_widths: Vec<f32>,
     row_height: f32,
     block_height: f32,
 }
@@ -611,6 +614,7 @@ fn split_oversized_pdf_table_row(
         let row_height = max_chunk_lines as f32 * PDF_TABLE_LEADING + PDF_TABLE_CELL_PADDING * 2.0;
         chunks.push(PdfTableRowLayout {
             cells,
+            cell_widths: row.cell_widths.clone(),
             row_height,
             block_height: row_height + PDF_TABLE_ROW_GAP_POINTS,
         });
@@ -807,6 +811,7 @@ fn push_block_pdf_items(
     match block {
         Block::PageBreak => items.push(PdfFlowItem::PageBreak { section_index }),
         Block::Table(table) => {
+            let column_widths = table.sanitized_column_widths().unwrap_or_default();
             for row in &table.rows {
                 let cells = row
                     .cells
@@ -824,6 +829,7 @@ fn push_block_pdf_items(
                     .collect();
                 items.push(PdfFlowItem::TableRow(PdfProjectedTableRow {
                     section_index,
+                    column_widths: column_widths.clone(),
                     cells,
                 }));
             }
@@ -1384,7 +1390,10 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
             output.push('>');
         }
         Block::Table(table) => {
-            output.push_str("<table>");
+            output.push_str("<table");
+            output.push_str(&table_column_widths_html_attr(table));
+            output.push('>');
+            push_table_colgroup_html(table, output);
             for row in &table.rows {
                 output.push_str("<tr>");
                 for cell in &row.cells {
@@ -1454,6 +1463,41 @@ fn push_table_of_contents_html(table_of_contents: &TableOfContents, output: &mut
         output.push_str("</a></li>");
     }
     output.push_str("</ol></nav>");
+}
+
+fn table_column_widths_html_attr(table: &word_core::Table) -> String {
+    let Some(widths) = table.sanitized_column_widths() else {
+        return String::new();
+    };
+    let value = widths
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(" data-column-widths=\"{}\"", escape_html(&value))
+}
+
+fn push_table_colgroup_html(table: &word_core::Table, output: &mut String) {
+    let Some(widths) = table.sanitized_column_widths() else {
+        return;
+    };
+    output.push_str("<colgroup>");
+    for width in widths {
+        output.push_str("<col style=\"width:");
+        output.push_str(&table_column_width_percent(width));
+        output.push_str("%\">");
+    }
+    output.push_str("</colgroup>");
+}
+
+fn table_column_width_percent(width: u16) -> String {
+    let integer = width / 10;
+    let decimal = width % 10;
+    if decimal == 0 {
+        integer.to_string()
+    } else {
+        format!("{integer}.{decimal}")
+    }
 }
 
 fn image_html_attrs(image: &ImageBlock) -> String {
@@ -2338,9 +2382,7 @@ fn wrap_pdf_text_lines(text: &str, limit: usize) -> Vec<String> {
 
 fn layout_pdf_table_row(row: &PdfProjectedTableRow, content_width: f32) -> PdfTableRowLayout {
     let cell_count = row.cells.len().max(1);
-    let cell_width = content_width / cell_count as f32;
-    let text_width = (cell_width - PDF_TABLE_CELL_PADDING * 2.0).max(PDF_TABLE_FONT_SIZE * 4.0);
-    let max_chars = pdf_wrap_char_limit_for_width(text_width, PDF_TABLE_FONT_SIZE, 6);
+    let cell_widths = pdf_table_cell_widths(&row.column_widths, cell_count, content_width);
     let cells = if row.cells.is_empty() {
         vec![PdfTableCellLayout {
             lines: vec![empty_pdf_linked_line()],
@@ -2349,9 +2391,15 @@ fn layout_pdf_table_row(row: &PdfProjectedTableRow, content_width: f32) -> PdfTa
     } else {
         row.cells
             .iter()
-            .map(|cell| PdfTableCellLayout {
-                lines: wrap_pdf_linked_text_lines(&cell.text, max_chars),
-                presentation: cell.presentation.clone(),
+            .enumerate()
+            .map(|(index, cell)| {
+                let text_width = (cell_widths[index] - PDF_TABLE_CELL_PADDING * 2.0)
+                    .max(PDF_TABLE_FONT_SIZE * 4.0);
+                let max_chars = pdf_wrap_char_limit_for_width(text_width, PDF_TABLE_FONT_SIZE, 6);
+                PdfTableCellLayout {
+                    lines: wrap_pdf_linked_text_lines(&cell.text, max_chars),
+                    presentation: cell.presentation.clone(),
+                }
             })
             .collect()
     };
@@ -2359,9 +2407,24 @@ fn layout_pdf_table_row(row: &PdfProjectedTableRow, content_width: f32) -> PdfTa
     let row_height = max_lines as f32 * PDF_TABLE_LEADING + PDF_TABLE_CELL_PADDING * 2.0;
     PdfTableRowLayout {
         cells,
+        cell_widths,
         row_height,
         block_height: row_height + PDF_TABLE_ROW_GAP_POINTS,
     }
+}
+
+fn pdf_table_cell_widths(widths: &[u16], cell_count: usize, content_width: f32) -> Vec<f32> {
+    let cell_count = cell_count.max(1);
+    if let Some(sanitized) = sanitize_table_column_widths(widths, cell_count) {
+        return sanitized
+            .iter()
+            .map(|width| {
+                content_width * f32::from(*width)
+                    / f32::from(word_core::TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE)
+            })
+            .collect();
+    }
+    vec![content_width / cell_count as f32; cell_count]
 }
 
 fn layout_pdf_figure(figure: &PdfProjectedFigure, content_width: f32) -> PdfFigureLayout {
@@ -2742,10 +2805,13 @@ fn push_pdf_body_item_stream(
         PdfPageBodyItem::TableRow(row) => {
             let top_y = *state.cursor_y + PDF_TABLE_CELL_PADDING;
             let bottom_y = top_y - row.row_height;
-            let cell_count = row.cells.len().max(1);
-            let cell_width = context.content_width / cell_count as f32;
+            let mut x = context.margin_left;
             for (cell_index, cell) in row.cells.iter().enumerate() {
-                let x = context.margin_left + cell_index as f32 * cell_width;
+                let cell_width = row
+                    .cell_widths
+                    .get(cell_index)
+                    .copied()
+                    .unwrap_or(context.content_width / row.cells.len().max(1) as f32);
                 if let Some(background_color) = cell
                     .presentation
                     .background_color
@@ -2758,20 +2824,34 @@ fn push_pdf_body_item_stream(
                         row.row_height
                     ));
                 }
+                x += cell_width;
             }
             stream.push_str("q 0.6 w 0.45 G\n");
+            let mut x = context.margin_left;
             for (cell_index, cell) in row.cells.iter().enumerate() {
+                let cell_width = row
+                    .cell_widths
+                    .get(cell_index)
+                    .copied()
+                    .unwrap_or(context.content_width / row.cells.len().max(1) as f32);
                 if cell.presentation.border == TableCellBorder::Hidden {
+                    x += cell_width;
                     continue;
                 }
-                let x = context.margin_left + cell_index as f32 * cell_width;
                 stream.push_str(&format!(
                     "{x:.1} {bottom_y:.1} {cell_width:.1} {:.1} re S\n",
                     row.row_height
                 ));
+                x += cell_width;
             }
             stream.push_str("Q\n");
+            let mut x = context.margin_left;
             for (cell_index, cell) in row.cells.iter().enumerate() {
+                let cell_width = row
+                    .cell_widths
+                    .get(cell_index)
+                    .copied()
+                    .unwrap_or(context.content_width / row.cells.len().max(1) as f32);
                 let lines = resolve_pdf_linked_lines(
                     &cell.lines,
                     context.page.page_number,
@@ -2780,7 +2860,7 @@ fn push_pdf_body_item_stream(
                 );
                 for (line_index, line) in lines.iter().enumerate() {
                     let x = pdf_table_cell_line_x(
-                        context.margin_left + cell_index as f32 * cell_width,
+                        x,
                         cell_width,
                         line,
                         cell.presentation.text_alignment,
@@ -2802,6 +2882,7 @@ fn push_pdf_body_item_stream(
                         },
                     );
                 }
+                x += cell_width;
             }
             *state.cursor_y -= row.block_height;
         }
@@ -3179,6 +3260,7 @@ mod tests {
                 }],
             }),
             Block::Table(Table {
+                column_widths: Vec::new(),
                 rows: vec![TableRow {
                     cells: vec![TableCell {
                         presentation: Default::default(),
@@ -3631,6 +3713,7 @@ mod tests {
                 }],
             }),
             Block::Table(Table {
+                column_widths: Vec::new(),
                 rows: vec![TableRow {
                     cells: vec![TableCell {
                         presentation: Default::default(),
@@ -3888,6 +3971,7 @@ mod tests {
     fn pdf_export_renders_table_borders_and_cell_text() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: Vec::new(),
             rows: vec![
                 TableRow {
                     cells: vec![
@@ -3932,6 +4016,7 @@ mod tests {
     fn table_cell_styling_exports_to_html_print_html_and_pdf_projection() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: Vec::new(),
             rows: vec![TableRow {
                 cells: vec![TableCell {
                     presentation: TableCellPresentation {
@@ -3962,6 +4047,82 @@ mod tests {
     }
 
     #[test]
+    fn table_column_widths_export_to_html_print_html_and_pdf_layout() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: vec![250, 750],
+            rows: vec![TableRow {
+                cells: vec![
+                    TableCell {
+                        presentation: Default::default(),
+                        blocks: vec![paragraph_block("Narrow")],
+                    },
+                    TableCell {
+                        presentation: Default::default(),
+                        blocks: vec![paragraph_block("Wide")],
+                    },
+                ],
+            }],
+        })];
+
+        let html = export_html(&document).expect("html export should succeed");
+        let print_html = export_print_html(&document).expect("print html should succeed");
+        let layout = layout_pdf_table_row(
+            &PdfProjectedTableRow {
+                section_index: 0,
+                column_widths: vec![250, 750],
+                cells: vec![
+                    PdfProjectedTableCell {
+                        text: PdfLinkedText::from_plain("Narrow"),
+                        presentation: Default::default(),
+                    },
+                    PdfProjectedTableCell {
+                        text: PdfLinkedText::from_plain("Wide"),
+                        presentation: Default::default(),
+                    },
+                ],
+            },
+            400.0,
+        );
+
+        assert!(html.contains("data-column-widths=\"250,750\""));
+        assert!(html.contains("<col style=\"width:25%\">"));
+        assert!(html.contains("<col style=\"width:75%\">"));
+        assert!(!html.contains("file://"));
+        assert!(!html.contains("private"));
+        assert!(print_html.contains("data-column-widths=\"250,750\""));
+        assert_eq!(layout.cell_widths, vec![100.0, 300.0]);
+
+        document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: vec![10, 990],
+            rows: vec![TableRow {
+                cells: vec![
+                    TableCell {
+                        presentation: Default::default(),
+                        blocks: vec![paragraph_block("A")],
+                    },
+                    TableCell {
+                        presentation: Default::default(),
+                        blocks: vec![paragraph_block("B")],
+                    },
+                ],
+            }],
+        })];
+        let invalid_html = export_html(&document).expect("html export should succeed");
+        assert!(!invalid_html.contains("data-column-widths"));
+        assert!(!invalid_html.contains("<colgroup>"));
+    }
+
+    #[test]
+    fn pdf_table_width_fallback_handles_oversized_column_counts() {
+        let widths = pdf_table_cell_widths(&[], usize::from(u16::MAX) + 1, 65_536.0);
+
+        assert_eq!(widths.len(), usize::from(u16::MAX) + 1);
+        assert_eq!(widths[0], 1.0);
+        assert_eq!(widths[usize::from(u16::MAX)], 1.0);
+    }
+
+    #[test]
     fn pdf_export_paginates_structured_table_and_figure_blocks() {
         let mut document = Document::new_untitled();
         document.sections[0].page = compact_test_page();
@@ -3975,7 +4136,10 @@ mod tests {
             });
         }
         document.sections[0].blocks = vec![
-            Block::Table(Table { rows }),
+            Block::Table(Table {
+                column_widths: Vec::new(),
+                rows,
+            }),
             Block::Image(ImageBlock {
                 asset_id: "structured-figure-asset".to_string(),
                 presentation: ImagePresentation {
@@ -4008,6 +4172,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: Vec::new(),
             rows: vec![TableRow {
                 cells: vec![TableCell {
                     presentation: Default::default(),

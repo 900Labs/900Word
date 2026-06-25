@@ -1537,6 +1537,7 @@ fn list_block(definition_id: &str, items: &[&str]) -> Block {
 
 fn table_block(rows: Vec<Vec<&str>>) -> Block {
     Block::Table(Table {
+        column_widths: Vec::new(),
         rows: rows
             .into_iter()
             .map(|cells| TableRow {

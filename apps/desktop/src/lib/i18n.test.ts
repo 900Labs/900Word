@@ -82,6 +82,7 @@ describe('i18n', () => {
   });
 
   it('labels table cell styling controls', () => {
+    expect(translate('en-US', 'tableColumnWidth')).toBe('Column width');
     expect(translate('en-US', 'tableCellBackground')).toBe('Cell fill');
     expect(translate('en-US', 'tableCellAlignment')).toBe('Cell align');
     expect(translate('en-US', 'tableCellBorderHidden')).toBe('Hidden');

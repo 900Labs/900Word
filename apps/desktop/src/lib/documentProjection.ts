@@ -146,6 +146,7 @@ export interface TableRow {
 export interface TableBlock {
   type: 'Table';
   value: {
+    column_widths?: number[];
     rows: TableRow[];
   };
 }
@@ -310,6 +311,9 @@ export interface EditorTableRowNode {
 
 export interface EditorTableNode {
   type: 'table';
+  attrs?: {
+    columnWidths?: number[] | null;
+  };
   content: EditorTableRowNode[];
 }
 
@@ -1452,8 +1456,10 @@ function wordCoreTableToEditorNode(
   styles?: Record<string, DocumentStyle>
 ): EditorTableNode {
   const rows = block.value.rows.length > 0 ? block.value.rows : [{ cells: [{ blocks: [] }] }];
+  const columnWidths = tableColumnWidthsForWordCoreRows(block.value.column_widths, rows);
   return {
     type: 'table',
+    ...(columnWidths ? { attrs: { columnWidths } } : {}),
     content: rows.map((row): EditorTableRowNode => {
       const cells = row.cells.length > 0 ? row.cells : [{ blocks: [] }];
       return {
@@ -1495,9 +1501,11 @@ function emptyEditorParagraphNode(): EditorParagraphNode {
 }
 
 function editorTableToWordCoreBlock(block: EditorTableNode, styles?: Record<string, DocumentStyle>): TableBlock {
+  const columnWidths = tableColumnWidthsForEditorRows(block.attrs?.columnWidths, block.content);
   return {
     type: 'Table',
     value: {
+      ...(columnWidths ? { column_widths: columnWidths } : {}),
       rows: block.content.map((row) => ({
         cells: row.content.map((cell) => ({
           ...editorTableCellPresentationToWordCoreCell(cell.attrs),
@@ -1506,6 +1514,68 @@ function editorTableToWordCoreBlock(block: EditorTableNode, styles?: Record<stri
       }))
     }
   };
+}
+
+function tableColumnWidthsForWordCoreRows(value: unknown, rows: TableRow[]): number[] | null {
+  const columnCount = editableWordCoreTableColumnCount(rows);
+  return columnCount ? normalizeTableColumnWidths(value, columnCount) : null;
+}
+
+function tableColumnWidthsForEditorRows(value: unknown, rows: EditorTableRowNode[]): number[] | null {
+  const columnCount = editableEditorTableColumnCount(rows);
+  return columnCount ? normalizeTableColumnWidths(value, columnCount) : null;
+}
+
+function editableWordCoreTableColumnCount(rows: TableRow[]): number | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  const columnCount = rows[0].cells.length;
+  if (columnCount < 1 || columnCount > 8) {
+    return null;
+  }
+  return rows.every(
+    (row) =>
+      row.cells.length === columnCount &&
+      row.cells.every(
+        (cell) => cell.blocks.length > 0 && cell.blocks.every((child) => isSupportedTableCellBlock(child))
+      )
+  )
+    ? columnCount
+    : null;
+}
+
+function editableEditorTableColumnCount(rows: EditorTableRowNode[]): number | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  const columnCount = rows[0].content.length;
+  if (columnCount < 1 || columnCount > 8) {
+    return null;
+  }
+  return rows.every(
+    (row) =>
+      row.content.length === columnCount &&
+      row.content.every(
+        (cell) => cell.attrs?.unsupported !== true && cell.attrs?.sourceEmpty !== true && cell.content.length > 0
+      )
+  )
+    ? columnCount
+    : null;
+}
+
+function normalizeTableColumnWidths(value: unknown, columnCount: number): number[] | null {
+  if (!Array.isArray(value) || value.length !== columnCount) {
+    return null;
+  }
+  if (!value.every((width) => Number.isInteger(width))) {
+    return null;
+  }
+  if (columnCount === 1) {
+    return value[0] === 1000 ? [1000] : null;
+  }
+  const total = value.reduce((sum, width) => sum + width, 0);
+  return total === 1000 && value.every((width) => width >= 50 && width <= 950) ? [...value] : null;
 }
 
 function editorTableCellAttrs(cell: TableCell): NonNullable<EditorTableCellNode['attrs']> {
