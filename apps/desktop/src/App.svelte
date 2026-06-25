@@ -66,6 +66,16 @@
     type PageSetup
   } from './lib/documentProjection';
   import { localeDirection, translate, uiLocales, type UiStringKey } from './lib/i18n';
+  import {
+    clampEditorZoom,
+    editorViewportStyle,
+    editorZoomStep,
+    fitWidthZoomPercent,
+    maxEditorZoom,
+    minEditorZoom,
+    type EditorViewMode,
+    type EditorZoomChoice
+  } from './lib/editorViewport';
 
   interface DocumentStats {
     word_count: number;
@@ -188,6 +198,11 @@
   let title = $state('900Word');
   let status = $state(translate('en-US', 'starting'));
   let activeView = $state<ViewId>('editor');
+  let editorViewMode = $state<EditorViewMode>('page-layout');
+  let zoomChoice = $state<EditorZoomChoice>('fit-width');
+  let customZoomPercent = $state(100);
+  let showRulers = $state(false);
+  let editorViewportWidth = $state(0);
   let plainText = $state('');
   let stats = $state<DocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
   let spellIssues = $state<SpellIssue[]>([]);
@@ -257,6 +272,11 @@
   let characterCountNoSpaces = $derived(countNonWhitespaceCharacters(plainText));
   let paragraphCount = $derived(countProjectedParagraphs(documentState));
   let readingMinutes = $derived(stats.word_count === 0 ? 0 : Math.max(1, Math.ceil(stats.word_count / 200)));
+  let fitWidthZoom = $derived(
+    editorViewMode === 'page-layout' ? fitWidthZoomPercent(pageSetup, editorViewportWidth, showRulers ? 22 : 0) : 100
+  );
+  let effectiveZoomPercent = $derived(zoomChoice === 'fit-width' ? fitWidthZoom : customZoomPercent);
+  let editorSurfaceStyle = $derived(editorViewportStyle(pageSetup, effectiveZoomPercent));
   let showWorkspaceSidebar = $derived(
     navigatorHeadings.length > 0 ||
     fileState.recent_documents.length > 0 ||
@@ -1135,6 +1155,29 @@
     closeFileMenu();
   }
 
+  function setEditorViewMode(mode: EditorViewMode) {
+    editorViewMode = mode;
+  }
+
+  function setZoomChoice(value: string) {
+    if (value === 'fit-width') {
+      zoomChoice = 'fit-width';
+    } else if (value === '100') {
+      customZoomPercent = 100;
+      zoomChoice = '100';
+    } else {
+      zoomChoice = 'custom';
+    }
+  }
+
+  function setCustomZoom(value: number) {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    customZoomPercent = clampEditorZoom(value);
+    zoomChoice = 'custom';
+  }
+
   function handleWindowClick(event: MouseEvent) {
     const target = event.target;
     if (!(target instanceof Node)) {
@@ -1662,6 +1705,53 @@
     <div class="tool-group" role="group" aria-label={tr('history')}>
       <button type="button" onclick={undoDocument}>{tr('undo')}</button>
       <button type="button" onclick={redoDocument}>{tr('redo')}</button>
+    </div>
+
+    <div class="tool-group view-mode-tools" role="group" aria-label={tr('viewMode')}>
+      <button
+        aria-pressed={editorViewMode === 'draft'}
+        class:active-format={editorViewMode === 'draft'}
+        type="button"
+        onclick={() => setEditorViewMode('draft')}
+      >
+        {tr('draftView')}
+      </button>
+      <button
+        aria-pressed={editorViewMode === 'page-layout'}
+        class:active-format={editorViewMode === 'page-layout'}
+        type="button"
+        onclick={() => setEditorViewMode('page-layout')}
+      >
+        {tr('pageLayoutView')}
+      </button>
+      <select
+        aria-label={tr('zoom')}
+        value={zoomChoice}
+        onchange={(event) => setZoomChoice(event.currentTarget.value)}
+        title={tr('zoom')}
+      >
+        <option value="fit-width">{tr('fitWidth')}</option>
+        <option value="100">100%</option>
+        <option value="custom">{tr('custom')}</option>
+      </select>
+      <label class="compact-number zoom-slider" title={tr('customZoom')}>
+        {tr('zoom')}
+        <input
+          aria-label={tr('customZoom')}
+          disabled={zoomChoice === 'fit-width'}
+          min={minEditorZoom}
+          max={maxEditorZoom}
+          step={editorZoomStep}
+          type="range"
+          value={customZoomPercent}
+          oninput={(event) => setCustomZoom(Number(event.currentTarget.value))}
+        />
+        <span class="zoom-value">{effectiveZoomPercent}%</span>
+      </label>
+      <label class="check-row compact ruler-toggle" title={tr('showRulers')}>
+        <input bind:checked={showRulers} type="checkbox" />
+        {tr('showRulers')}
+      </label>
     </div>
 
     <div class="tool-group style-tools" role="group" aria-label={tr('styles')}>
@@ -2346,7 +2436,11 @@
 
     <div
       aria-label={tr('editor')}
+      class:editor-view-draft={editorViewMode === 'draft'}
+      class:editor-view-page-layout={editorViewMode === 'page-layout'}
       class:hidden-view={activeView !== 'editor'}
+      class:zoom-fit={zoomChoice === 'fit-width'}
+      class:zoom-fixed={zoomChoice !== 'fit-width'}
       class="editor-panel"
       id="editor-view"
       oncontextmenu={handleEditorContextMenu}
@@ -2354,11 +2448,24 @@
       tabindex={activeView === 'editor' ? 0 : -1}
     >
       <div
-        bind:this={editorHost}
-        class:empty-document={!editorHasStarted && editorIsEmpty}
-        class="editor-host"
-        data-placeholder={tr('startWriting')}
-      ></div>
+        bind:clientWidth={editorViewportWidth}
+        class:rulers-enabled={showRulers}
+        class="editor-viewport"
+        style={editorSurfaceStyle}
+      >
+        <div class:rulers-enabled={showRulers} class="editor-surface">
+          {#if showRulers}
+            <div class="ruler ruler-top" aria-hidden="true"><span></span></div>
+            <div class="ruler ruler-left" aria-hidden="true"><span></span></div>
+          {/if}
+          <div
+            bind:this={editorHost}
+            class:empty-document={!editorHasStarted && editorIsEmpty}
+            class="editor-host"
+            data-placeholder={tr('startWriting')}
+          ></div>
+        </div>
+      </div>
       {#if spellPopover}
         <div
           aria-label={tr('spelling')}

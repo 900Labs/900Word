@@ -167,3 +167,12 @@ Status: complete.
 - Add project report, CV/resume, meeting minutes, memo, invoice-style, and flyer one-pagers using supported `word-core` blocks.
 - Keep templates generated in code with placeholder-only text, no local paths, no real documents, no remote assets, and no external template files.
 - Keep richer template browsing, template previews, custom user templates, and downloadable template packs deferred.
+
+## Sprint 020: Page View And Zoom
+
+Status: complete.
+
+- Add local editor viewport controls for Draft and Page Layout modes.
+- Add lightweight zoom controls for Fit Width, 100%, and bounded custom zoom.
+- Add simple visual ruler guides derived from the current page setup and margins.
+- Keep the controls as editor viewport behavior only; deterministic pagination, page-break preview, and print layout fidelity remain deferred.
