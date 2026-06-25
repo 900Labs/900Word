@@ -2653,6 +2653,36 @@ fn docx_highlight_value(color: &str) -> Option<&'static str> {
     }
 }
 
+fn docx_run_shading_highlight_color(
+    start: &BytesStart<'_>,
+    name: &str,
+) -> Result<Option<&'static str>, DocxError> {
+    if attr_value(start, b"themeFill", name)?.is_some() {
+        return Ok(None);
+    }
+    if let Some(value) = attr_value(start, b"val", name)? {
+        match value.as_str() {
+            "nil" | "none" => return Ok(None),
+            "clear" | "solid" => {}
+            _ => return Ok(None),
+        }
+    }
+    let Some(fill) = attr_value(start, b"fill", name)? else {
+        return Ok(None);
+    };
+    let normalized = format!("#{}", fill.trim().to_ascii_lowercase());
+    let Some(color) = sanitize_table_cell_background_color(&normalized) else {
+        return Ok(None);
+    };
+    Ok(match color.as_str() {
+        "#fff3bf" => Some("#fff3bf"),
+        "#dbeafe" => Some("#dbeafe"),
+        "#dcfce7" => Some("#dcfce7"),
+        "#f1f5f9" => Some("#f1f5f9"),
+        _ => None,
+    })
+}
+
 fn docx_text_color_value(color: &str) -> Option<String> {
     docx_hex_color(color.strip_prefix('#')?).map(|value| value[1..].to_ascii_uppercase())
 }
@@ -4145,6 +4175,21 @@ fn parse_run_properties(
                 {
                     properties.style.highlight_color = Some(highlight.to_string());
                 }
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"shd" => {
+                if properties.style.highlight_color.is_none() {
+                    if let Some(highlight) = docx_run_shading_highlight_color(&start, name)? {
+                        properties.style.highlight_color = Some(highlight.to_string());
+                    }
+                }
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"shd" => {
+                if properties.style.highlight_color.is_none() {
+                    if let Some(highlight) = docx_run_shading_highlight_color(&start, name)? {
+                        properties.style.highlight_color = Some(highlight.to_string());
+                    }
+                }
+                skip_element(reader, b"shd", name)?;
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"rPr" => break,
             Event::Start(start)
@@ -7497,6 +7542,137 @@ mod tests {
             Some("serif")
         );
         assert_eq!(paragraph.inlines[3].style.font_family, None);
+    }
+
+    #[test]
+    fn imports_docx_run_shading_as_safe_highlight() {
+        let bytes = synthetic_docx(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r><w:rPr><w:shd w:val="clear" w:fill="FFF3BF"/></w:rPr><w:t>Yellow</w:t></w:r>
+    <w:r><w:rPr><w:shd w:val="solid" w:fill="DBEAFE"/></w:rPr><w:t> Blue</w:t></w:r>
+    <w:r><w:rPr><w:shd w:fill="DCFCE7"/></w:rPr><w:t> Green</w:t></w:r>
+    <w:r><w:rPr><w:shd w:fill="F1F5F9"/></w:rPr><w:t> Gray</w:t></w:r>
+  </w:p>
+</w:body></w:document>"##,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("run shading should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(paragraph.inlines.len(), 4);
+        assert_eq!(
+            paragraph.inlines[0].style.highlight_color.as_deref(),
+            Some("#fff3bf")
+        );
+        assert_eq!(
+            paragraph.inlines[1].style.highlight_color.as_deref(),
+            Some("#dbeafe")
+        );
+        assert_eq!(
+            paragraph.inlines[2].style.highlight_color.as_deref(),
+            Some("#dcfce7")
+        );
+        assert_eq!(
+            paragraph.inlines[3].style.highlight_color.as_deref(),
+            Some("#f1f5f9")
+        );
+    }
+
+    #[test]
+    fn ignores_unsupported_docx_run_shading_values() {
+        let bytes = synthetic_docx(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r><w:rPr><w:shd w:val="nil" w:fill="FFF3BF"/></w:rPr><w:t>Nil</w:t></w:r>
+    <w:r><w:rPr><w:shd w:val="pct25" w:fill="DBEAFE"/></w:rPr><w:t> Pattern</w:t></w:r>
+    <w:r><w:rPr><w:shd w:fill="FF0000"/></w:rPr><w:t> Red</w:t></w:r>
+    <w:r><w:rPr><w:shd w:fill="FFF3BF" w:themeFill="accent1"/></w:rPr><w:t> Theme</w:t></w:r>
+  </w:p>
+</w:body></w:document>"##,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("unsupported run shading should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(paragraph.inlines.len(), 1);
+        assert_eq!(paragraph.inlines[0].text, "Nil Pattern Red Theme");
+        assert!(paragraph.inlines[0].style.is_default());
+    }
+
+    #[test]
+    fn keeps_docx_highlight_preferred_over_run_shading() {
+        let bytes = synthetic_docx(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r><w:rPr><w:highlight w:val="yellow"/><w:shd w:fill="DBEAFE"/></w:rPr><w:t>Highlight first</w:t></w:r>
+  </w:p>
+  <w:p>
+    <w:r><w:rPr><w:shd w:fill="DBEAFE"/><w:highlight w:val="yellow"/></w:rPr><w:t>Highlight last</w:t></w:r>
+  </w:p>
+</w:body></w:document>"##,
+            None,
+            None,
+        );
+
+        let document =
+            read_docx_bytes(&bytes).expect("highlight should take precedence over run shading");
+        let Block::Paragraph(first_paragraph) = &document.sections[0].blocks[0] else {
+            panic!("first paragraph should import");
+        };
+        let Block::Paragraph(second_paragraph) = &document.sections[0].blocks[1] else {
+            panic!("second paragraph should import");
+        };
+
+        assert_eq!(
+            first_paragraph.inlines[0].style.highlight_color.as_deref(),
+            Some("#fff3bf")
+        );
+        assert_eq!(
+            second_paragraph.inlines[0].style.highlight_color.as_deref(),
+            Some("#fff3bf")
+        );
+    }
+
+    #[test]
+    fn skips_nested_content_inside_started_docx_run_shading() {
+        let bytes = synthetic_docx(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r>
+      <w:rPr>
+        <w:shd w:fill="FFF3BF"><w:color w:val="1F2937"/></w:shd>
+      </w:rPr>
+      <w:t>Highlighted</w:t>
+    </w:r>
+  </w:p>
+</w:body></w:document>"##,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("started run shading should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(
+            paragraph.inlines[0].style.highlight_color.as_deref(),
+            Some("#fff3bf")
+        );
+        assert_eq!(paragraph.inlines[0].style.text_color, None);
     }
 
     #[test]
