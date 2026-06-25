@@ -196,3 +196,14 @@ Status: complete.
 - Save and reopen 900Word-authored comments in ODT using ODF annotation elements with `word900` metadata for local ID and resolved state.
 - Add an Insert Comment shortcut that opens the comments panel and focuses the comment body.
 - Keep thread replies, multiple authors, comment search, full external ODT annotation compatibility, DOCX comments, and PDF annotation export deferred.
+
+## Sprint 023: Track Changes MVP
+
+Status: complete.
+
+- Add document-level local Record changes state with a compact desktop review panel.
+- Track inserted text as visible local insertions and selected Backspace/Delete text as visible local deletions instead of removing selected text immediately.
+- Add individual accept/reject plus accept all/reject all commands backed by `word-core` cleanup semantics.
+- Store privacy-safe local author metadata as `Local User` plus timestamps without reading OS usernames, hostnames, accounts, paths, contacts, or cloud identity.
+- Preserve 900Word-authored text-only tracked changes through ODT save/reopen with `word900` metadata.
+- Keep formatting-only changes, table structure changes, image changes, comments-as-changes, DOCX track changes, compare/merge, and multi-author collaboration deferred.

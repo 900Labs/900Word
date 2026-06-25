@@ -40,6 +40,7 @@ describe('supportedSchema', () => {
       'subscript',
       'superscript',
       'textStyle',
+      'trackedChange',
       'underline'
     ]);
     expect(supportedMarkTypes).toEqual([
@@ -51,7 +52,8 @@ describe('supportedSchema', () => {
       'subscript',
       'textStyle',
       'link',
-      'comment'
+      'comment',
+      'trackedChange'
     ]);
   });
 

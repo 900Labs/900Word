@@ -18,6 +18,7 @@
     removeEditorCommentFromDocument,
     restoreEditorSelection,
     selectEditorCommentRange,
+    selectEditorTrackedChangeRange,
     selectEditorTopLevelBlock,
     selectEditorTextRange,
     adjustSelectedListLevel,
@@ -59,6 +60,7 @@
     pageRegionIsReadOnly,
     pageRegionTextToBlocks,
     pageRegionToText,
+    trackedChangesInDocument,
     type DocumentStyle,
     type DocumentCommand,
     type DocumentState,
@@ -66,6 +68,7 @@
     type CommentThread,
     type DocumentLinkTarget,
     type DocumentOutlineEntry,
+    type TrackedChangeSummary,
     type ListBlock,
     type PageField,
     type PageRegionKind,
@@ -208,6 +211,7 @@
     { id: 'right', label: 'Right' }
   ];
   const localCommentAuthor = 'Local User';
+  const localTrackedChangeAuthor = 'Local User';
   const maxCommentBodyChars = 2000;
 
   let title = $state('900Word');
@@ -270,6 +274,7 @@
   let linkHrefInput = $state('');
   let selectedLinkTargetId = $state('');
   let commentsPanelOpen = $state(false);
+  let reviewPanelOpen = $state(false);
   let newCommentBody = $state('');
   let selectedCommentText = $state('');
   let activeCommentId = $state<string | null>(null);
@@ -289,7 +294,10 @@
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
   let commentThreads = $derived(sortedCommentThreads(documentState));
+  let trackedChanges = $derived(trackedChangesInDocument(documentState));
+  let trackChangesRecording = $derived(Boolean(documentState?.track_changes?.recording));
   let unresolvedCommentCount = $derived(commentThreads.filter((comment) => !comment.resolved).length);
+  let trackedChangeCount = $derived(trackedChanges.length);
   let selectionWordCount = $derived(activeFormatting.selectionWordCount);
   let characterCountNoSpaces = $derived(countNonWhitespaceCharacters(plainText));
   let paragraphCount = $derived(countProjectedParagraphs(documentState));
@@ -301,6 +309,7 @@
   let editorSurfaceStyle = $derived(editorViewportStyle(pageSetup, effectiveZoomPercent));
   let showWorkspaceSidebar = $derived(
     commentsPanelOpen ||
+    reviewPanelOpen ||
     navigatorHeadings.length > 0 ||
     fileState.recent_documents.length > 0 ||
       fileState.recovery_documents.length > 0 ||
@@ -349,6 +358,9 @@
     if (Object.keys(document.comments ?? {}).length > 0) {
       commentsPanelOpen = true;
     }
+    if (trackedChangesInDocument(document).length > 0 || document.track_changes?.recording) {
+      reviewPanelOpen = true;
+    }
     title = document.meta.title;
     plainText = documentToText(document);
     navigatorHeadings = documentOutline(document);
@@ -372,6 +384,10 @@
     view?.destroy();
     view = createEditor(editorHost, document, handleEditorChange, {
       editable,
+      trackChanges: {
+        recording: Boolean(document.track_changes?.recording),
+        author: localTrackedChangeAuthor
+      },
       onInteraction: markEditorStarted,
       onSelectionChange: (selection) => {
         lastEditorSelection = selection;
@@ -1194,6 +1210,82 @@
     commentsPanelOpen = true;
     activeCommentId = comment.id;
     status = selectEditorCommentRange(view, comment.id) ? tr('commentSelected') : tr('noMatches');
+  }
+
+  async function setTrackChangesRecording(enabled: boolean) {
+    if (!documentState || !editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    try {
+      await waitForEditorSync();
+      const document = await invoke<DocumentState>('apply_document_command', {
+        command: {
+          type: 'set_track_changes_recording',
+          enabled
+        }
+      });
+      reviewPanelOpen = true;
+      await loadDocumentIntoEditor(document, enabled ? tr('trackChangesRecordingOn') : tr('trackChangesRecordingOff'));
+      await refreshFileState();
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  async function acceptTrackedChange(change: TrackedChangeSummary) {
+    await resolveTrackedChangeCommand({ type: 'accept_tracked_change', id: change.id }, tr('trackedChangeAccepted'));
+  }
+
+  async function rejectTrackedChange(change: TrackedChangeSummary) {
+    await resolveTrackedChangeCommand({ type: 'reject_tracked_change', id: change.id }, tr('trackedChangeRejected'));
+  }
+
+  async function acceptAllTrackedChanges() {
+    await resolveTrackedChangeCommand({ type: 'accept_all_tracked_changes' }, tr('allTrackedChangesAccepted'));
+  }
+
+  async function rejectAllTrackedChanges() {
+    await resolveTrackedChangeCommand({ type: 'reject_all_tracked_changes' }, tr('allTrackedChangesRejected'));
+  }
+
+  async function resolveTrackedChangeCommand(command: DocumentCommand, nextStatus: string) {
+    if (!documentState || !editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    try {
+      await waitForEditorSync();
+      const document = await invoke<DocumentState>('apply_document_command', { command });
+      await loadDocumentIntoEditor(document, nextStatus);
+      await refreshFileState();
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  function jumpToTrackedChange(change: TrackedChangeSummary) {
+    activeView = 'editor';
+    reviewPanelOpen = true;
+    status = selectEditorTrackedChangeRange(view, change.id) ? tr('trackedChangeSelected') : tr('noMatches');
+  }
+
+  function trackedChangeTimestamp(change: TrackedChangeSummary) {
+    const parsed = Date.parse(change.created_at);
+    if (!Number.isFinite(parsed)) {
+      return '';
+    }
+    return new Intl.DateTimeFormat(settings.ui_locale, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(parsed);
+  }
+
+  function trackedChangePreview(change: TrackedChangeSummary) {
+    const text = change.text.replace(/\s+/g, ' ').trim();
+    return text.length > 80 ? `${text.slice(0, 77)}...` : text || tr('emptyChangeText');
   }
 
   function jumpToHeading(entry: DocumentOutlineEntry) {
@@ -2156,6 +2248,25 @@
     </div>
 
     <div class="tool-group comment-tools" role="group" aria-label={tr('comments')}>
+      <label class="check-row compact review-toggle" title={tr('recordChanges')}>
+        <input
+          checked={trackChangesRecording}
+          disabled={!editorEditable}
+          type="checkbox"
+          onchange={(event) => setTrackChangesRecording(event.currentTarget.checked)}
+        />
+        {tr('recordChanges')}
+      </label>
+      <button
+        aria-expanded={reviewPanelOpen}
+        class:active-format={reviewPanelOpen}
+        disabled={!editorEditable && trackedChangeCount === 0}
+        title={tr('reviewChanges')}
+        type="button"
+        onclick={() => (reviewPanelOpen = !reviewPanelOpen)}
+      >
+        {tr('reviewChanges')}{trackedChangeCount > 0 ? ` ${trackedChangeCount}` : ''}
+      </button>
       <button
         aria-expanded={commentsPanelOpen}
         class:active-format={commentsPanelOpen}
@@ -2622,6 +2733,46 @@
               </li>
             {/each}
           </ul>
+        {/if}
+
+        {#if reviewPanelOpen}
+          <section class="review-panel" aria-label={tr('reviewChanges')}>
+            <div class="sidebar-section-heading">
+              <h2>{tr('reviewChanges')}</h2>
+              <span>{trackedChangeCount}</span>
+            </div>
+            <p class="privacy-note">{tr('trackChangesPrivacyWarning')}</p>
+            <div class="review-bulk-actions">
+              <button disabled={!editorEditable || trackedChangeCount === 0} type="button" onclick={acceptAllTrackedChanges}>
+                {tr('acceptAll')}
+              </button>
+              <button disabled={!editorEditable || trackedChangeCount === 0} type="button" onclick={rejectAllTrackedChanges}>
+                {tr('rejectAll')}
+              </button>
+            </div>
+            {#if trackedChanges.length > 0}
+              <ul class="changes-list">
+                {#each trackedChanges as change}
+                  <li class={`review-${change.kind}`}>
+                    <button class="change-jump" type="button" onclick={() => jumpToTrackedChange(change)}>
+                      <span class="change-kind">{change.kind === 'insertion' ? tr('insertion') : tr('deletion')}</span>
+                      <span class="change-author">{change.author || localTrackedChangeAuthor}</span>
+                      {#if trackedChangeTimestamp(change)}
+                        <span class="change-time">{trackedChangeTimestamp(change)}</span>
+                      {/if}
+                      <span class="change-text">{trackedChangePreview(change)}</span>
+                    </button>
+                    <div class="change-actions">
+                      <button disabled={!editorEditable} type="button" onclick={() => acceptTrackedChange(change)}>{tr('accept')}</button>
+                      <button disabled={!editorEditable} type="button" onclick={() => rejectTrackedChange(change)}>{tr('reject')}</button>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="empty-sidebar-note">{tr('noTrackedChanges')}</p>
+            {/if}
+          </section>
         {/if}
 
         {#if commentsPanelOpen}

@@ -556,6 +556,13 @@ select:focus-visible {
   font-weight: 750;
 }
 
+.review-toggle {
+  min-height: 34px;
+  padding: 0 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
 .table-size-field {
   min-height: 34px;
   display: inline-flex;
@@ -945,6 +952,98 @@ select:focus-visible {
 
 .comment-add-box button {
   justify-self: start;
+}
+
+.privacy-note {
+  margin: 0.15rem 0 0.65rem;
+  padding: 0.48rem 0.55rem;
+  border: 1px solid #d7c58f;
+  border-radius: 7px;
+  background: #fff8dd;
+  color: #5e4a09 !important;
+  line-height: 1.35;
+}
+
+.review-bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.7rem;
+}
+
+.review-bulk-actions button,
+.change-actions button {
+  min-width: fit-content;
+  min-height: 30px;
+  padding: 0.28rem 0.48rem;
+  font-size: 0.78rem;
+  font-weight: 760;
+}
+
+.changes-list {
+  display: grid;
+  gap: 0.48rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.changes-list li {
+  display: grid;
+  gap: 0.38rem;
+  padding: 0.48rem;
+  border: 1px solid #d2d9d6;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.changes-list li.review-insertion {
+  border-left: 4px solid #0f6b5f;
+}
+
+.changes-list li.review-deletion {
+  border-left: 4px solid #a23b28;
+}
+
+.change-jump {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: 0.18rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.change-jump:hover:not(:disabled) {
+  background: transparent;
+  box-shadow: none;
+}
+
+.change-kind,
+.change-author {
+  color: #26313b;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.change-time {
+  color: #69737d;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.change-text {
+  overflow-wrap: anywhere;
+  color: #313b45;
+  line-height: 1.35;
+}
+
+.change-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
 }
 
 .comments-list {
@@ -1444,6 +1543,24 @@ select:focus-visible {
   background: #fff4cf;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
+}
+
+.tracked-change {
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.tracked-insertion {
+  color: #0b6b52;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 0.16em;
+}
+
+.tracked-deletion {
+  color: #a23b28;
+  text-decoration-line: line-through;
+  text-decoration-thickness: 1.5px;
 }
 
 .spell-misspelled {

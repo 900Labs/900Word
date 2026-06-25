@@ -3,7 +3,11 @@ export type UiLocaleTag = 'en-US' | 'es-ES' | 'ar';
 export type UiStringKey =
   | 'about'
   | 'about900Word'
+  | 'accept'
+  | 'acceptAll'
   | 'all'
+  | 'allTrackedChangesAccepted'
+  | 'allTrackedChangesRejected'
   | 'addColumnLeft'
   | 'addColumnRight'
   | 'addComment'
@@ -63,10 +67,12 @@ export type UiStringKey =
   | 'documentSavedAs'
   | 'dirty'
   | 'discard'
+  | 'deletion'
   | 'draftView'
   | 'editor'
   | 'editorReadOnly'
   | 'editingToolbar'
+  | 'emptyChangeText'
   | 'export'
   | 'externalLink'
   | 'exportHtml'
@@ -121,6 +127,7 @@ export type UiStringKey =
   | 'imageTooLarge'
   | 'imageScale'
   | 'imageUpdated'
+  | 'insertion'
   | 'insertImage'
   | 'insertTable'
   | 'insertTableShort'
@@ -155,6 +162,7 @@ export type UiStringKey =
   | 'noSuggestions'
   | 'no'
   | 'noComments'
+  | 'noTrackedChanges'
   | 'numberedList'
   | 'numberedListApplied'
   | 'off'
@@ -192,7 +200,11 @@ export type UiStringKey =
   | 'reopen'
   | 'replace'
   | 'replaceAll'
+  | 'recordChanges'
+  | 'reject'
+  | 'rejectAll'
   | 'resolve'
+  | 'reviewChanges'
   | 'removeBookmark'
   | 'removeBookmarkShort'
   | 'removeLink'
@@ -229,6 +241,12 @@ export type UiStringKey =
   | 'subscript'
   | 'superscript'
   | 'telemetry'
+  | 'trackChangesPrivacyWarning'
+  | 'trackChangesRecordingOff'
+  | 'trackChangesRecordingOn'
+  | 'trackedChangeAccepted'
+  | 'trackedChangeRejected'
+  | 'trackedChangeSelected'
   | 'tableColumns'
   | 'tableDeleted'
   | 'tableInserted'
@@ -272,7 +290,11 @@ export interface UiLocaleInfo {
 const english: UiStrings = {
   about: 'About',
   about900Word: 'About 900Word',
+  accept: 'Accept',
+  acceptAll: 'Accept all',
   all: 'All',
+  allTrackedChangesAccepted: 'All tracked changes accepted',
+  allTrackedChangesRejected: 'All tracked changes rejected',
   addColumnLeft: 'Add column left',
   addColumnRight: 'Add column right',
   addComment: 'Add comment',
@@ -332,10 +354,12 @@ const english: UiStrings = {
   documentSavedAs: 'Document saved as',
   dirty: 'Dirty',
   discard: 'Discard',
+  deletion: 'Deletion',
   draftView: 'Draft',
   editor: 'Editor',
   editorReadOnly: 'Editor is read-only',
   editingToolbar: 'Editing toolbar',
+  emptyChangeText: 'Empty text change',
   export: 'Export',
   externalLink: 'External link',
   exportHtml: 'Export HTML',
@@ -390,6 +414,7 @@ const english: UiStrings = {
   imageTooLarge: 'Image is too large. Compress or resize it before inserting.',
   imageScale: 'Scale',
   imageUpdated: 'Image updated',
+  insertion: 'Insertion',
   insertImage: 'Insert image',
   insertTable: 'Insert table',
   insertTableShort: 'Insert',
@@ -421,6 +446,7 @@ const english: UiStrings = {
   next: 'Next',
   no: 'No',
   noComments: 'No comments',
+  noTrackedChanges: 'No tracked changes',
   noIssues: 'No issues.',
   noMatches: 'No matches',
   noSuggestions: 'No suggestions',
@@ -461,7 +487,11 @@ const english: UiStrings = {
   reopen: 'Reopen',
   replace: 'Replace',
   replaceAll: 'All',
+  recordChanges: 'Record changes',
+  reject: 'Reject',
+  rejectAll: 'Reject all',
   resolve: 'Resolve',
+  reviewChanges: 'Review changes',
   removeBookmark: 'Remove bookmark',
   removeBookmarkShort: 'No mark',
   removeLink: 'Remove link',
@@ -498,6 +528,12 @@ const english: UiStrings = {
   subscript: 'Sub',
   superscript: 'Sup',
   telemetry: 'Telemetry',
+  trackChangesPrivacyWarning: 'Tracked changes can reveal edit history and deleted text in saved files.',
+  trackChangesRecordingOff: 'Track changes recording off',
+  trackChangesRecordingOn: 'Track changes recording on',
+  trackedChangeAccepted: 'Tracked change accepted',
+  trackedChangeRejected: 'Tracked change rejected',
+  trackedChangeSelected: 'Tracked change selected',
   tableColumns: 'Table columns',
   tableDeleted: 'Table deleted',
   tableInserted: 'Table inserted',

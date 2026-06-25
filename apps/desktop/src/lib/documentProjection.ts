@@ -7,9 +7,23 @@ export interface Inline {
   comment_ids?: string[];
   style?: InlineStyle;
   field?: PageField | null;
+  tracked_change?: TrackedChange | null;
 }
 
 export type PageField = 'page_number' | 'page_count' | 'date';
+
+export type TrackedChangeKind = 'insertion' | 'deletion';
+
+export interface TrackedChange {
+  id: string;
+  kind: TrackedChangeKind;
+  author: string;
+  created_at: string;
+}
+
+export interface TrackChangesState {
+  recording?: boolean;
+}
 
 export interface InlineStyle {
   font_family?: string | null;
@@ -167,6 +181,7 @@ export interface DocumentState {
   meta: {
     title: string;
   };
+  track_changes?: TrackChangesState;
   styles?: Record<string, DocumentStyle>;
   lists?: Record<string, ListDefinition>;
   assets?: Record<string, AssetRef>;
@@ -281,6 +296,10 @@ export interface EditorProjectedChange {
   blocks: EditableBlock[];
 }
 
+export interface TrackedChangeSummary extends TrackedChange {
+  text: string;
+}
+
 export interface DocumentOutlineEntry {
   sectionIndex: number;
   blockIndex: number;
@@ -339,6 +358,24 @@ export type DocumentCommand =
       style: DocumentStyle;
     }
   | {
+      type: 'set_track_changes_recording';
+      enabled: boolean;
+    }
+  | {
+      type: 'accept_tracked_change';
+      id: string;
+    }
+  | {
+      type: 'reject_tracked_change';
+      id: string;
+    }
+  | {
+      type: 'accept_all_tracked_changes';
+    }
+  | {
+      type: 'reject_all_tracked_changes';
+    }
+  | {
       type: 'add_comment';
       id: string;
       author?: string | null;
@@ -393,6 +430,19 @@ export function documentLinkTargets(document: DocumentState): DocumentLinkTarget
     });
   });
   return uniqueLinkTargets(targets);
+}
+
+export function trackedChangesInDocument(document: DocumentState | undefined): TrackedChangeSummary[] {
+  if (!document) {
+    return [];
+  }
+  const changes = new Map<string, TrackedChangeSummary>();
+  for (const section of document.sections) {
+    for (const block of section.blocks) {
+      collectTrackedChangesFromBlock(block, changes);
+    }
+  }
+  return [...changes.values()].sort((left, right) => left.created_at.localeCompare(right.created_at));
 }
 
 export function documentOutlineFromEditableBlocks(blocks: EditableBlock[]): DocumentOutlineEntry[] {
@@ -889,6 +939,7 @@ function editorTextToInline(textNode: EditorTextNode): Inline {
   let link: string | null = null;
   const commentIds: string[] = [];
   const style: InlineStyle = {};
+  let trackedChange: TrackedChange | null = null;
   for (const mark of textNode.marks ?? []) {
     const mapped = mapEditorMark(mark.type);
     if (mapped) {
@@ -901,6 +952,12 @@ function editorTextToInline(textNode: EditorTextNode): Inline {
       const commentId = sanitizeCommentId(mark.attrs.id);
       if (commentId && !commentIds.includes(commentId)) {
         commentIds.push(commentId);
+      }
+    }
+    if (mark.type === 'trackedChange') {
+      const change = trackedChangeFromMarkAttrs(mark.attrs);
+      if (change) {
+        trackedChange = change;
       }
     }
     if (mark.type === 'textStyle') {
@@ -930,6 +987,9 @@ function editorTextToInline(textNode: EditorTextNode): Inline {
   if (!inlineStyleIsEmpty(style)) {
     inline.style = style;
   }
+  if (trackedChange) {
+    inline.tracked_change = trackedChange;
+  }
   return inline;
 }
 
@@ -952,6 +1012,18 @@ function inlineToEditorText(inline: Inline): EditorTextNode {
     if (id) {
       marks.push({ type: 'comment', attrs: { id } });
     }
+  }
+  const trackedChange = normalizeTrackedChange(inline.tracked_change);
+  if (trackedChange) {
+    marks.push({
+      type: 'trackedChange',
+      attrs: {
+        id: trackedChange.id,
+        kind: trackedChange.kind,
+        author: trackedChange.author,
+        createdAt: trackedChange.created_at
+      }
+    });
   }
   if (inline.style && !inlineStyleIsEmpty(inline.style)) {
     marks.push({
@@ -1151,6 +1223,107 @@ function mapEditorMark(mark: string): string | undefined {
     subscript: 'Subscript'
   };
   return supportedMarks[mark];
+}
+
+function collectTrackedChangesFromBlock(block: Block, changes: Map<string, TrackedChangeSummary>) {
+  if (hasInlineContent(block)) {
+    collectTrackedChangesFromInlines(block.value.inlines, changes);
+    return;
+  }
+  if (isListBlock(block)) {
+    for (const item of block.value.items) {
+      for (const child of item.blocks) {
+        collectTrackedChangesFromBlock(child, changes);
+      }
+    }
+  } else if (isTableBlock(block)) {
+    for (const row of block.value.rows) {
+      for (const cell of row.cells) {
+        for (const child of cell.blocks) {
+          collectTrackedChangesFromBlock(child, changes);
+        }
+      }
+    }
+  }
+}
+
+function collectTrackedChangesFromInlines(inlines: Inline[], changes: Map<string, TrackedChangeSummary>) {
+  for (const inline of inlines) {
+    const change = normalizeTrackedChange(inline.tracked_change);
+    if (!change) {
+      continue;
+    }
+    const existing = changes.get(change.id);
+    if (existing) {
+      existing.text += inline.text;
+    } else {
+      changes.set(change.id, { ...change, text: inline.text });
+    }
+  }
+}
+
+function trackedChangeFromMarkAttrs(attrs: Record<string, string | number | null> | undefined): TrackedChange | null {
+  const id = sanitizeTrackedChangeId(String(attrs?.id ?? ''));
+  const kind = normalizeTrackedChangeKind(attrs?.kind);
+  if (!id || !kind) {
+    return null;
+  }
+  return {
+    id,
+    kind,
+    author: normalizeTrackedChangeAuthor(attrs?.author),
+    created_at: normalizeTrackedChangeTimestamp(attrs?.createdAt)
+  };
+}
+
+function normalizeTrackedChange(value: unknown): TrackedChange | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const candidate = value as Partial<TrackedChange>;
+  const id = sanitizeTrackedChangeId(candidate.id ?? '');
+  const kind = normalizeTrackedChangeKind(candidate.kind);
+  if (!id || !kind) {
+    return null;
+  }
+  return {
+    id,
+    kind,
+    author: normalizeTrackedChangeAuthor(candidate.author),
+    created_at: normalizeTrackedChangeTimestamp(candidate.created_at)
+  };
+}
+
+export function sanitizeTrackedChangeId(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  const suffix = trimmed.startsWith('chg-') ? trimmed.slice(4) : '';
+  if (trimmed.length > 64 || suffix.length === 0) {
+    return null;
+  }
+  return /^[A-Za-z0-9_-]+$/.test(suffix) ? trimmed : null;
+}
+
+function normalizeTrackedChangeKind(value: unknown): TrackedChangeKind | null {
+  return value === 'insertion' || value === 'deletion' ? value : null;
+}
+
+function normalizeTrackedChangeAuthor(value: unknown): string {
+  if (typeof value !== 'string') {
+    return 'Local User';
+  }
+  const author = value.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return author.length > 0 && Array.from(author).length <= 80 ? author : 'Local User';
+}
+
+function normalizeTrackedChangeTimestamp(value: unknown): string {
+  if (typeof value !== 'string') {
+    return new Date(0).toISOString();
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date(0).toISOString();
 }
 
 function wordCoreListToEditorNode(

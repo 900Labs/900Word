@@ -17,4 +17,6 @@ Sprint 021 adds a tested shortcut helper for standard desktop command shortcuts,
 
 Sprint 022 adds a comments sidebar using native buttons and textareas. Comment commands are not hover-only: users can open the panel with the toolbar or Insert Comment shortcut, enter a bounded comment body, add it to non-empty selected text, jump to a comment anchor, resolve/reopen, and delete with keyboard-focusable controls. Commented text receives a visible inline marker in the editor.
 
+Sprint 023 adds a track changes toolbar toggle and review sidebar using native checkbox and button controls. Accept/reject, accept all/reject all, and jump-to-change actions are keyboard-focusable and not hover-only. Insertions and deletions receive visible inline text styling in addition to the review list labels.
+
 Accessibility smoke checks are part of the release hardening roadmap.

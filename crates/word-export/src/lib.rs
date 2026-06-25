@@ -927,6 +927,7 @@ mod tests {
                 comment_ids: Vec::new(),
                 style: Default::default(),
                 field: None,
+                tracked_change: None,
             }],
         })];
 
@@ -957,6 +958,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    tracked_change: None,
                 }],
             }),
         ];
@@ -996,6 +998,7 @@ mod tests {
                     highlight_color: Some("#fff3bf".to_string()),
                 },
                 field: None,
+                tracked_change: None,
             }],
         })];
 
