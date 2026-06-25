@@ -57,6 +57,7 @@ All notable changes to 900Word are tracked here.
 - DOCX table width interoperability for bounded editable tables, importing simple `w:tblGrid` hints into sanitized per-mille `word-core` widths and exporting 900Word-authored widths as minimal generated DOCX grid hints while keeping ODT canonical and DOCX conversion-only.
 - DOCX table-of-contents interoperability for 900Word-authored generated TOCs, exporting visible styled TOC rows with safe internal bookmark links when targets are unique, importing the generated style/link shape back into `word-core`, and preserving safe paragraph/heading bookmark targets through minimal DOCX bookmark markers without claiming Word TOC field-code or page-number fidelity.
 - DOCX table cell presentation interoperability for the existing bounded 900Word cell styling subset, importing/exporting safe light cell fills, all-borders-hidden markers, and simple cell text alignment while ignoring arbitrary colors, partial borders, rich table themes, and full table layout fidelity.
+- DOCX paragraph formatting interoperability for the existing bounded 900Word paragraph format subset, importing/exporting simple alignment, automatic line spacing, spacing before/after, start/end indents, and first-line or hanging indents while ignoring unsupported line rules and out-of-bounds values.
 
 ### Fixed
 
