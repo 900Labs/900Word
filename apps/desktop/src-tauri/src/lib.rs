@@ -2525,7 +2525,8 @@ mod tests {
         assert!(file_formats.contains("900Word-authored text-only tracked changes"));
         assert!(file_formats.contains("generated table-of-contents blocks"));
         assert!(file_formats.contains("`word900` metadata"));
-        assert!(file_formats.contains("DOCX track changes"));
+        assert!(file_formats.contains("simple DOCX insertion/deletion conversion"));
+        assert!(file_formats.contains("full Word review fidelity"));
     }
 
     #[test]
