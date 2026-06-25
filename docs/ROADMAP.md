@@ -555,3 +555,12 @@ Status: complete.
 - Export valid 900Word-authored paragraph formatting as generated DOCX `w:pPr` spacing, indent, and alignment tags.
 - Ignore unsupported line rules, out-of-bounds values, complex Word style inheritance, tabs, borders, shading, outline/keep flags, arbitrary paragraph settings, and full layout fidelity.
 - Keep ODT canonical and keep telemetry, network behavior, accounts, cloud sync, rich Word styles, and heavy dependencies deferred.
+
+## Sprint 059: DOCX Inline Formatting Interoperability
+
+Status: complete.
+
+- Import simple DOCX direct run formatting into the existing bounded `word-core` inline mark and inline style model: strikethrough, superscript, subscript, supported menu font sizes, safe direct text colors, and safe highlight colors.
+- Export valid 900Word-authored inline formatting as generated DOCX `w:rPr` tags for the same bounded subset.
+- Ignore unsupported font sizes, theme colors, automatic colors, arbitrary highlight names, Word font family inheritance, character styles, complex script font variants, and broad run-style fidelity.
+- Keep ODT canonical and keep telemetry, network behavior, accounts, cloud sync, rich Word styles, and heavy dependencies deferred.

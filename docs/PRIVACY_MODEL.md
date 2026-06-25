@@ -76,6 +76,8 @@ Sprint 039 DOCX tracked changes import/export uses only local `word/document.xml
 
 Sprint 040 DOCX footnotes/endnotes import/export uses only local package note relationships and preflighted `word/footnotes.xml` / `word/endnotes.xml` parts. Accepted imported notes receive generated local `word-core` note IDs and attach only to supported body paragraph, list-item, or table-cell references. Unsafe, remote, missing, malformed, duplicate, unanchored, over-limit, tracked-change-only, or otherwise unsupported notes produce generic warnings without package paths, relationship targets, raw private IDs, local paths, private filenames, usernames, hostnames, account metadata, or hidden note body text. Exported DOCX note IDs, relationship IDs, and note part names are generated; local note IDs, source paths, account data, telemetry identifiers, OS usernames, and hostnames are not emitted.
 
+Sprint 059 DOCX inline formatting import/export uses only direct local run properties already present in preflighted DOCX XML or in the local `word-core` model. Accepted imported values are normalized to existing marks, supported font-size menu values, direct theme-free text colors, and the safe highlight palette. Arbitrary font family names, character-style inheritance, theme colors, automatic colors, complex script font variants, and unsupported highlight names are not preserved. Exported DOCX run properties are generated from local inline values and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -119,6 +121,8 @@ Sprint 035 DOCX export writes only simple anchored comments already present in t
 Sprint 039 DOCX export writes only simple text-only tracked insertions/deletions already present in the local document model. Exported revision IDs are generated numeric values, and unsafe local author strings fall back to `Local User`. The export path does not use source filenames, local paths, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, compare/merge metadata, or private build metadata.
 
 Sprint 040 DOCX export writes only simple local footnotes/endnotes already present in the local document model and referenced from supported body inlines. Exported note IDs are generated numeric values, and exported note parts are generated `word/footnotes.xml` and `word/endnotes.xml` files. The export path does not use local note IDs, source filenames, local paths, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, or private build metadata.
+
+Sprint 059 DOCX export writes only bounded direct inline run properties already present in local document content. Generated run formatting does not use local paths, source filenames, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, Word theme metadata, arbitrary font family metadata, or private build metadata.
 
 ## Network
 
