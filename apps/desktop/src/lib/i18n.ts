@@ -51,6 +51,7 @@ export type UiStringKey =
   | 'documentSavedAs'
   | 'dirty'
   | 'discard'
+  | 'draftView'
   | 'editor'
   | 'editorReadOnly'
   | 'editingToolbar'
@@ -70,6 +71,7 @@ export type UiStringKey =
   | 'file'
   | 'find'
   | 'findAndReplace'
+  | 'fitWidth'
   | 'firstLine'
   | 'firstLineIndent'
   | 'fontControls'
@@ -148,6 +150,7 @@ export type UiStringKey =
   | 'openRecent'
   | 'page'
   | 'pageCount'
+  | 'pageLayoutView'
   | 'pageNumber'
   | 'pageRegionsReadOnly'
   | 'pageRegionsUpdated'
@@ -188,6 +191,7 @@ export type UiStringKey =
   | 'settings'
   | 'settingsUpdated'
   | 'selectionWords'
+  | 'showRulers'
   | 'spellAddedToDictionary'
   | 'spellIgnoredAll'
   | 'spellIgnoredOnce'
@@ -231,9 +235,12 @@ export type UiStringKey =
   | 'useTemplate'
   | 'userDictionarySuffix'
   | 'version'
+  | 'viewMode'
   | 'width'
   | 'words'
   | 'workspaceViews'
+  | 'zoom'
+  | 'customZoom'
   | 'documentWorkspace'
   | 'documentStatistics'
   | 'yes';
@@ -297,6 +304,7 @@ const english: UiStrings = {
   documentSavedAs: 'Document saved as',
   dirty: 'Dirty',
   discard: 'Discard',
+  draftView: 'Draft',
   editor: 'Editor',
   editorReadOnly: 'Editor is read-only',
   editingToolbar: 'Editing toolbar',
@@ -316,6 +324,7 @@ const english: UiStrings = {
   file: 'File',
   find: 'Find',
   findAndReplace: 'Find and replace',
+  fitWidth: 'Fit Width',
   firstLine: 'First',
   firstLineIndent: 'First-line indent',
   fontControls: 'Font controls',
@@ -394,6 +403,7 @@ const english: UiStrings = {
   openRecent: 'Open',
   page: 'Page',
   pageCount: 'Page count',
+  pageLayoutView: 'Page Layout',
   pageNumber: 'Page number',
   pageRegionsReadOnly: 'Imported header/footer content is read-only',
   pageRegionsUpdated: 'Headers and footers updated',
@@ -434,6 +444,7 @@ const english: UiStrings = {
   settings: 'Settings',
   settingsUpdated: 'Settings updated',
   selectionWords: 'Selection words',
+  showRulers: 'Rulers',
   spellAddedToDictionary: 'Added "{word}" to the personal dictionary',
   spellIgnoredAll: 'Word ignored for this session',
   spellIgnoredOnce: 'Spelling issue ignored once',
@@ -477,9 +488,12 @@ const english: UiStrings = {
   useTemplate: 'Use Template',
   userDictionarySuffix: 'user',
   version: 'Version',
+  viewMode: 'View mode',
   width: 'Width',
   words: 'Words',
   workspaceViews: 'Workspace views',
+  zoom: 'Zoom',
+  customZoom: 'Custom zoom',
   documentWorkspace: 'Document workspace',
   documentStatistics: 'Document statistics',
   yes: 'Yes'

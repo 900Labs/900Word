@@ -461,8 +461,17 @@ select:focus-visible {
 .paragraph-tools,
 .list-tools,
 .table-tools,
-.image-tools {
+.image-tools,
+.view-mode-tools {
   gap: 0.2rem;
+}
+
+.view-mode-tools select {
+  min-width: 6.8rem;
+}
+
+.view-mode-tools button {
+  white-space: nowrap;
 }
 
 .color-input {
@@ -515,6 +524,28 @@ select:focus-visible {
 .image-scale input[type="range"] {
   width: 7rem;
   padding-inline: 0;
+}
+
+.zoom-slider {
+  min-width: 12rem;
+}
+
+.zoom-slider input[type="range"] {
+  width: 6rem;
+  padding-inline: 0;
+}
+
+.zoom-value {
+  min-width: 3.1rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ruler-toggle {
+  min-height: 34px;
+  padding: 0 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 750;
 }
 
 .table-size-field {
@@ -935,31 +966,162 @@ select:focus-visible {
   background-size: 28px 28px;
 }
 
+.editor-panel.editor-view-draft {
+  background: #f3f5f4;
+}
+
 .hidden-view {
   display: none;
 }
 
+.editor-viewport {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.editor-viewport.rulers-enabled {
+  padding-top: 1.35rem;
+  padding-left: 1.35rem;
+}
+
+.editor-surface {
+  position: relative;
+  width: min(100%, var(--page-fit-width));
+  margin: 0 auto 2rem;
+}
+
+.editor-panel.zoom-fit .editor-surface,
+.editor-panel.zoom-fixed .editor-surface {
+  width: var(--page-width);
+  max-width: none;
+}
+
+.editor-panel.editor-view-draft .editor-surface {
+  width: min(100%, 72rem);
+  max-width: 100%;
+}
+
 .editor-host {
   position: relative;
-  width: min(100%, 56rem);
+  width: 100%;
   min-height: 48rem;
-  margin: 0 auto 2rem;
-  padding: clamp(2rem, 4vw, 4rem);
+  margin: 0;
+  padding: var(--margin-top) var(--margin-right) var(--margin-bottom) var(--margin-left);
   border: 1px solid #c8ced2;
   border-radius: 4px;
   background: #ffffff;
+  font-size: var(--editor-font-size);
   box-shadow:
     0 1px 2px rgba(22, 27, 34, 0.08),
     0 18px 48px rgba(22, 27, 34, 0.16);
 }
 
+.editor-panel.editor-view-page-layout.zoom-fit .editor-host {
+  min-height: var(--page-fit-height);
+}
+
+.editor-panel.editor-view-page-layout.zoom-fixed .editor-host {
+  min-height: var(--page-height);
+}
+
+.editor-panel.editor-view-draft .editor-host {
+  min-height: 38rem;
+  padding: 1.5rem;
+  border-color: #d2d9d6;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.editor-panel.editor-view-draft .ProseMirror {
+  min-height: 32rem;
+}
+
 .editor-host.empty-document:not(:focus-within)::before {
   content: attr(data-placeholder);
   position: absolute;
-  top: clamp(2rem, 4vw, 4rem);
-  left: clamp(2rem, 4vw, 4rem);
+  top: var(--margin-top);
+  left: var(--margin-left);
   color: #8a939c;
   pointer-events: none;
+}
+
+.editor-panel.editor-view-draft .editor-host.empty-document:not(:focus-within)::before {
+  top: 1.5rem;
+  left: 1.5rem;
+}
+
+.ruler {
+  position: absolute;
+  z-index: 2;
+  display: none;
+  overflow: hidden;
+  border-color: #a9b4ba;
+  color: #56616b;
+  pointer-events: none;
+}
+
+.editor-panel .rulers-enabled .ruler {
+  display: block;
+}
+
+.ruler-top {
+  right: 0;
+  bottom: calc(100% + 0.25rem);
+  left: 0;
+  height: 1rem;
+  border-bottom: 1px solid #a9b4ba;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(86, 97, 107, 0.55) 0 1px,
+      transparent 1px 12px
+    ),
+    #f8faf9;
+}
+
+.ruler-left {
+  top: 0;
+  right: calc(100% + 0.25rem);
+  bottom: 0;
+  width: 1rem;
+  border-right: 1px solid #a9b4ba;
+  background:
+    repeating-linear-gradient(
+      180deg,
+      rgba(86, 97, 107, 0.55) 0 1px,
+      transparent 1px 12px
+    ),
+    #f8faf9;
+}
+
+.ruler span {
+  position: absolute;
+  border-color: #0f6b5f;
+}
+
+.ruler-top span {
+  right: var(--margin-right);
+  bottom: 0;
+  left: var(--margin-left);
+  border-bottom: 3px solid #0f6b5f;
+}
+
+.ruler-left span {
+  top: var(--margin-top);
+  bottom: var(--margin-bottom);
+  left: 0;
+  border-left: 3px solid #0f6b5f;
+}
+
+.editor-panel.editor-view-draft .ruler-top span {
+  right: 1.5rem;
+  left: 1.5rem;
+}
+
+.editor-panel.editor-view-draft .ruler-left span {
+  top: 1.5rem;
+  bottom: 1.5rem;
 }
 
 .ProseMirror {
@@ -974,7 +1136,7 @@ select:focus-visible {
 
 .ProseMirror p[data-style="title"] {
   margin-bottom: 0.45rem;
-  font-size: 2.15rem;
+  font-size: 2.15em;
   line-height: 1.15;
   font-weight: 760;
 }
@@ -982,7 +1144,7 @@ select:focus-visible {
 .ProseMirror p[data-style="subtitle"] {
   margin-bottom: 1.15rem;
   color: #58636d;
-  font-size: 1.18rem;
+  font-size: 1.18em;
 }
 
 .ProseMirror p[data-style="quote"] {
@@ -997,30 +1159,30 @@ select:focus-visible {
   border-radius: 4px;
   background: #f1f4f2;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.92rem;
+  font-size: 0.92em;
 }
 
 .ProseMirror p[data-style="caption"] {
   color: #59636e;
-  font-size: 0.9rem;
+  font-size: 0.9em;
   font-style: italic;
 }
 
 .ProseMirror h1 {
   margin: 0 0 1rem;
-  font-size: 2rem;
+  font-size: 2em;
   line-height: 1.2;
 }
 
 .ProseMirror h2 {
   margin: 1.35rem 0 0.75rem;
-  font-size: 1.48rem;
+  font-size: 1.48em;
   line-height: 1.25;
 }
 
 .ProseMirror h3 {
   margin: 1.15rem 0 0.65rem;
-  font-size: 1.18rem;
+  font-size: 1.18em;
   line-height: 1.3;
 }
 
@@ -1083,7 +1245,7 @@ select:focus-visible {
   display: block;
   margin-top: 0.35rem;
   color: #59636e;
-  font-size: 0.88rem;
+  font-size: 0.88em;
 }
 
 .image-placeholder-text {
@@ -1402,7 +1564,22 @@ select:focus-visible {
 
   .tool-group,
   .search-tools,
-  .template-tools {
+  .template-tools,
+  .view-mode-tools {
+    flex: 1 1 100%;
+  }
+
+  .view-mode-tools {
+    align-items: stretch;
+  }
+
+  .view-mode-tools button,
+  .view-mode-tools select {
+    flex: 1 1 7rem;
+    min-width: 0;
+  }
+
+  .zoom-slider {
     flex: 1 1 100%;
   }
 
@@ -1439,7 +1616,16 @@ select:focus-visible {
 
   .editor-host {
     min-height: 32rem;
-    padding: 1.35rem;
+  }
+
+  .editor-panel.editor-view-page-layout .editor-host {
+    padding: max(1.35rem, min(var(--margin-top), 2rem)) max(1.35rem, min(var(--margin-right), 2rem))
+      max(1.35rem, min(var(--margin-bottom), 2rem)) max(1.35rem, min(var(--margin-left), 2rem));
+  }
+
+  .editor-panel.editor-view-page-layout .editor-host.empty-document:not(:focus-within)::before {
+    top: max(1.35rem, min(var(--margin-top), 2rem));
+    left: max(1.35rem, min(var(--margin-left), 2rem));
   }
 
   .form-surface dl div,
