@@ -315,3 +315,13 @@ Status: complete.
 - Map simple paragraph runs and supported page-number, page-count, and date fields through the existing `PageRegions` model.
 - Export 900Word-authored page regions as minimal DOCX header/footer parts with document relationships and section references.
 - Keep ODT canonical, with DOCX images/media, comments, tracked changes, notes, even-page regions, complex fields, complex section layouts, cloud, telemetry, accounts, network behavior, and full layout fidelity deferred.
+
+## Sprint 034: DOCX Image Media
+
+Status: complete.
+
+- Extend the conversion-only DOCX boundary to import safe local image relationships under `word/media/` into existing `word-core` assets and `ImageBlock`s.
+- Validate supported PNG, JPEG/JPG, GIF, and WebP image payloads by relationship target, extension/media type, package preflight, and magic bytes before storing bytes.
+- Preserve adjacent visible paragraph text around simple DOCX drawings by splitting mixed text/image paragraphs into adjacent text and image blocks when needed.
+- Export valid 900Word-authored image assets as generated embedded `word/media/` parts with document relationships, content type defaults, minimal DrawingML references, and alt text.
+- Keep ODT canonical, with linked/remote images, image sizing/cropping/layout fidelity, compression/downsampling, comments, tracked changes, notes, cloud, telemetry, accounts, network behavior, external converters, heavyweight dependencies, and full DOCX media fidelity deferred.

@@ -8,7 +8,7 @@ Accepted
 
 Rust owns import/export. The initial native format is ODT, with TXT, sanitized HTML, print HTML, basic PDF export, and bounded DOCX conversion. DOCX is import/export only and must pass through `word-core`; it is not a native save format. Binary `.doc` is deferred.
 
-Sprint 033 keeps that boundary while adding simple DOCX page-region conversion for default and first-page headers/footers plus page-number, page-count, and date fields. Header/footer parts are local package parts only; remote targets, unsafe relationship targets, even-page regions, complex fields, complex section layouts, comments, tracked changes, notes, media, and full layout fidelity remain outside the accepted DOCX conversion scope.
+Sprint 033 keeps that boundary while adding simple DOCX page-region conversion for default and first-page headers/footers plus page-number, page-count, and date fields. Sprint 034 extends the same conversion-only boundary to safe embedded DOCX image relationships under `word/media/`, using existing `word-core` assets and `ImageBlock`s. Header/footer and image parts are local package parts only; remote targets, unsafe relationship targets, linked images, image sizing/cropping/layout fidelity, image compression/downsampling, even-page regions, complex fields, complex section layouts, comments, tracked changes, notes, broad media fidelity, and full layout fidelity remain outside the accepted DOCX conversion scope.
 
 ## Consequences
 
