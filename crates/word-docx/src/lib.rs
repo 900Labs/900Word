@@ -1,10 +1,12 @@
+use chrono::{DateTime, SecondsFormat, Utc};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    sanitize_bookmark_id, AssetRef, Block, Document, DocumentWarning, Heading, ImageBlock,
+    normalize_comment_author, sanitize_bookmark_id, validate_comment_body, validate_comment_id,
+    AssetRef, Block, CommentThread, Document, DocumentWarning, Heading, ImageBlock,
     ImagePresentation, Inline, InlineMark, ListBlock, ListItem, PageField, PageRegion,
     PageRegionBlock, PageRegionParagraph, PageRegions, Paragraph, StyleId, Table, TableCell,
     TableRow,
@@ -23,6 +25,8 @@ const REL_TYPE_STYLES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
 const REL_TYPE_NUMBERING: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
+const REL_TYPE_COMMENTS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
 const REL_TYPE_HEADER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
 const REL_TYPE_FOOTER: &str =
@@ -30,8 +34,11 @@ const REL_TYPE_FOOTER: &str =
 const REL_TYPE_IMAGE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const PAGE_REGION_XML: &str = "DOCX page region";
+const DOCX_COMMENTS_XML: &str = "DOCX comments";
 const MAX_DOCX_IMAGE_PARTS: usize = 64;
 const MAX_DOCX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DOCX_COMMENT_PARTS: usize = 4;
+const MAX_DOCX_COMMENTS: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageLimits {
@@ -122,6 +129,7 @@ struct ParsedBlock {
 #[derive(Debug, Clone, Default)]
 struct RelationshipMap {
     hyperlinks: BTreeMap<String, String>,
+    comments: BTreeMap<String, String>,
     page_regions: BTreeMap<String, PageRegionRelationship>,
     images: BTreeMap<String, DocxImageRelationship>,
 }
@@ -150,6 +158,24 @@ struct ImportedDocxImages {
 }
 
 #[derive(Debug, Clone, Default)]
+struct ImportedDocxComments {
+    by_raw_id: BTreeMap<String, ImportedDocxComment>,
+    comments: BTreeMap<String, CommentThread>,
+}
+
+#[derive(Debug, Clone)]
+struct ImportedDocxComment {
+    local_id: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DocxImportContext<'a> {
+    rels: &'a RelationshipMap,
+    images: &'a ImportedDocxImages,
+    comments: &'a ImportedDocxComments,
+}
+
+#[derive(Debug, Clone, Default)]
 struct DocxImageExports {
     parts: Vec<DocxImageExport>,
 }
@@ -162,6 +188,47 @@ struct DocxImageExport {
     target: String,
     media_type: &'static str,
     bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DocxCommentExports {
+    rel_id: Option<String>,
+    ids: BTreeMap<String, u32>,
+    comments: Vec<DocxCommentExport>,
+}
+
+impl DocxCommentExports {
+    fn has_comments(&self) -> bool {
+        !self.comments.is_empty()
+    }
+
+    fn ids_for_inline(&self, inline: &Inline) -> Vec<String> {
+        if inline.text.is_empty()
+            || inline.field.is_some()
+            || inline.note_reference.is_some()
+            || inline.tracked_change.is_some()
+        {
+            return Vec::new();
+        }
+        inline
+            .comment_ids
+            .iter()
+            .filter(|id| self.ids.contains_key(*id))
+            .cloned()
+            .collect()
+    }
+
+    fn numeric_id(&self, local_id: &str) -> Option<u32> {
+        self.ids.get(local_id).copied()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DocxCommentExport {
+    numeric_id: u32,
+    author: String,
+    body: String,
+    created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -182,6 +249,7 @@ enum PageRegionReferenceKind {
 struct ParsedDocument {
     blocks: Vec<Block>,
     page_regions: PageRegions,
+    anchored_comment_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -258,6 +326,146 @@ impl RunProperties {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct CommentImportState {
+    active: Vec<ActiveCommentRange>,
+    completed: BTreeSet<String>,
+}
+
+impl CommentImportState {
+    fn start_range(
+        &mut self,
+        start: &BytesStart<'_>,
+        comments: &ImportedDocxComments,
+        warnings: &mut WarningSink,
+    ) -> Result<(), DocxError> {
+        let Some(raw_id) = attr_value(start, b"id", DOCUMENT_XML)? else {
+            warnings.warn(
+                "docx_comment_range_ignored",
+                "Unsupported DOCX comment ranges were ignored during import",
+            );
+            return Ok(());
+        };
+        let Some(comment) = comments.by_raw_id.get(&raw_id) else {
+            warnings.warn(
+                "docx_comment_range_ignored",
+                "Unsupported DOCX comment ranges were ignored during import",
+            );
+            return Ok(());
+        };
+        if self.active.iter().any(|range| range.raw_id == raw_id) {
+            warnings.warn(
+                "docx_comment_range_ignored",
+                "Unsupported DOCX comment ranges were ignored during import",
+            );
+            return Ok(());
+        }
+        self.active.push(ActiveCommentRange {
+            raw_id,
+            local_id: comment.local_id.clone(),
+            saw_text: false,
+        });
+        Ok(())
+    }
+
+    fn end_range(
+        &mut self,
+        start: &BytesStart<'_>,
+        warnings: &mut WarningSink,
+    ) -> Result<(), DocxError> {
+        let Some(raw_id) = attr_value(start, b"id", DOCUMENT_XML)? else {
+            warnings.warn(
+                "docx_comment_range_ignored",
+                "Unsupported DOCX comment ranges were ignored during import",
+            );
+            return Ok(());
+        };
+        let Some(position) = self.active.iter().rposition(|range| range.raw_id == raw_id) else {
+            warnings.warn(
+                "docx_comment_range_ignored",
+                "Unsupported DOCX comment ranges were ignored during import",
+            );
+            return Ok(());
+        };
+        let range = self.active.remove(position);
+        if range.saw_text {
+            self.completed.insert(range.local_id);
+        } else {
+            warnings.warn(
+                "docx_comment_range_ignored",
+                "Unsupported DOCX comment ranges were ignored during import",
+            );
+        }
+        Ok(())
+    }
+
+    fn reference_marker(
+        &self,
+        start: &BytesStart<'_>,
+        comments: &ImportedDocxComments,
+        warnings: &mut WarningSink,
+    ) -> Result<(), DocxError> {
+        let Some(raw_id) = attr_value(start, b"id", DOCUMENT_XML)? else {
+            warnings.warn(
+                "docx_comment_range_ignored",
+                "Unsupported DOCX comment ranges were ignored during import",
+            );
+            return Ok(());
+        };
+        let Some(comment) = comments.by_raw_id.get(&raw_id) else {
+            warnings.warn(
+                "docx_comment_range_ignored",
+                "Unsupported DOCX comment ranges were ignored during import",
+            );
+            return Ok(());
+        };
+        if self.active.iter().any(|range| range.raw_id == raw_id)
+            || self.completed.contains(&comment.local_id)
+        {
+            return Ok(());
+        }
+        warnings.warn(
+            "docx_comment_range_ignored",
+            "Unsupported DOCX comment ranges were ignored during import",
+        );
+        Ok(())
+    }
+
+    fn mark_visible_text(&mut self) {
+        for range in &mut self.active {
+            range.saw_text = true;
+        }
+    }
+
+    fn active_local_ids(&self) -> Vec<String> {
+        self.active
+            .iter()
+            .map(|range| range.local_id.clone())
+            .collect()
+    }
+
+    fn finish_paragraph(
+        self,
+        anchored_comment_ids: &mut BTreeSet<String>,
+        warnings: &mut WarningSink,
+    ) {
+        if !self.active.is_empty() {
+            warnings.warn(
+                "docx_comment_range_ignored",
+                "Unsupported DOCX comment ranges were ignored during import",
+            );
+        }
+        anchored_comment_ids.extend(self.completed);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ActiveCommentRange {
+    raw_id: String,
+    local_id: String,
+    saw_text: bool,
+}
+
 #[derive(Debug, Clone)]
 struct HyperlinkRef {
     href: Option<String>,
@@ -321,6 +529,8 @@ pub fn read_docx_bytes_with_limits(
     };
     let imported_images = read_docx_image_parts(&mut archive, &rels, &mut warnings)?;
     let page_region_part_xml = read_page_region_parts(&mut archive, &rels, &mut warnings)?;
+    let comments_part_xml = read_comment_parts(&mut archive, &rels, &mut warnings)?;
+    let imported_comments = parse_docx_comments(&comments_part_xml, &mut warnings)?;
     let numbering = if numbering_xml.is_empty() {
         NumberingMap::default()
     } else {
@@ -330,6 +540,7 @@ pub fn read_docx_bytes_with_limits(
         &document_xml,
         &rels,
         &imported_images,
+        &imported_comments,
         &page_region_part_xml,
         &numbering,
         &mut warnings,
@@ -345,6 +556,15 @@ pub fn read_docx_bytes_with_limits(
         section.page_regions = parsed_document.page_regions;
     }
     document.warnings = warnings.warnings;
+    document.comments = imported_comments
+        .comments
+        .into_iter()
+        .filter(|(id, _)| parsed_document.anchored_comment_ids.contains(id))
+        .collect();
+    prune_comment_ids_from_blocks(
+        &mut document.sections[0].blocks,
+        &parsed_document.anchored_comment_ids,
+    );
     let mut referenced_assets = BTreeSet::new();
     let mut ordered_assets = Vec::new();
     for section in &document.sections {
@@ -367,12 +587,16 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     let hyperlink_ids = assign_hyperlink_ids(&hyperlinks);
     let (image_exports, next_rel_id) = collect_docx_image_exports(document, hyperlinks.len() + 3);
     let page_region_exports = collect_page_region_exports(document, next_rel_id);
+    let next_rel_id = next_rel_id + page_region_exports.parts.len();
+    let comment_exports = collect_docx_comment_exports(document, next_rel_id);
     let compressed = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let cursor = Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);
 
     writer.start_file("[Content_Types].xml", compressed)?;
-    writer.write_all(render_content_types_xml(&page_region_exports, &image_exports).as_bytes())?;
+    writer.write_all(
+        render_content_types_xml(&page_region_exports, &image_exports, &comment_exports).as_bytes(),
+    )?;
 
     writer.start_file("_rels/.rels", compressed)?;
     writer.write_all(render_root_rels_xml().as_bytes())?;
@@ -384,13 +608,20 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
             &hyperlink_ids,
             &page_region_exports,
             &image_exports,
+            &comment_exports,
         )
         .as_bytes(),
     )?;
 
     writer.start_file(DOCUMENT_RELS, compressed)?;
     writer.write_all(
-        render_document_rels_xml(&hyperlink_ids, &page_region_exports, &image_exports).as_bytes(),
+        render_document_rels_xml(
+            &hyperlink_ids,
+            &page_region_exports,
+            &image_exports,
+            &comment_exports,
+        )
+        .as_bytes(),
     )?;
 
     writer.start_file("word/styles.xml", compressed)?;
@@ -406,6 +637,10 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     for part in &image_exports.parts {
         writer.start_file(&part.path, compressed)?;
         writer.write_all(&part.bytes)?;
+    }
+    if comment_exports.has_comments() {
+        writer.start_file("word/comments.xml", compressed)?;
+        writer.write_all(render_comments_xml(&comment_exports).as_bytes())?;
     }
 
     Ok(writer.finish()?.into_inner())
@@ -522,6 +757,30 @@ fn parse_relationships_xml(
                             );
                         }
                     }
+                    (Some(id), Some(rel_type), Some(target)) if rel_type == REL_TYPE_COMMENTS => {
+                        if target_mode_is_external(target_mode.as_deref()) {
+                            warnings.warn(
+                                "docx_comments_relationship_ignored",
+                                "Unsupported DOCX comments relationships were ignored during import",
+                            );
+                            continue;
+                        }
+                        if relationships.comments.len() >= MAX_DOCX_COMMENT_PARTS {
+                            warnings.warn(
+                                "docx_comments_relationship_ignored",
+                                "Unsupported DOCX comments relationships were ignored during import",
+                            );
+                            continue;
+                        }
+                        if let Some(target) = resolve_comments_target(&target) {
+                            relationships.comments.insert(id, target);
+                        } else {
+                            warnings.warn(
+                                "docx_comments_relationship_ignored",
+                                "Unsupported DOCX comments relationships were ignored during import",
+                            );
+                        }
+                    }
                     (Some(id), Some(rel_type), Some(target)) if rel_type == REL_TYPE_IMAGE => {
                         if target_mode_is_external(target_mode.as_deref()) {
                             warnings.warn(
@@ -595,6 +854,264 @@ fn read_page_region_parts<R: Read + std::io::Seek>(
         }
     }
     Ok(parts)
+}
+
+fn read_comment_parts<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    rels: &RelationshipMap,
+    warnings: &mut WarningSink,
+) -> Result<BTreeMap<String, String>, DocxError> {
+    let mut parts = BTreeMap::new();
+    for target in rels.comments.values() {
+        if parts.contains_key(target) {
+            continue;
+        }
+        match archive.by_name(target) {
+            Ok(mut file) => {
+                let mut xml = String::new();
+                file.read_to_string(&mut xml)?;
+                parts.insert(target.clone(), xml);
+            }
+            Err(zip::result::ZipError::FileNotFound) => {
+                warnings.warn(
+                    "docx_comments_part_missing",
+                    "DOCX comments with missing content were ignored during import",
+                );
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(parts)
+}
+
+fn parse_docx_comments(
+    parts: &BTreeMap<String, String>,
+    warnings: &mut WarningSink,
+) -> Result<ImportedDocxComments, DocxError> {
+    let mut imported = ImportedDocxComments::default();
+    for xml in parts.values() {
+        parse_docx_comments_xml(xml, &mut imported, warnings)?;
+    }
+    Ok(imported)
+}
+
+fn parse_docx_comments_xml(
+    xml: &str,
+    imported: &mut ImportedDocxComments,
+    warnings: &mut WarningSink,
+) -> Result<(), DocxError> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCX_COMMENTS_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"comment" => {
+                if imported.comments.len() >= MAX_DOCX_COMMENTS {
+                    warnings.warn(
+                        "docx_comments_over_limit",
+                        "Excess DOCX comments were ignored during import",
+                    );
+                    skip_element(&mut reader, b"comment", DOCX_COMMENTS_XML)?;
+                    continue;
+                }
+                parse_docx_comment(&mut reader, &start, imported, warnings)?;
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"comment" => {
+                warnings.warn(
+                    "docx_comment_ignored",
+                    "Unsupported DOCX comments were ignored during import",
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn parse_docx_comment(
+    reader: &mut Reader<&[u8]>,
+    start: &BytesStart<'_>,
+    imported: &mut ImportedDocxComments,
+    warnings: &mut WarningSink,
+) -> Result<(), DocxError> {
+    let Some(raw_id) = attr_value(start, b"id", DOCX_COMMENTS_XML)? else {
+        warnings.warn(
+            "docx_comment_ignored",
+            "Unsupported DOCX comments were ignored during import",
+        );
+        skip_element(reader, b"comment", DOCX_COMMENTS_XML)?;
+        return Ok(());
+    };
+    if imported.by_raw_id.contains_key(&raw_id) {
+        warnings.warn(
+            "docx_comment_ignored",
+            "Unsupported DOCX comments were ignored during import",
+        );
+        skip_element(reader, b"comment", DOCX_COMMENTS_XML)?;
+        return Ok(());
+    }
+
+    let author = attr_value(start, b"author", DOCX_COMMENTS_XML)?;
+    let created_at = attr_value(start, b"date", DOCX_COMMENTS_XML)?
+        .and_then(|value| DateTime::parse_from_rfc3339(value.trim()).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let mut paragraphs = Vec::new();
+
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCX_COMMENTS_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"p" => {
+                paragraphs.push(parse_docx_comment_paragraph(reader, warnings)?);
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"comment" => break,
+            Event::Start(start) => {
+                warnings.warn(
+                    "docx_comment_content_degraded",
+                    "Unsupported DOCX comment content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCX_COMMENTS_XML)?;
+            }
+            Event::Empty(_) => {
+                warnings.warn(
+                    "docx_comment_content_degraded",
+                    "Unsupported DOCX comment content was ignored during import",
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    let body = paragraphs
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Ok(body) = validate_comment_body(&body) else {
+        warnings.warn(
+            "docx_comment_ignored",
+            "Unsupported DOCX comments were ignored during import",
+        );
+        return Ok(());
+    };
+    let Ok(author) = normalize_comment_author(author.as_deref()) else {
+        warnings.warn(
+            "docx_comment_ignored",
+            "Unsupported DOCX comments were ignored during import",
+        );
+        return Ok(());
+    };
+    let local_id = next_imported_docx_comment_id(&raw_id, imported.comments.len() + 1);
+    imported.by_raw_id.insert(
+        raw_id,
+        ImportedDocxComment {
+            local_id: local_id.clone(),
+        },
+    );
+    imported.comments.insert(
+        local_id.clone(),
+        CommentThread {
+            id: local_id,
+            author,
+            body,
+            created_at,
+            updated_at: created_at,
+            resolved: false,
+        },
+    );
+    Ok(())
+}
+
+fn parse_docx_comment_paragraph(
+    reader: &mut Reader<&[u8]>,
+    warnings: &mut WarningSink,
+) -> Result<String, DocxError> {
+    let mut text = String::new();
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCX_COMMENTS_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
+                text.push_str(&parse_docx_comment_run(reader, warnings)?);
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"p" => break,
+            Event::Start(start) => {
+                let local = local_name(start.name().as_ref()).to_vec();
+                if local != b"pPr" {
+                    warnings.warn(
+                        "docx_comment_content_degraded",
+                        "Unsupported DOCX comment content was ignored during import",
+                    );
+                }
+                skip_element(reader, &local, DOCX_COMMENTS_XML)?;
+            }
+            Event::Empty(start) => {
+                if local_name(start.name().as_ref()) != b"pPr" {
+                    warnings.warn(
+                        "docx_comment_content_degraded",
+                        "Unsupported DOCX comment content was ignored during import",
+                    );
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(text)
+}
+
+fn parse_docx_comment_run(
+    reader: &mut Reader<&[u8]>,
+    warnings: &mut WarningSink,
+) -> Result<String, DocxError> {
+    let mut text = String::new();
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCX_COMMENTS_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"t" => {
+                text.push_str(&read_text_element(reader, b"t", DOCX_COMMENTS_XML)?);
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"tab" => {
+                text.push('\t');
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"br" => {
+                text.push('\n');
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"r" => break,
+            Event::Start(start) => {
+                let local = local_name(start.name().as_ref()).to_vec();
+                if local != b"rPr" {
+                    warnings.warn(
+                        "docx_comment_content_degraded",
+                        "Unsupported DOCX comment content was ignored during import",
+                    );
+                }
+                skip_element(reader, &local, DOCX_COMMENTS_XML)?;
+            }
+            Event::Empty(start) => {
+                if !matches!(local_name(start.name().as_ref()), b"rPr" | b"tab" | b"br") {
+                    warnings.warn(
+                        "docx_comment_content_degraded",
+                        "Unsupported DOCX comment content was ignored during import",
+                    );
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(text)
 }
 
 fn read_docx_image_parts<R: Read + std::io::Seek>(
@@ -724,6 +1241,7 @@ fn parse_document_xml(
     xml: &str,
     rels: &RelationshipMap,
     imported_images: &ImportedDocxImages,
+    imported_comments: &ImportedDocxComments,
     page_region_part_xml: &BTreeMap<String, String>,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
@@ -732,6 +1250,7 @@ fn parse_document_xml(
     reader.config_mut().trim_text(false);
     let mut parsed = Vec::new();
     let mut page_regions = PageRegions::default();
+    let mut anchored_comment_ids = BTreeSet::new();
     let mut in_body = false;
 
     loop {
@@ -744,14 +1263,29 @@ fn parse_document_xml(
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"body" => break,
             Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"p" => {
-                let blocks =
-                    parse_paragraph(&mut reader, rels, imported_images, numbering, warnings)?;
+                let blocks = parse_paragraph(
+                    &mut reader,
+                    rels,
+                    imported_images,
+                    imported_comments,
+                    numbering,
+                    warnings,
+                    &mut anchored_comment_ids,
+                )?;
                 for block in blocks {
                     push_parsed_block(&mut parsed, block);
                 }
             }
             Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"tbl" => {
-                let table = parse_table(&mut reader, rels, imported_images, numbering, warnings)?;
+                let table = parse_table(
+                    &mut reader,
+                    rels,
+                    imported_images,
+                    imported_comments,
+                    numbering,
+                    warnings,
+                    &mut anchored_comment_ids,
+                )?;
                 push_parsed_block(
                     &mut parsed,
                     ParsedBlock {
@@ -787,6 +1321,7 @@ fn parse_document_xml(
     Ok(ParsedDocument {
         blocks: parsed.into_iter().map(|item| item.block).collect(),
         page_regions,
+        anchored_comment_ids,
     })
 }
 
@@ -956,8 +1491,10 @@ fn parse_table(
     reader: &mut Reader<&[u8]>,
     rels: &RelationshipMap,
     imported_images: &ImportedDocxImages,
+    imported_comments: &ImportedDocxComments,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
+    anchored_comment_ids: &mut BTreeSet<String>,
 ) -> Result<Table, DocxError> {
     let mut rows = Vec::new();
     loop {
@@ -970,8 +1507,10 @@ fn parse_table(
                     reader,
                     rels,
                     imported_images,
+                    imported_comments,
                     numbering,
                     warnings,
+                    anchored_comment_ids,
                 )?);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tbl" => break,
@@ -990,8 +1529,10 @@ fn parse_table_row(
     reader: &mut Reader<&[u8]>,
     rels: &RelationshipMap,
     imported_images: &ImportedDocxImages,
+    imported_comments: &ImportedDocxComments,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
+    anchored_comment_ids: &mut BTreeSet<String>,
 ) -> Result<TableRow, DocxError> {
     let mut cells = Vec::new();
     loop {
@@ -1004,8 +1545,10 @@ fn parse_table_row(
                     reader,
                     rels,
                     imported_images,
+                    imported_comments,
                     numbering,
                     warnings,
+                    anchored_comment_ids,
                 )?);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tr" => break,
@@ -1024,8 +1567,10 @@ fn parse_table_cell(
     reader: &mut Reader<&[u8]>,
     rels: &RelationshipMap,
     imported_images: &ImportedDocxImages,
+    imported_comments: &ImportedDocxComments,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
+    anchored_comment_ids: &mut BTreeSet<String>,
 ) -> Result<TableCell, DocxError> {
     let mut parsed = Vec::new();
     loop {
@@ -1034,7 +1579,15 @@ fn parse_table_cell(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"p" => {
-                let blocks = parse_paragraph(reader, rels, imported_images, numbering, warnings)?;
+                let blocks = parse_paragraph(
+                    reader,
+                    rels,
+                    imported_images,
+                    imported_comments,
+                    numbering,
+                    warnings,
+                    anchored_comment_ids,
+                )?;
                 for block in blocks {
                     push_parsed_block(&mut parsed, block);
                 }
@@ -1044,7 +1597,15 @@ fn parse_table_cell(
                     "docx_nested_table_degraded",
                     "Nested DOCX tables were imported as plain visible text",
                 );
-                let table = parse_table(reader, rels, imported_images, numbering, warnings)?;
+                let table = parse_table(
+                    reader,
+                    rels,
+                    imported_images,
+                    imported_comments,
+                    numbering,
+                    warnings,
+                    anchored_comment_ids,
+                )?;
                 push_parsed_block(
                     &mut parsed,
                     ParsedBlock {
@@ -1182,11 +1743,19 @@ fn parse_paragraph(
     reader: &mut Reader<&[u8]>,
     rels: &RelationshipMap,
     imported_images: &ImportedDocxImages,
+    imported_comments: &ImportedDocxComments,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
+    anchored_comment_ids: &mut BTreeSet<String>,
 ) -> Result<Vec<ParsedBlock>, DocxError> {
     let mut properties = ParagraphProperties::default();
     let mut content = Vec::new();
+    let mut comment_state = CommentImportState::default();
+    let context = DocxImportContext {
+        rels,
+        images: imported_images,
+        comments: imported_comments,
+    };
 
     loop {
         match reader
@@ -1200,8 +1769,8 @@ fn parse_paragraph(
                 let run = parse_paragraph_run(
                     reader,
                     None,
-                    rels,
-                    imported_images,
+                    &context,
+                    &mut comment_state,
                     warnings,
                     DOCUMENT_XML,
                 )?;
@@ -1209,9 +1778,25 @@ fn parse_paragraph(
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"hyperlink" => {
                 let link = hyperlink_ref(&start, rels, warnings)?;
-                let run =
-                    parse_hyperlink(reader, link, rels, imported_images, warnings, DOCUMENT_XML)?;
+                let run = parse_hyperlink(
+                    reader,
+                    link,
+                    &context,
+                    &mut comment_state,
+                    warnings,
+                    DOCUMENT_XML,
+                )?;
                 append_paragraph_content(&mut content, run);
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"commentRangeStart" =>
+            {
+                comment_state.start_range(&start, imported_comments, warnings)?;
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"commentRangeEnd" =>
+            {
+                comment_state.end_range(&start, warnings)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
                 let field = page_field_from_instruction(
@@ -1265,6 +1850,7 @@ fn parse_paragraph(
         }
     }
 
+    comment_state.finish_paragraph(anchored_comment_ids, warnings);
     Ok(paragraph_content_to_blocks(content, &properties))
 }
 
@@ -1356,8 +1942,8 @@ fn parse_num_properties(
 fn parse_hyperlink(
     reader: &mut Reader<&[u8]>,
     link: HyperlinkRef,
-    rels: &RelationshipMap,
-    imported_images: &ImportedDocxImages,
+    context: &DocxImportContext<'_>,
+    comment_state: &mut CommentImportState,
     warnings: &mut WarningSink,
     name: &str,
 ) -> Result<Vec<ParagraphContent>, DocxError> {
@@ -1368,8 +1954,8 @@ fn parse_hyperlink(
                 let run = parse_paragraph_run(
                     reader,
                     link.href.clone(),
-                    rels,
-                    imported_images,
+                    context,
+                    comment_state,
                     warnings,
                     name,
                 )?;
@@ -1390,8 +1976,8 @@ fn parse_hyperlink(
 fn parse_paragraph_run(
     reader: &mut Reader<&[u8]>,
     link: Option<String>,
-    rels: &RelationshipMap,
-    imported_images: &ImportedDocxImages,
+    context: &DocxImportContext<'_>,
+    comment_state: &mut CommentImportState,
     warnings: &mut WarningSink,
     name: &str,
 ) -> Result<Vec<ParagraphContent>, DocxError> {
@@ -1414,8 +2000,16 @@ fn parse_paragraph_run(
                 text.push('\n');
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"drawing" => {
-                flush_run_text_content(&mut content, &mut text, &properties, link.clone());
-                if let Some(image) = parse_drawing(reader, rels, imported_images, warnings, name)? {
+                flush_run_text_content(
+                    &mut content,
+                    &mut text,
+                    &properties,
+                    link.clone(),
+                    Some(comment_state),
+                );
+                if let Some(image) =
+                    parse_drawing(reader, context.rels, context.images, warnings, name)?
+                {
                     content.push(ParagraphContent::Image(image));
                 }
             }
@@ -1443,14 +2037,18 @@ fn parse_paragraph_run(
                 let end = local_name(start.name().as_ref()).to_vec();
                 skip_element(reader, &end, name)?;
             }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"commentReference" => {
+                comment_state.reference_marker(&start, context.comments, warnings)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"commentReference" => {
+                comment_state.reference_marker(&start, context.comments, warnings)?;
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, name)?;
+            }
             Event::Empty(start)
                 if matches!(
                     local_name(start.name().as_ref()),
-                    b"footnoteReference"
-                        | b"endnoteReference"
-                        | b"commentReference"
-                        | b"fldChar"
-                        | b"instrText"
+                    b"footnoteReference" | b"endnoteReference" | b"fldChar" | b"instrText"
                 ) =>
             {
                 warnings.warn(
@@ -1461,11 +2059,7 @@ fn parse_paragraph_run(
             Event::Start(start)
                 if matches!(
                     local_name(start.name().as_ref()),
-                    b"footnoteReference"
-                        | b"endnoteReference"
-                        | b"commentReference"
-                        | b"fldChar"
-                        | b"instrText"
+                    b"footnoteReference" | b"endnoteReference" | b"fldChar" | b"instrText"
                 ) =>
             {
                 warnings.warn(
@@ -1495,7 +2089,13 @@ fn parse_paragraph_run(
         }
     }
 
-    flush_run_text_content(&mut content, &mut text, &properties, link);
+    flush_run_text_content(
+        &mut content,
+        &mut text,
+        &properties,
+        link,
+        Some(comment_state),
+    );
     Ok(content)
 }
 
@@ -1581,15 +2181,22 @@ fn flush_run_text_content(
     text: &mut String,
     properties: &RunProperties,
     link: Option<String>,
+    comment_state: Option<&mut CommentImportState>,
 ) {
     if text.is_empty() {
         return;
     }
+    let comment_ids = comment_state
+        .map(|state| {
+            state.mark_visible_text();
+            state.active_local_ids()
+        })
+        .unwrap_or_default();
     content.push(ParagraphContent::Inline(Box::new(Inline {
         text: std::mem::take(text),
         marks: properties.marks(),
         link,
-        comment_ids: Vec::new(),
+        comment_ids,
         style: Default::default(),
         field: None,
         note_reference: None,
@@ -2007,6 +2614,14 @@ fn read_text_element(
                 })?)
             }
             Event::CData(text) => value.push_str(&String::from_utf8_lossy(&text.into_inner())),
+            Event::GeneralRef(reference) => match reference.as_ref() {
+                b"lt" => value.push('<'),
+                b"gt" => value.push('>'),
+                b"amp" => value.push('&'),
+                b"quot" => value.push('"'),
+                b"apos" => value.push('\''),
+                _ => {}
+            },
             Event::End(end) if local_name(end.name().as_ref()) == end_name => break,
             Event::Start(start) => {
                 let end = local_name(start.name().as_ref()).to_vec();
@@ -2091,6 +2706,7 @@ fn table_to_paragraph_block(table: &Table) -> Block {
 fn render_content_types_xml(
     page_regions: &DocxPageRegionExports,
     images: &DocxImageExports,
+    comments: &DocxCommentExports,
 ) -> String {
     let mut output = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -2115,6 +2731,12 @@ fn render_content_types_xml(
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>"#
     );
+    if comments.has_comments() {
+        output.push_str(
+            r#"
+  <Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>"#,
+        );
+    }
     for part in &page_regions.parts {
         output.push_str("\n  <Override PartName=\"/");
         output.push_str(part.path);
@@ -2146,6 +2768,7 @@ fn render_document_rels_xml(
     hyperlinks: &HyperlinkIds,
     page_regions: &DocxPageRegionExports,
     images: &DocxImageExports,
+    comments: &DocxCommentExports,
 ) -> String {
     let mut output = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -2183,6 +2806,13 @@ fn render_document_rels_xml(
         output.push_str(part.target);
         output.push_str("\"/>");
     }
+    if let Some(rel_id) = comments.rel_id.as_deref() {
+        output.push_str("\n  <Relationship Id=\"");
+        output.push_str(&escape_xml(rel_id));
+        output.push_str("\" Type=\"");
+        output.push_str(REL_TYPE_COMMENTS);
+        output.push_str("\" Target=\"comments.xml\"/>");
+    }
     output.push_str("\n</Relationships>");
     output
 }
@@ -2192,6 +2822,7 @@ fn render_document_xml(
     hyperlinks: &HyperlinkIds,
     page_regions: &DocxPageRegionExports,
     images: &DocxImageExports,
+    comments: &DocxCommentExports,
 ) -> String {
     let mut output = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -2201,7 +2832,7 @@ fn render_document_xml(
 
     for section in &document.sections {
         for block in &section.blocks {
-            render_block_xml(block, hyperlinks, images, &mut output);
+            render_block_xml(block, hyperlinks, images, comments, &mut output);
         }
     }
 
@@ -2278,7 +2909,12 @@ fn render_page_region_block_xml(block: &PageRegionBlock, output: &mut String) {
     match block {
         PageRegionBlock::Paragraph(paragraph) => {
             output.push_str("<w:p>");
-            render_inlines_xml(&paragraph.inlines, &HyperlinkIds::default(), output);
+            render_inlines_xml(
+                &paragraph.inlines,
+                &HyperlinkIds::default(),
+                &DocxCommentExports::default(),
+                output,
+            );
             output.push_str("</w:p>");
         }
     }
@@ -2288,16 +2924,20 @@ fn render_block_xml(
     block: &Block,
     hyperlinks: &HyperlinkIds,
     images: &DocxImageExports,
+    comments: &DocxCommentExports,
     output: &mut String,
 ) {
     match block {
-        Block::Paragraph(paragraph) => render_paragraph_xml(paragraph, None, hyperlinks, output),
-        Block::Heading(heading) => render_heading_xml(heading, hyperlinks, output),
-        Block::List(list) => render_list_xml(list, hyperlinks, images, output),
-        Block::Table(table) => render_table_xml(table, hyperlinks, images, output),
+        Block::Paragraph(paragraph) => {
+            render_paragraph_xml(paragraph, None, hyperlinks, comments, output)
+        }
+        Block::Heading(heading) => render_heading_xml(heading, hyperlinks, comments, output),
+        Block::List(list) => render_list_xml(list, hyperlinks, images, comments, output),
+        Block::Table(table) => render_table_xml(table, hyperlinks, images, comments, output),
         Block::TableOfContents(table_of_contents) => render_fallback_paragraph(
             &table_of_contents_text(table_of_contents),
             hyperlinks,
+            comments,
             output,
         ),
         Block::Image(image) => {
@@ -2309,10 +2949,15 @@ fn render_block_xml(
                     .as_deref()
                     .filter(|value| !value.trim().is_empty())
                 {
-                    render_fallback_paragraph(caption.trim(), hyperlinks, output);
+                    render_fallback_paragraph(caption.trim(), hyperlinks, comments, output);
                 }
             } else {
-                render_fallback_paragraph(&image_fallback_text(image), hyperlinks, output);
+                render_fallback_paragraph(
+                    &image_fallback_text(image),
+                    hyperlinks,
+                    comments,
+                    output,
+                );
             }
         }
         Block::PageBreak => {
@@ -2393,11 +3038,16 @@ fn image_fallback_text(image: &ImageBlock) -> String {
     text
 }
 
-fn render_heading_xml(heading: &Heading, hyperlinks: &HyperlinkIds, output: &mut String) {
+fn render_heading_xml(
+    heading: &Heading,
+    hyperlinks: &HyperlinkIds,
+    comments: &DocxCommentExports,
+    output: &mut String,
+) {
     output.push_str("<w:p><w:pPr><w:pStyle w:val=\"Heading");
     output.push_str(&heading.level.clamp(1, 3).to_string());
     output.push_str("\"/></w:pPr>");
-    render_inlines_xml(&heading.inlines, hyperlinks, output);
+    render_inlines_xml(&heading.inlines, hyperlinks, comments, output);
     output.push_str("</w:p>");
 }
 
@@ -2405,6 +3055,7 @@ fn render_paragraph_xml(
     paragraph: &Paragraph,
     list_marker: Option<ListMarker>,
     hyperlinks: &HyperlinkIds,
+    comments: &DocxCommentExports,
     output: &mut String,
 ) {
     output.push_str("<w:p>");
@@ -2415,7 +3066,7 @@ fn render_paragraph_xml(
         output.push_str(if marker.ordered { "2" } else { "1" });
         output.push_str("\"/></w:numPr></w:pPr>");
     }
-    render_inlines_xml(&paragraph.inlines, hyperlinks, output);
+    render_inlines_xml(&paragraph.inlines, hyperlinks, comments, output);
     output.push_str("</w:p>");
 }
 
@@ -2423,6 +3074,7 @@ fn render_list_xml(
     list: &ListBlock,
     hyperlinks: &HyperlinkIds,
     images: &DocxImageExports,
+    comments: &DocxCommentExports,
     output: &mut String,
 ) {
     let ordered = list.definition_id == "900w-ordered";
@@ -2436,6 +3088,7 @@ fn render_list_xml(
                         level: item.level.clamp(1, 9),
                     }),
                     hyperlinks,
+                    comments,
                     output,
                 ),
                 Block::Heading(heading) => {
@@ -2452,13 +3105,18 @@ fn render_list_xml(
                             level: item.level.clamp(1, 9),
                         }),
                         hyperlinks,
+                        comments,
                         output,
                     );
                 }
-                Block::Image(image) => {
-                    render_block_xml(&Block::Image(image.clone()), hyperlinks, images, output)
-                }
-                _ => render_fallback_paragraph(&block_text(block), hyperlinks, output),
+                Block::Image(image) => render_block_xml(
+                    &Block::Image(image.clone()),
+                    hyperlinks,
+                    images,
+                    comments,
+                    output,
+                ),
+                _ => render_fallback_paragraph(&block_text(block), hyperlinks, comments, output),
             }
         }
     }
@@ -2468,6 +3126,7 @@ fn render_table_xml(
     table: &Table,
     hyperlinks: &HyperlinkIds,
     images: &DocxImageExports,
+    comments: &DocxCommentExports,
     output: &mut String,
 ) {
     output.push_str("<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/></w:tblPr>");
@@ -2481,17 +3140,27 @@ fn render_table_xml(
                 for block in &cell.blocks {
                     match block {
                         Block::Paragraph(paragraph) => {
-                            render_paragraph_xml(paragraph, None, hyperlinks, output)
+                            render_paragraph_xml(paragraph, None, hyperlinks, comments, output)
                         }
-                        Block::Heading(heading) => render_heading_xml(heading, hyperlinks, output),
-                        Block::List(list) => render_list_xml(list, hyperlinks, images, output),
+                        Block::Heading(heading) => {
+                            render_heading_xml(heading, hyperlinks, comments, output)
+                        }
+                        Block::List(list) => {
+                            render_list_xml(list, hyperlinks, images, comments, output)
+                        }
                         Block::Image(image) => render_block_xml(
                             &Block::Image(image.clone()),
                             hyperlinks,
                             images,
+                            comments,
                             output,
                         ),
-                        _ => render_fallback_paragraph(&block_text(block), hyperlinks, output),
+                        _ => render_fallback_paragraph(
+                            &block_text(block),
+                            hyperlinks,
+                            comments,
+                            output,
+                        ),
                     }
                 }
             }
@@ -2502,7 +3171,12 @@ fn render_table_xml(
     output.push_str("</w:tbl>");
 }
 
-fn render_fallback_paragraph(text: &str, hyperlinks: &HyperlinkIds, output: &mut String) {
+fn render_fallback_paragraph(
+    text: &str,
+    hyperlinks: &HyperlinkIds,
+    comments: &DocxCommentExports,
+    output: &mut String,
+) {
     render_paragraph_xml(
         &Paragraph {
             bookmark_id: None,
@@ -2516,15 +3190,32 @@ fn render_fallback_paragraph(text: &str, hyperlinks: &HyperlinkIds, output: &mut
         },
         None,
         hyperlinks,
+        comments,
         output,
     );
 }
 
-fn render_inlines_xml(inlines: &[Inline], hyperlinks: &HyperlinkIds, output: &mut String) {
+fn render_inlines_xml(
+    inlines: &[Inline],
+    hyperlinks: &HyperlinkIds,
+    comments: &DocxCommentExports,
+    output: &mut String,
+) {
     if inlines.is_empty() {
         return;
     }
-    for inline in inlines {
+    let mut previous_comment_ids = Vec::new();
+    for (index, inline) in inlines.iter().enumerate() {
+        let current_comment_ids = comments.ids_for_inline(inline);
+        let next_comment_ids = inlines
+            .get(index + 1)
+            .map(|next| comments.ids_for_inline(next))
+            .unwrap_or_default();
+        render_comment_range_starts_xml(
+            &comment_ids_entering(&current_comment_ids, &previous_comment_ids),
+            comments,
+            output,
+        );
         if let Some(href) = inline.link.as_deref().and_then(sanitize_text_href) {
             if let Some(anchor) = href.strip_prefix('#') {
                 output.push_str("<w:hyperlink w:anchor=\"");
@@ -2532,6 +3223,12 @@ fn render_inlines_xml(inlines: &[Inline], hyperlinks: &HyperlinkIds, output: &mu
                 output.push_str("\">");
                 render_run_xml(inline, output);
                 output.push_str("</w:hyperlink>");
+                render_comment_range_ends_xml(
+                    &comment_ids_exiting(&current_comment_ids, &next_comment_ids),
+                    comments,
+                    output,
+                );
+                previous_comment_ids = current_comment_ids;
                 continue;
             }
             if let Some(id) = hyperlinks.external.get(&href) {
@@ -2540,10 +3237,68 @@ fn render_inlines_xml(inlines: &[Inline], hyperlinks: &HyperlinkIds, output: &mu
                 output.push_str("\" w:history=\"1\">");
                 render_run_xml(inline, output);
                 output.push_str("</w:hyperlink>");
+                render_comment_range_ends_xml(
+                    &comment_ids_exiting(&current_comment_ids, &next_comment_ids),
+                    comments,
+                    output,
+                );
+                previous_comment_ids = current_comment_ids;
                 continue;
             }
         }
         render_run_xml(inline, output);
+        render_comment_range_ends_xml(
+            &comment_ids_exiting(&current_comment_ids, &next_comment_ids),
+            comments,
+            output,
+        );
+        previous_comment_ids = current_comment_ids;
+    }
+}
+
+fn comment_ids_entering(current: &[String], previous: &[String]) -> Vec<String> {
+    current
+        .iter()
+        .filter(|id| !previous.contains(*id))
+        .cloned()
+        .collect()
+}
+
+fn comment_ids_exiting(current: &[String], next: &[String]) -> Vec<String> {
+    current
+        .iter()
+        .filter(|id| !next.contains(*id))
+        .cloned()
+        .collect()
+}
+
+fn render_comment_range_starts_xml(
+    comment_ids: &[String],
+    comments: &DocxCommentExports,
+    output: &mut String,
+) {
+    for id in comment_ids {
+        if let Some(numeric_id) = comments.numeric_id(id) {
+            output.push_str("<w:commentRangeStart w:id=\"");
+            output.push_str(&numeric_id.to_string());
+            output.push_str("\"/>");
+        }
+    }
+}
+
+fn render_comment_range_ends_xml(
+    comment_ids: &[String],
+    comments: &DocxCommentExports,
+    output: &mut String,
+) {
+    for id in comment_ids.iter().rev() {
+        if let Some(numeric_id) = comments.numeric_id(id) {
+            output.push_str("<w:commentRangeEnd w:id=\"");
+            output.push_str(&numeric_id.to_string());
+            output.push_str("\"/><w:r><w:commentReference w:id=\"");
+            output.push_str(&numeric_id.to_string());
+            output.push_str("\"/></w:r>");
+        }
     }
 }
 
@@ -2628,6 +3383,30 @@ fn render_numbering_xml() -> String {
   <w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num>
 </w:numbering>"#
         .to_string()
+}
+
+fn render_comments_xml(comments: &DocxCommentExports) -> String {
+    let mut output = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+    );
+    for comment in &comments.comments {
+        output.push_str("<w:comment w:id=\"");
+        output.push_str(&comment.numeric_id.to_string());
+        output.push_str("\" w:author=\"");
+        output.push_str(&escape_xml(&comment.author));
+        output.push_str("\" w:date=\"");
+        output.push_str(&escape_xml(
+            &comment
+                .created_at
+                .to_rfc3339_opts(SecondsFormat::Secs, true),
+        ));
+        output.push_str("\"><w:p><w:r><w:t xml:space=\"preserve\">");
+        output.push_str(&escape_xml(&comment.body));
+        output.push_str("</w:t></w:r></w:p></w:comment>");
+    }
+    output.push_str("</w:comments>");
+    output
 }
 
 fn collect_external_hyperlinks(document: &Document) -> BTreeSet<String> {
@@ -2732,6 +3511,107 @@ fn collect_docx_image_exports(
         next_id += 1;
     }
     (DocxImageExports { parts }, next_id)
+}
+
+fn collect_docx_comment_exports(document: &Document, first_rel_id: usize) -> DocxCommentExports {
+    let anchored = collect_exportable_comment_anchor_ids(document);
+    let mut ids = BTreeMap::new();
+    let mut comments = Vec::new();
+    for local_id in anchored {
+        let Some(comment) = document.comments.get(&local_id) else {
+            continue;
+        };
+        if validate_comment_id(&comment.id).is_err()
+            || comment.id != local_id
+            || validate_comment_body(&comment.body).is_err()
+        {
+            continue;
+        }
+        let Ok(author) = normalize_comment_author(Some(&comment.author)) else {
+            continue;
+        };
+        let numeric_id = comments.len() as u32;
+        ids.insert(local_id.clone(), numeric_id);
+        comments.push(DocxCommentExport {
+            numeric_id,
+            author,
+            body: comment.body.clone(),
+            created_at: comment.created_at,
+        });
+        if comments.len() >= MAX_DOCX_COMMENTS {
+            break;
+        }
+    }
+    let rel_id = if comments.is_empty() {
+        None
+    } else {
+        Some(format!("rId{first_rel_id}"))
+    };
+    DocxCommentExports {
+        rel_id,
+        ids,
+        comments,
+    }
+}
+
+fn collect_exportable_comment_anchor_ids(document: &Document) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut ids = Vec::new();
+    for section in &document.sections {
+        collect_exportable_comment_anchor_ids_from_blocks(&section.blocks, &mut seen, &mut ids);
+    }
+    ids
+}
+
+fn collect_exportable_comment_anchor_ids_from_blocks(
+    blocks: &[Block],
+    seen: &mut BTreeSet<String>,
+    ids: &mut Vec<String>,
+) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                collect_exportable_comment_anchor_ids_from_inlines(&paragraph.inlines, seen, ids)
+            }
+            Block::Heading(heading) => {
+                collect_exportable_comment_anchor_ids_from_inlines(&heading.inlines, seen, ids)
+            }
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_exportable_comment_anchor_ids_from_blocks(&item.blocks, seen, ids);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_exportable_comment_anchor_ids_from_blocks(&cell.blocks, seen, ids);
+                    }
+                }
+            }
+            Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn collect_exportable_comment_anchor_ids_from_inlines(
+    inlines: &[Inline],
+    seen: &mut BTreeSet<String>,
+    ids: &mut Vec<String>,
+) {
+    for inline in inlines {
+        if inline.text.is_empty()
+            || inline.field.is_some()
+            || inline.note_reference.is_some()
+            || inline.tracked_change.is_some()
+        {
+            continue;
+        }
+        for id in &inline.comment_ids {
+            if validate_comment_id(id).is_ok() && seen.insert(id.clone()) {
+                ids.push(id.clone());
+            }
+        }
+    }
 }
 
 fn collect_image_asset_ids_from_blocks(
@@ -2946,6 +3826,40 @@ fn resolve_page_region_target(target: &str, kind: PageRegionPartKind) -> Option<
     }
 }
 
+fn resolve_comments_target(target: &str) -> Option<String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('\\')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+    {
+        return None;
+    }
+    let combined = if trimmed.starts_with("word/") {
+        trimmed.to_string()
+    } else {
+        format!("word/{trimmed}")
+    };
+    if combined
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return None;
+    }
+    let lower = combined.to_ascii_lowercase();
+    let file_name = lower.strip_prefix("word/")?;
+    if file_name.contains('/') || !file_name.starts_with("comments") || !file_name.ends_with(".xml")
+    {
+        return None;
+    }
+    if validate_entry_path(&combined, PackageLimits::default()).is_ok() {
+        Some(combined)
+    } else {
+        None
+    }
+}
+
 fn resolve_image_target(target: &str) -> Option<(String, &'static str)> {
     let trimmed = target.trim();
     if trimmed.is_empty()
@@ -3022,6 +3936,54 @@ fn image_extension(media_type: &str) -> &'static str {
 
 fn generic_docx_image_id(index: usize, media_type: &str) -> String {
     format!("docx-image-{index}.{}", image_extension(media_type))
+}
+
+fn next_imported_docx_comment_id(raw_id: &str, index: usize) -> String {
+    let safe = raw_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .take(32)
+        .collect::<String>();
+    let candidate = if safe.is_empty() {
+        format!("cmt-docx-comment-{index}")
+    } else {
+        format!("cmt-docx-comment-{index}-{safe}")
+    };
+    validate_comment_id(&candidate).unwrap_or_else(|_| format!("cmt-docx-comment-{index}"))
+}
+
+fn prune_comment_ids_from_blocks(blocks: &mut [Block], anchored_comment_ids: &BTreeSet<String>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                prune_comment_ids_from_inlines(&mut paragraph.inlines, anchored_comment_ids)
+            }
+            Block::Heading(heading) => {
+                prune_comment_ids_from_inlines(&mut heading.inlines, anchored_comment_ids)
+            }
+            Block::List(list) => {
+                for item in &mut list.items {
+                    prune_comment_ids_from_blocks(&mut item.blocks, anchored_comment_ids);
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        prune_comment_ids_from_blocks(&mut cell.blocks, anchored_comment_ids);
+                    }
+                }
+            }
+            Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn prune_comment_ids_from_inlines(inlines: &mut [Inline], anchored_comment_ids: &BTreeSet<String>) {
+    for inline in inlines {
+        inline
+            .comment_ids
+            .retain(|id| anchored_comment_ids.contains(id));
+    }
 }
 
 fn validate_entry_path(name: &str, limits: PackageLimits) -> Result<(), DocxError> {
@@ -3267,6 +4229,344 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.code == "docx_unsafe_hyperlink"));
+    }
+
+    #[test]
+    fn imports_synthetic_docx_simple_comment_and_anchors_inline_text() {
+        let bytes = synthetic_docx_with_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body><w:p><w:r><w:t>Before </w:t></w:r><w:commentRangeStart w:id="7"/><w:r><w:t>commented</w:t></w:r><w:commentRangeEnd w:id="7"/><w:r><w:commentReference w:id="7"/></w:r><w:r><w:t> after</w:t></w:r></w:p></w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rCmt1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>
+</Relationships>"#,
+            ),
+            None,
+            &[(
+                "word/comments.xml",
+                r#"<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment w:id="7" w:author="Reviewer" w:date="2026-06-25T10:00:00Z"><w:p><w:r><w:t>Review note</w:t></w:r></w:p></w:comment></w:comments>"#,
+            )],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("commented docx should import");
+
+        assert_eq!(document.comments.len(), 1);
+        let (comment_id, comment) = document
+            .comments
+            .iter()
+            .next()
+            .expect("comment should exist");
+        assert_eq!(comment_id, "cmt-docx-comment-1-7");
+        assert_eq!(comment.author, "Reviewer");
+        assert_eq!(comment.body, "Review note");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(paragraph.inlines[1].text, "commented");
+        assert_eq!(paragraph.inlines[1].comment_ids, vec![comment_id.clone()]);
+        assert!(paragraph.inlines[0].comment_ids.is_empty());
+        assert!(paragraph.inlines[2].comment_ids.is_empty());
+        assert!(!document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_inline_metadata_ignored"));
+    }
+
+    #[test]
+    fn imports_docx_comments_with_distinct_generated_ids_after_sanitizing() {
+        let bytes = synthetic_docx_with_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body><w:p><w:commentRangeStart w:id="a!"/><w:r><w:t>One</w:t></w:r><w:commentRangeEnd w:id="a!"/><w:r><w:t> </w:t></w:r><w:commentRangeStart w:id="a@"/><w:r><w:t>Two</w:t></w:r><w:commentRangeEnd w:id="a@"/></w:p></w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rCmt1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>
+</Relationships>"#,
+            ),
+            None,
+            &[(
+                "word/comments.xml",
+                r#"<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment w:id="a!" w:author="Reviewer"><w:p><w:r><w:t>First note</w:t></w:r></w:p></w:comment><w:comment w:id="a@" w:author="Reviewer"><w:p><w:r><w:t>Second note</w:t></w:r></w:p></w:comment></w:comments>"#,
+            )],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("comments should import");
+
+        assert!(document.comments.contains_key("cmt-docx-comment-1-a"));
+        assert!(document.comments.contains_key("cmt-docx-comment-2-a"));
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(
+            paragraph.inlines[0].comment_ids,
+            vec!["cmt-docx-comment-1-a"]
+        );
+        assert_eq!(
+            paragraph.inlines[2].comment_ids,
+            vec!["cmt-docx-comment-2-a"]
+        );
+    }
+
+    #[test]
+    fn ignores_unsafe_missing_and_remote_docx_comments_targets_with_generic_warnings() {
+        for (target, target_mode, extra_parts, expected_code) in [
+            (
+                "../private/comments.xml",
+                "",
+                Vec::new(),
+                "docx_comments_relationship_ignored",
+            ),
+            (
+                "/absolute/comments.xml",
+                "",
+                Vec::new(),
+                "docx_comments_relationship_ignored",
+            ),
+            (
+                "C:/placeholder/comments.xml",
+                "",
+                Vec::new(),
+                "docx_comments_relationship_ignored",
+            ),
+            (
+                "review\\comments.xml",
+                "",
+                Vec::new(),
+                "docx_comments_relationship_ignored",
+            ),
+            (
+                "notes/comments.xml",
+                "",
+                Vec::new(),
+                "docx_comments_relationship_ignored",
+            ),
+            (
+                "comments.xml",
+                r#" TargetMode="External""#,
+                Vec::new(),
+                "docx_comments_relationship_ignored",
+            ),
+            ("comments.xml", "", Vec::new(), "docx_comments_part_missing"),
+        ] {
+            let rels_xml = format!(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rCmt1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="{target}"{target_mode}/>
+</Relationships>"#
+            );
+            let bytes = synthetic_docx_with_parts(
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:p><w:commentRangeStart w:id="7"/><w:r><w:t>Visible text</w:t></w:r><w:commentRangeEnd w:id="7"/></w:p></w:body></w:document>"#,
+                Some(&rels_xml),
+                None,
+                &extra_parts,
+            );
+
+            let document = read_docx_bytes(&bytes).expect("unsafe comments target should degrade");
+
+            assert!(document.comments.is_empty());
+            assert_all_comment_ids_empty(&document);
+            assert!(document
+                .warnings
+                .iter()
+                .any(|warning| warning.code == expected_code));
+            assert_docx_comment_warnings_are_generic(&document, "Hidden body");
+        }
+    }
+
+    #[test]
+    fn ignores_malformed_missing_and_unanchored_docx_comment_ranges_without_hidden_metadata() {
+        for document_xml in [
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:commentRangeStart w:id="7"/><w:r><w:t>Visible text</w:t></w:r></w:p></w:body></w:document>"#,
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:commentRangeStart w:id="8"/><w:r><w:t>Visible text</w:t></w:r><w:commentRangeEnd w:id="8"/></w:p></w:body></w:document>"#,
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Visible text</w:t></w:r><w:r><w:commentReference w:id="7"/></w:r></w:p></w:body></w:document>"#,
+        ] {
+            let bytes = synthetic_docx_with_parts(
+                document_xml,
+                Some(
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rCmt1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>
+</Relationships>"#,
+                ),
+                None,
+                &[(
+                    "word/comments.xml",
+                    r#"<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment w:id="7" w:author="Private Host" w:date="2026-06-25T10:00:00Z"><w:p><w:r><w:t>Hidden body</w:t></w:r></w:p></w:comment></w:comments>"#,
+                )],
+            );
+
+            let document = read_docx_bytes(&bytes).expect("malformed comment range should degrade");
+
+            assert!(document.comments.is_empty());
+            assert_all_comment_ids_empty(&document);
+            assert!(document.warnings.iter().any(|warning| {
+                matches!(
+                    warning.code.as_str(),
+                    "docx_comment_range_ignored" | "docx_inline_metadata_ignored"
+                )
+            }));
+            assert_docx_comment_warnings_are_generic(&document, "Hidden body");
+        }
+    }
+
+    #[test]
+    fn exports_docx_comments_package_markers_escaped_metadata_and_imports_back() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: ParagraphFormat::default(),
+            inlines: vec![Inline {
+                text: "Needs review".to_string(),
+                marks: Vec::new(),
+                link: None,
+                comment_ids: vec!["cmt-review".to_string()],
+                style: InlineStyle::default(),
+                field: None,
+                note_reference: None,
+                tracked_change: None,
+            }],
+        })];
+        let now = Utc::now();
+        document.comments.insert(
+            "cmt-review".to_string(),
+            CommentThread {
+                id: "cmt-review".to_string(),
+                author: "A < B & C".to_string(),
+                body: "Needs <escape> & review".to_string(),
+                created_at: now,
+                updated_at: now,
+                resolved: true,
+            },
+        );
+
+        let bytes = write_docx_bytes(&document).expect("docx should write comments");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let mut archive =
+            ZipArchive::new(Cursor::new(bytes.as_slice())).expect("written docx should open");
+        let mut content_types = String::new();
+        archive
+            .by_name("[Content_Types].xml")
+            .expect("content types should exist")
+            .read_to_string(&mut content_types)
+            .expect("content types should read");
+        let mut document_rels = String::new();
+        archive
+            .by_name(DOCUMENT_RELS)
+            .expect("document rels should exist")
+            .read_to_string(&mut document_rels)
+            .expect("document rels should read");
+        let mut document_xml = String::new();
+        archive
+            .by_name(DOCUMENT_XML)
+            .expect("document xml should exist")
+            .read_to_string(&mut document_xml)
+            .expect("document xml should read");
+        let mut comments_xml = String::new();
+        archive
+            .by_name("word/comments.xml")
+            .expect("comments part should exist")
+            .read_to_string(&mut comments_xml)
+            .expect("comments part should read");
+
+        assert!(content_types.contains("/word/comments.xml"));
+        assert!(document_rels.contains("relationships/comments"));
+        assert!(document_rels.contains(r#"Target="comments.xml""#));
+        assert!(document_xml.contains(r#"<w:commentRangeStart w:id="0"/>"#));
+        assert!(document_xml.contains(r#"<w:commentRangeEnd w:id="0"/>"#));
+        assert!(document_xml.contains(r#"<w:commentReference w:id="0"/>"#));
+        assert!(comments_xml.contains(r#"w:author="A &lt; B &amp; C""#));
+        assert!(comments_xml.contains("Needs &lt;escape&gt; &amp; review"));
+        assert!(!comments_xml.contains("resolved"));
+
+        let parsed = read_docx_bytes(&bytes).expect("written comments package should import");
+        assert_eq!(parsed.comments.len(), 1);
+        let (comment_id, comment) = parsed
+            .comments
+            .iter()
+            .next()
+            .expect("comment should import");
+        assert_eq!(comment.author, "A < B & C");
+        assert_eq!(comment.body, "Needs <escape> & review");
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(paragraph.inlines[0].comment_ids, vec![comment_id.clone()]);
+    }
+
+    #[test]
+    fn exports_one_docx_comment_range_across_split_inline_runs() {
+        let mut first = Inline::text("Needs ");
+        first.comment_ids = vec!["cmt-review".to_string()];
+        let mut second = Inline::text("bold");
+        second.marks = vec![InlineMark::Bold];
+        second.comment_ids = vec!["cmt-review".to_string()];
+        let mut third = Inline::text(" review");
+        third.comment_ids = vec!["cmt-review".to_string()];
+
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: ParagraphFormat::default(),
+            inlines: vec![first, second, third],
+        })];
+        let now = Utc::now();
+        document.comments.insert(
+            "cmt-review".to_string(),
+            CommentThread {
+                id: "cmt-review".to_string(),
+                author: "Reviewer".to_string(),
+                body: "Review across formatting".to_string(),
+                created_at: now,
+                updated_at: now,
+                resolved: false,
+            },
+        );
+
+        let bytes = write_docx_bytes(&document).expect("docx should write comments");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let mut archive =
+            ZipArchive::new(Cursor::new(bytes.as_slice())).expect("written docx should open");
+        let mut document_xml = String::new();
+        archive
+            .by_name(DOCUMENT_XML)
+            .expect("document xml should exist")
+            .read_to_string(&mut document_xml)
+            .expect("document xml should read");
+
+        assert_eq!(
+            document_xml
+                .matches(r#"<w:commentRangeStart w:id="0"/>"#)
+                .count(),
+            1
+        );
+        assert_eq!(
+            document_xml
+                .matches(r#"<w:commentRangeEnd w:id="0"/>"#)
+                .count(),
+            1
+        );
+        assert_eq!(
+            document_xml
+                .matches(r#"<w:commentReference w:id="0"/>"#)
+                .count(),
+            1
+        );
+
+        let parsed = read_docx_bytes(&bytes).expect("written comments package should import");
+        assert_eq!(parsed.comments.len(), 1);
+        let (comment_id, _) = parsed
+            .comments
+            .iter()
+            .next()
+            .expect("comment should import");
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(paragraph.inlines.len(), 3);
+        assert!(paragraph
+            .inlines
+            .iter()
+            .all(|inline| inline.comment_ids == vec![comment_id.clone()]));
     }
 
     #[test]
@@ -4067,6 +5367,57 @@ mod tests {
             .count()
     }
 
+    fn assert_all_comment_ids_empty(document: &Document) {
+        for section in &document.sections {
+            assert_comment_ids_empty_in_blocks(&section.blocks);
+        }
+    }
+
+    fn assert_comment_ids_empty_in_blocks(blocks: &[Block]) {
+        for block in blocks {
+            match block {
+                Block::Paragraph(paragraph) => {
+                    assert!(paragraph
+                        .inlines
+                        .iter()
+                        .all(|inline| inline.comment_ids.is_empty()));
+                }
+                Block::Heading(heading) => {
+                    assert!(heading
+                        .inlines
+                        .iter()
+                        .all(|inline| inline.comment_ids.is_empty()));
+                }
+                Block::List(list) => {
+                    for item in &list.items {
+                        assert_comment_ids_empty_in_blocks(&item.blocks);
+                    }
+                }
+                Block::Table(table) => {
+                    for row in &table.rows {
+                        for cell in &row.cells {
+                            assert_comment_ids_empty_in_blocks(&cell.blocks);
+                        }
+                    }
+                }
+                Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
+            }
+        }
+    }
+
+    fn assert_docx_comment_warnings_are_generic(document: &Document, private_body: &str) {
+        for warning in &document.warnings {
+            assert!(!warning.message.contains("private"));
+            assert!(!warning.message.contains("Private"));
+            assert!(!warning.message.contains("comments.xml"));
+            assert!(!warning.message.contains("word/comments"));
+            assert!(!warning.message.contains("C:/"));
+            assert!(!warning.message.contains("placeholder"));
+            assert!(!warning.message.contains("example.invalid"));
+            assert!(!warning.message.contains(private_body));
+        }
+    }
+
     fn assert_docx_image_warnings_are_generic(document: &Document) {
         for warning in &document.warnings {
             assert!(!warning.message.contains("private"));
@@ -4113,6 +5464,7 @@ mod tests {
                 render_content_types_xml(
                     &DocxPageRegionExports::default(),
                     &DocxImageExports::default(),
+                    &DocxCommentExports::default(),
                 )
                 .as_bytes(),
             )

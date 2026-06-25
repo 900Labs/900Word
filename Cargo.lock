@@ -4479,6 +4479,7 @@ dependencies = [
 name = "word-docx"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "quick-xml",
  "thiserror 1.0.69",
  "word-core",

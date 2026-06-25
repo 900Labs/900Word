@@ -325,3 +325,12 @@ Status: complete.
 - Preserve adjacent visible paragraph text around simple DOCX drawings by splitting mixed text/image paragraphs into adjacent text and image blocks when needed.
 - Export valid 900Word-authored image assets as generated embedded `word/media/` parts with document relationships, content type defaults, minimal DrawingML references, and alt text.
 - Keep ODT canonical, with linked/remote images, image sizing/cropping/layout fidelity, compression/downsampling, comments, tracked changes, notes, cloud, telemetry, accounts, network behavior, external converters, heavyweight dependencies, and full DOCX media fidelity deferred.
+
+## Sprint 035: DOCX Comments MVP
+
+Status: complete.
+
+- Extend the conversion-only DOCX boundary to import simple anchored legacy comments into existing `word-core` `CommentThread`s and `Inline.comment_ids`.
+- Read only safe relationship-resolved `word/comments.xml` or `word/comments*.xml` package parts that pass existing preflight, and keep warnings generic.
+- Export valid 900Word-authored anchored comments as generated `word/comments.xml`, a generated document relationship, a content-type override, and simple range/reference markers around supported inline text.
+- Keep ODT canonical, with DOCX replies, threaded comments, resolved-state fidelity, tracked changes, notes, full review fidelity, cloud, telemetry, accounts, network behavior, external converters, heavyweight dependencies, and full DOCX comments fidelity deferred.
