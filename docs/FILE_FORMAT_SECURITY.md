@@ -47,6 +47,8 @@ All external files are untrusted.
 
 Sprint 014 treats user-selected local images as untrusted input. The Rust desktop command rejects traversal-shaped paths, unsupported extensions, non-regular files, empty files, files over 8 MiB, and files whose magic bytes do not match the allowlisted PNG, JPEG, GIF, or WebP media type. Accepted image bytes are copied into embedded document assets under generated generic asset names. Source paths and source filenames are not stored.
 
+Sprint 050 strips APP0-APP15 and COM marker payloads from accepted local JPEG/JPG imports before embedding the bytes. The scanner preserves accepted SOI/EOI, structural image segments, scan headers, and entropy-coded image data, and rejects malformed or ambiguous metadata-bearing JPEG marker structures with the existing generic unsupported-image error. It does not decode pixels, interpret EXIF, resize, downsample, recompress, recover arbitrary malformed JPEGs, add heavy image-processing dependencies, or change PNG/GIF/WebP import behavior.
+
 Sprint 015 image presentation metadata is bounded document metadata only: editable alt text, caption text, alignment, and scale percentage. ODT save/reopen preserves 900Word-authored values in the `urn:900labs:900word:metadata` namespace without adding remote image loading, local path references, source filenames, scripts, or executable content.
 
 ## Recovery Snapshot Policy
