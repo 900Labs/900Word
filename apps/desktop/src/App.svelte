@@ -89,6 +89,7 @@
     shortcutPlatformFromNavigator,
     type GlobalShortcutCommand
   } from './lib/keyboardShortcuts';
+  import { defaultSmartTypingSettings, type SmartTypingSettings } from './lib/smartTyping';
   import {
     clampEditorZoom,
     editorViewportStyle,
@@ -139,6 +140,7 @@
     language_tag: string;
     ui_locale: string;
     high_contrast: boolean;
+    smart_typing: SmartTypingSettings;
   }
 
   interface RecentDocumentSummary {
@@ -296,7 +298,8 @@
     telemetry_enabled: false,
     language_tag: 'en-US',
     ui_locale: 'en-US',
-    high_contrast: false
+    high_contrast: false,
+    smart_typing: defaultSmartTypingSettings()
   });
   let uiDirection = $derived(localeDirection(settings.ui_locale));
   const shortcutPlatform = shortcutPlatformFromNavigator();
@@ -402,6 +405,7 @@
         recording: Boolean(document.track_changes?.recording),
         author: localTrackedChangeAuthor
       },
+      smartTyping: () => settings.smart_typing ?? defaultSmartTypingSettings(),
       onInteraction: markEditorStarted,
       onSelectionChange: (selection) => {
         lastEditorSelection = selection;
@@ -3265,6 +3269,30 @@
           <input bind:checked={settings.high_contrast} type="checkbox" />
           {tr('highContrast')}
         </label>
+
+        <section class="settings-group" aria-labelledby="smart-typing-settings-heading">
+          <h3 id="smart-typing-settings-heading">{tr('smartTyping')}</h3>
+          <label class="check-row">
+            <input bind:checked={settings.smart_typing.capitalize_sentences} type="checkbox" />
+            {tr('capitalizeSentences')}
+          </label>
+          <label class="check-row">
+            <input bind:checked={settings.smart_typing.smart_quotes} type="checkbox" />
+            {tr('smartQuotes')}
+          </label>
+          <label class="check-row">
+            <input bind:checked={settings.smart_typing.smart_dashes} type="checkbox" />
+            {tr('smartDashes')}
+          </label>
+          <label class="check-row">
+            <input bind:checked={settings.smart_typing.typo_replacements} type="checkbox" />
+            {tr('typoReplacements')}
+          </label>
+          <label class="check-row">
+            <input bind:checked={settings.smart_typing.list_triggers} type="checkbox" />
+            {tr('smartListTriggers')}
+          </label>
+        </section>
 
         <label class="check-row muted">
           <input checked={settings.telemetry_enabled} disabled type="checkbox" />

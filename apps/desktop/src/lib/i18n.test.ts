@@ -20,6 +20,11 @@ describe('i18n', () => {
     );
   });
 
+  it('labels smart typing settings', () => {
+    expect(translate('en-US', 'smartTyping')).toBe('Smart typing');
+    expect(translate('es-ES', 'smartQuotes')).toBe('Usar comillas tipograficas');
+  });
+
   it('provides an RTL smoke locale', () => {
     expect(localeDirection('ar')).toBe('rtl');
   });

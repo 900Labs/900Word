@@ -23,4 +23,6 @@ Sprint 024 adds the table-of-contents insert/update command inside the existing 
 
 Sprint 025 adds footnote and endnote insert buttons to the existing review/comments toolbar group plus a compact Notes sidebar for stored note bodies. The controls are native buttons with stable labels and are not hover-only. Inserted references render as visible inline superscript atoms with screen-reader labels for the note kind and visible label; note body entry uses a simple local prompt in this MVP, and existing note bodies are readable through keyboard-focusable sidebar content.
 
+Sprint 026 adds Smart typing settings as native checkboxes in the Settings view. The toggles have stable labels, are keyboard-focusable, default off, and do not rely on hover-only behavior. Typed-input transforms use the existing editor surface and do not add modal interruptions or hidden background services.
+
 Accessibility smoke checks are part of the release hardening roadmap.

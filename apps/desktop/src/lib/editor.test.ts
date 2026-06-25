@@ -30,6 +30,7 @@ import {
   setEditorLinkTransaction,
   setEditorTextStyleTransaction,
   selectedEditorText,
+  smartTypingInputTransaction,
   toggleEditorMark,
   toggleEditorListTransaction,
   toggleEditorMarkTransaction
@@ -572,6 +573,109 @@ describe('findEditorDocMatches', () => {
     expect(deleted?.marks.find((mark) => mark.type.name === 'trackedChange')?.attrs.kind).toBe('deletion');
     expect(inserted?.text).toBe('new');
     expect(inserted?.marks.find((mark) => mark.type.name === 'trackedChange')?.attrs.kind).toBe('insertion');
+  });
+
+  it('applies smart typing replacements only through typed-input transactions', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: 'teh' }] }]
+    });
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, 4))
+    );
+
+    const transaction = smartTypingInputTransaction(state, 4, 4, ' ', {
+      capitalize_sentences: false,
+      smart_quotes: false,
+      smart_dashes: false,
+      typo_replacements: true,
+      list_triggers: false
+    });
+
+    expect(transaction).toBeDefined();
+    expect(state.apply(transaction!).doc.textContent).toBe('the ');
+  });
+
+  it('converts a start-of-paragraph dash trigger into an empty bullet list item', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text: '-' }] }]
+    });
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, 2))
+    );
+
+    const transaction = smartTypingInputTransaction(state, 2, 2, ' ', {
+      capitalize_sentences: false,
+      smart_quotes: false,
+      smart_dashes: false,
+      typo_replacements: false,
+      list_triggers: true
+    });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.type.name).toBe('bullet_list');
+    expect(nextState.doc.textContent).toBe('');
+  });
+
+  it('does not apply smart dash replacement inside a URL token', () => {
+    const text = 'https://example.invalid/path-';
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text }] }]
+    });
+    const cursor = 1 + text.length;
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, cursor))
+    );
+
+    expect(
+      smartTypingInputTransaction(state, cursor, cursor, '-', {
+        capitalize_sentences: false,
+        smart_quotes: false,
+        smart_dashes: true,
+        typo_replacements: false,
+        list_triggers: false
+      })
+    ).toBeUndefined();
+  });
+
+  it('does not apply smart typing inside bare-domain URL-like tokens', () => {
+    const text = 'example.invalid/teh';
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [{ type: 'text', text }] }]
+    });
+    const cursor = 1 + text.length;
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, cursor))
+    );
+
+    expect(
+      smartTypingInputTransaction(state, cursor, cursor, ' ', {
+        capitalize_sentences: false,
+        smart_quotes: false,
+        smart_dashes: false,
+        typo_replacements: true,
+        list_triggers: false
+      })
+    ).toBeUndefined();
+  });
+
+  it('keeps multiline pasted text out of smart typing corrections', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'teh\nadress');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.child(0).textContent).toBe('teh');
+    expect(nextState.doc.child(1).textContent).toBe('adress');
   });
 
   it('rejects unsafe link marks from toolbar transactions', () => {

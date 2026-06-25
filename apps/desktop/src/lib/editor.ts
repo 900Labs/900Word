@@ -17,6 +17,7 @@ import {
 import { findTextRanges, type FindRange } from './findReplace';
 import { supportedSchema } from './editorSchema';
 import { sanitizeBookmarkId, sanitizeEditorHref } from './editorSecurity';
+import { smartTypingEnabled, smartTypingReplacement, type SmartTypingSettings } from './smartTyping';
 
 export type SupportedMarkName =
   | 'bold'
@@ -124,6 +125,7 @@ interface CreateEditorOptions {
     recording: boolean;
     author?: string;
   };
+  smartTyping?: () => SmartTypingSettings;
   onInteraction?: () => void;
   onSelectionChange?: (selection: EditorSelectionSnapshot) => void;
 }
@@ -163,6 +165,19 @@ export function createEditor(
       return spellDecorations.value;
     },
     handleTextInput(editorView, from, to, text) {
+      if (!options.trackChanges?.recording) {
+        const smartTypingTransaction = smartTypingInputTransaction(
+          editorView.state,
+          from,
+          to,
+          text,
+          options.smartTyping?.()
+        );
+        if (smartTypingTransaction) {
+          editorView.dispatch(smartTypingTransaction.scrollIntoView());
+          return true;
+        }
+      }
       if (!options.trackChanges?.recording) {
         return false;
       }
@@ -1610,6 +1625,51 @@ export function pastePlainTextAsBlocksTransaction(
   return transaction.replaceWith(from, to, Fragment.fromArray(parsed));
 }
 
+export function smartTypingInputTransaction(
+  state: EditorState,
+  from: number,
+  to: number,
+  text: string,
+  settings: SmartTypingSettings | undefined
+): Transaction | undefined {
+  if (!smartTypingEnabled(settings) || from !== to || text.length === 0 || text.length > 2) {
+    return undefined;
+  }
+  if (!isValidDocumentRange(state.doc, from, to)) {
+    return undefined;
+  }
+
+  const $from = state.doc.resolve(from);
+  const parent = $from.parent;
+  if (!parent.isTextblock) {
+    return undefined;
+  }
+
+  const textBefore = parent.textBetween(0, $from.parentOffset, '', '');
+  const textAfter = parent.textBetween($from.parentOffset, parent.content.size, '', '');
+  const replacement = smartTypingReplacement({
+    settings,
+    text,
+    textBefore,
+    textAfter
+  });
+  if (!replacement) {
+    return undefined;
+  }
+
+  if (replacement.listTrigger) {
+    return listTriggerTransaction(state, $from, replacement.listTrigger);
+  }
+
+  const replaceFrom = from - replacement.replaceBefore;
+  if (replaceFrom < 0 || !isValidDocumentRange(state.doc, replaceFrom, to)) {
+    return undefined;
+  }
+
+  const transaction = state.tr.insertText(replacement.insertText, replaceFrom, to);
+  return transaction.setSelection(TextSelection.create(transaction.doc, replaceFrom + replacement.insertText.length));
+}
+
 export function setEditorSpellIssues(
   view: EditorView | undefined,
   issues: EditorSpellIssue[],
@@ -2392,6 +2452,45 @@ function createEmptyTableCell(): ProseMirrorNode {
     { unsupported: false, sourceEmpty: false },
     supportedSchema.nodes.paragraph.create({ style: 'body' })
   );
+}
+
+function listTriggerTransaction(
+  state: EditorState,
+  $from: ResolvedPos,
+  listName: SupportedListName
+): Transaction | undefined {
+  const listType = supportedSchema.nodes[listName];
+  const itemType = supportedSchema.nodes.list_item;
+  const paragraphType = supportedSchema.nodes.paragraph;
+  if (!listType || !itemType || !paragraphType || $from.depth !== 1) {
+    return undefined;
+  }
+
+  const paragraph = $from.parent;
+  if (paragraph.type.name !== 'paragraph' || $from.parentOffset !== paragraph.content.size) {
+    return undefined;
+  }
+
+  const marker = listName === 'ordered_list' ? '1.' : '-';
+  if (paragraph.textContent !== marker) {
+    return undefined;
+  }
+
+  const blockPos = $from.before(1);
+  const definitionId = listName === 'ordered_list' ? '900w-ordered' : '900w-unordered';
+  const list = listType.create(
+    { definitionId },
+    itemType.create(
+      { level: 1 },
+      paragraphType.create({
+        style: paragraph.attrs.style || 'body',
+        bookmarkId: paragraph.attrs.bookmarkId ?? null
+      })
+    )
+  );
+  const transaction = state.tr.replaceWith(blockPos, blockPos + paragraph.nodeSize, list);
+  const cursor = listItemParagraphStart(transaction.doc, blockPos, 0);
+  return cursor === undefined ? undefined : transaction.setSelection(TextSelection.create(transaction.doc, cursor));
 }
 
 function validTableDimension(value: number, min: number, max: number): boolean {
