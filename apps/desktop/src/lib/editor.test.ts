@@ -23,6 +23,7 @@ import {
   setEditorParagraphFormatTransaction,
   setEditorBlockBookmarkTransaction,
   setSelectedImageAttrsTransaction,
+  setSelectedTableCellAttrsTransaction,
   restoreEditorSelection,
   selectEditorTopLevelBlock,
   setEditorBlockType,
@@ -1487,6 +1488,31 @@ describe('findEditorDocMatches', () => {
     const withoutInsertedColumn = withColumn.apply(deleted!);
     expect(withoutInsertedColumn.doc.child(0).child(0).childCount).toBe(2);
     expect(withoutInsertedColumn.doc.child(0).child(1).childCount).toBe(2);
+  });
+
+  it('updates selected table cell styling and reports it in selection formatting', () => {
+    const state = tableStateWithSelection('A1');
+
+    const transaction = setSelectedTableCellAttrsTransaction(state, {
+      backgroundColor: '#dbeafe',
+      align: 'center',
+      border: 'hidden'
+    });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    const cell = nextState.doc.child(0).child(0).child(0);
+    expect(cell.attrs.backgroundColor).toBe('#dbeafe');
+    expect(cell.attrs.align).toBe('center');
+    expect(cell.attrs.border).toBe('hidden');
+    expect(nextState.doc.child(0).child(0).child(1).attrs.backgroundColor).toBeNull();
+
+    const formatting = editorStateSelectionFormatting(nextState);
+    expect(formatting.table?.cell).toEqual({
+      backgroundColor: '#dbeafe',
+      align: 'center',
+      border: 'hidden'
+    });
   });
 
   it('deletes a selected table and leaves an editable paragraph when it is the only block', () => {

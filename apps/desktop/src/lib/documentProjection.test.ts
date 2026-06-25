@@ -1118,6 +1118,7 @@ describe('documentToText', () => {
                   {
                     cells: [
                       {
+                        presentation: { background_color: '#fff3bf', text_alignment: 'center', border: 'hidden' },
                         blocks: [
                           { type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'A1', marks: [], link: null }] } }
                         ]
@@ -1176,7 +1177,13 @@ describe('documentToText', () => {
               content: [
                 {
                   type: 'table_cell',
-                  attrs: { unsupported: false, sourceEmpty: false },
+                  attrs: {
+                    unsupported: false,
+                    sourceEmpty: false,
+                    backgroundColor: '#fff3bf',
+                    align: 'center',
+                    border: 'hidden'
+                  },
                   content: [
                     {
                       type: 'paragraph',

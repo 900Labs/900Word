@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 use word_core::{
-    collect_ordered_note_references, AssetRef, Block, Document, Heading, ImageAlignment,
-    ImageBlock, Inline, InlineMark, NoteKind, PageField, PageRegion, PageRegionBlock, PageSetup,
-    Paragraph, ParagraphFormat, Section, Style, StyleKind, TableOfContents,
+    collect_ordered_note_references, sanitize_table_cell_background_color, AssetRef, Block,
+    Document, Heading, ImageAlignment, ImageBlock, Inline, InlineMark, NoteKind, PageField,
+    PageRegion, PageRegionBlock, PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat,
+    Section, Style, StyleKind, TableCellBorder, TableCellPresentation, TableOfContents,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -285,7 +286,13 @@ impl PdfLinkedText {
 #[derive(Debug, Clone)]
 struct PdfProjectedTableRow {
     section_index: usize,
-    cells: Vec<PdfLinkedText>,
+    cells: Vec<PdfProjectedTableCell>,
+}
+
+#[derive(Debug, Clone)]
+struct PdfProjectedTableCell {
+    text: PdfLinkedText,
+    presentation: TableCellPresentation,
 }
 
 #[derive(Debug, Clone)]
@@ -341,6 +348,7 @@ struct PdfTableRowLayout {
 #[derive(Debug, Clone)]
 struct PdfTableCellLayout {
     lines: Vec<PdfLinkedLine>,
+    presentation: TableCellPresentation,
 }
 
 #[derive(Debug, Clone)]
@@ -593,7 +601,10 @@ fn split_oversized_pdf_table_row(
                 } else {
                     vec![empty_pdf_linked_line()]
                 };
-                PdfTableCellLayout { lines }
+                PdfTableCellLayout {
+                    lines,
+                    presentation: cell.presentation.clone(),
+                }
             })
             .collect::<Vec<_>>();
         let max_chunk_lines = cells.iter().map(|cell| cell.lines.len()).max().unwrap_or(1);
@@ -805,7 +816,10 @@ fn push_block_pdf_items(
                         for block in &cell.blocks {
                             cell_text.append(&pdf_block_linked_text(block, document));
                         }
-                        cell_text.trimmed()
+                        PdfProjectedTableCell {
+                            text: cell_text.trimmed(),
+                            presentation: cell.presentation.clone(),
+                        }
                     })
                     .collect();
                 items.push(PdfFlowItem::TableRow(PdfProjectedTableRow {
@@ -1374,7 +1388,9 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
             for row in &table.rows {
                 output.push_str("<tr>");
                 for cell in &row.cells {
-                    output.push_str("<td>");
+                    output.push_str("<td");
+                    output.push_str(&table_cell_html_attrs(&cell.presentation));
+                    output.push('>');
                     for block in &cell.blocks {
                         push_block_html(block, document, output);
                     }
@@ -1907,6 +1923,54 @@ fn page_field_name(field: PageField) -> &'static str {
     }
 }
 
+fn table_cell_html_attrs(presentation: &TableCellPresentation) -> String {
+    if presentation.is_default() {
+        return String::new();
+    }
+
+    let mut attrs = String::new();
+    let mut style = String::new();
+    if let Some(background_color) = presentation
+        .background_color
+        .as_deref()
+        .and_then(sanitize_table_cell_background_color)
+    {
+        attrs.push_str(" data-cell-background-color=\"");
+        attrs.push_str(&escape_html(&background_color));
+        attrs.push('"');
+        style.push_str("background-color:");
+        style.push_str(&background_color);
+        style.push(';');
+    }
+    if let Some(alignment) = presentation.text_alignment {
+        attrs.push_str(" data-cell-align=\"");
+        attrs.push_str(paragraph_alignment_css(alignment));
+        attrs.push('"');
+        style.push_str("text-align:");
+        style.push_str(paragraph_alignment_css(alignment));
+        style.push(';');
+    }
+    if presentation.border == TableCellBorder::Hidden {
+        attrs.push_str(" data-cell-border=\"hidden\"");
+        style.push_str("border-color:transparent;");
+    }
+    if !style.is_empty() {
+        attrs.push_str(" style=\"");
+        attrs.push_str(&style);
+        attrs.push('"');
+    }
+    attrs
+}
+
+fn paragraph_alignment_css(alignment: ParagraphAlignment) -> &'static str {
+    match alignment {
+        ParagraphAlignment::Left => "left",
+        ParagraphAlignment::Center => "center",
+        ParagraphAlignment::Right => "right",
+        ParagraphAlignment::Justify => "justify",
+    }
+}
+
 fn paragraph_html_attrs(
     paragraph: &Paragraph,
     styles: &BTreeMap<word_core::StyleId, Style>,
@@ -2280,12 +2344,14 @@ fn layout_pdf_table_row(row: &PdfProjectedTableRow, content_width: f32) -> PdfTa
     let cells = if row.cells.is_empty() {
         vec![PdfTableCellLayout {
             lines: vec![empty_pdf_linked_line()],
+            presentation: Default::default(),
         }]
     } else {
         row.cells
             .iter()
-            .map(|text| PdfTableCellLayout {
-                lines: wrap_pdf_linked_text_lines(text, max_chars),
+            .map(|cell| PdfTableCellLayout {
+                lines: wrap_pdf_linked_text_lines(&cell.text, max_chars),
+                presentation: cell.presentation.clone(),
             })
             .collect()
     };
@@ -2678,8 +2744,26 @@ fn push_pdf_body_item_stream(
             let bottom_y = top_y - row.row_height;
             let cell_count = row.cells.len().max(1);
             let cell_width = context.content_width / cell_count as f32;
+            for (cell_index, cell) in row.cells.iter().enumerate() {
+                let x = context.margin_left + cell_index as f32 * cell_width;
+                if let Some(background_color) = cell
+                    .presentation
+                    .background_color
+                    .as_deref()
+                    .and_then(sanitize_table_cell_background_color)
+                {
+                    let (red, green, blue) = pdf_table_cell_background_rgb(&background_color);
+                    stream.push_str(&format!(
+                        "q {red:.3} {green:.3} {blue:.3} rg {x:.1} {bottom_y:.1} {cell_width:.1} {:.1} re f Q\n",
+                        row.row_height
+                    ));
+                }
+            }
             stream.push_str("q 0.6 w 0.45 G\n");
-            for cell_index in 0..cell_count {
+            for (cell_index, cell) in row.cells.iter().enumerate() {
+                if cell.presentation.border == TableCellBorder::Hidden {
+                    continue;
+                }
                 let x = context.margin_left + cell_index as f32 * cell_width;
                 stream.push_str(&format!(
                     "{x:.1} {bottom_y:.1} {cell_width:.1} {:.1} re S\n",
@@ -2688,27 +2772,36 @@ fn push_pdf_body_item_stream(
             }
             stream.push_str("Q\n");
             for (cell_index, cell) in row.cells.iter().enumerate() {
-                let x =
-                    context.margin_left + cell_index as f32 * cell_width + PDF_TABLE_CELL_PADDING;
-                let y = top_y - PDF_TABLE_CELL_PADDING - PDF_TABLE_FONT_SIZE;
                 let lines = resolve_pdf_linked_lines(
                     &cell.lines,
                     context.page.page_number,
                     context.total_pages,
                     context.document,
                 );
-                push_pdf_linked_text_block(
-                    stream,
-                    PDF_TABLE_FONT_SIZE,
-                    PDF_TABLE_LEADING,
-                    x,
-                    y,
-                    &lines,
-                    &mut PdfAnnotationCollector {
-                        annotations: state.annotations,
-                        remaining: state.remaining_annotations,
-                    },
-                );
+                for (line_index, line) in lines.iter().enumerate() {
+                    let x = pdf_table_cell_line_x(
+                        context.margin_left + cell_index as f32 * cell_width,
+                        cell_width,
+                        line,
+                        cell.presentation.text_alignment,
+                    );
+                    let y = top_y
+                        - PDF_TABLE_CELL_PADDING
+                        - PDF_TABLE_FONT_SIZE
+                        - line_index as f32 * PDF_TABLE_LEADING;
+                    push_pdf_linked_text_block(
+                        stream,
+                        PDF_TABLE_FONT_SIZE,
+                        PDF_TABLE_LEADING,
+                        x,
+                        y,
+                        std::slice::from_ref(line),
+                        &mut PdfAnnotationCollector {
+                            annotations: state.annotations,
+                            remaining: state.remaining_annotations,
+                        },
+                    );
+                }
             }
             *state.cursor_y -= row.block_height;
         }
@@ -2896,6 +2989,36 @@ fn pdf_aligned_x(
     }
 }
 
+fn pdf_table_cell_line_x(
+    cell_left: f32,
+    cell_width: f32,
+    line: &PdfLinkedLine,
+    alignment: Option<ParagraphAlignment>,
+) -> f32 {
+    let content_width = (cell_width - PDF_TABLE_CELL_PADDING * 2.0).max(0.0);
+    let text_width = approximate_pdf_text_width(&line.text, PDF_TABLE_FONT_SIZE).min(content_width);
+    let offset = match alignment {
+        Some(ParagraphAlignment::Center) => (content_width - text_width).max(0.0) / 2.0,
+        Some(ParagraphAlignment::Right) => (content_width - text_width).max(0.0),
+        Some(ParagraphAlignment::Left | ParagraphAlignment::Justify) | None => 0.0,
+    };
+    cell_left + PDF_TABLE_CELL_PADDING + offset
+}
+
+fn approximate_pdf_text_width(text: &str, font_size: f32) -> f32 {
+    text.chars().count() as f32 * font_size * PDF_TEXT_WIDTH_FACTOR
+}
+
+fn pdf_table_cell_background_rgb(background_color: &str) -> (f32, f32, f32) {
+    match background_color {
+        "#f1f5f9" => (0.945, 0.961, 0.976),
+        "#fff3bf" => (1.0, 0.953, 0.749),
+        "#dbeafe" => (0.859, 0.918, 0.996),
+        "#dcfce7" => (0.863, 0.988, 0.906),
+        _ => (1.0, 1.0, 1.0),
+    }
+}
+
 fn push_pdf_text_block(
     stream: &mut String,
     font_size: f32,
@@ -3058,6 +3181,7 @@ mod tests {
             Block::Table(Table {
                 rows: vec![TableRow {
                     cells: vec![TableCell {
+                        presentation: Default::default(),
                         blocks: vec![Block::Paragraph(Paragraph {
                             bookmark_id: None,
                             style: "body".into(),
@@ -3509,6 +3633,7 @@ mod tests {
             Block::Table(Table {
                 rows: vec![TableRow {
                     cells: vec![TableCell {
+                        presentation: Default::default(),
                         blocks: vec![Block::Paragraph(Paragraph {
                             bookmark_id: None,
                             style: "body".into(),
@@ -3767,9 +3892,11 @@ mod tests {
                 TableRow {
                     cells: vec![
                         TableCell {
+                            presentation: Default::default(),
                             blocks: vec![paragraph_block("Header cell")],
                         },
                         TableCell {
+                            presentation: Default::default(),
                             blocks: vec![paragraph_block("Wrapped table cell text")],
                         },
                     ],
@@ -3777,9 +3904,11 @@ mod tests {
                 TableRow {
                     cells: vec![
                         TableCell {
+                            presentation: Default::default(),
                             blocks: vec![paragraph_block("First value")],
                         },
                         TableCell {
+                            presentation: Default::default(),
                             blocks: vec![paragraph_block("Second value")],
                         },
                     ],
@@ -3800,6 +3929,39 @@ mod tests {
     }
 
     #[test]
+    fn table_cell_styling_exports_to_html_print_html_and_pdf_projection() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Table(Table {
+            rows: vec![TableRow {
+                cells: vec![TableCell {
+                    presentation: TableCellPresentation {
+                        background_color: Some("#dbeafe".to_string()),
+                        text_alignment: Some(ParagraphAlignment::Right),
+                        border: TableCellBorder::Hidden,
+                    },
+                    blocks: vec![paragraph_block("Styled cell")],
+                }],
+            }],
+        })];
+
+        let html = export_html(&document).expect("html export should succeed");
+        let print_html = export_print_html(&document).expect("print html should succeed");
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let pdf_text = String::from_utf8_lossy(&pdf);
+
+        assert!(html.contains("data-cell-background-color=\"#dbeafe\""));
+        assert!(html.contains("background-color:#dbeafe"));
+        assert!(html.contains("data-cell-align=\"right\""));
+        assert!(html.contains("text-align:right"));
+        assert!(html.contains("data-cell-border=\"hidden\""));
+        assert!(html.contains("border-color:transparent"));
+        assert!(print_html.contains("data-cell-background-color=\"#dbeafe\""));
+        assert!(pdf_text.contains("0.859 0.918 0.996 rg"));
+        assert!(!pdf_text.contains(" re S"));
+        assert!(pdf_contains(&pdf, "Styled cell"));
+    }
+
+    #[test]
     fn pdf_export_paginates_structured_table_and_figure_blocks() {
         let mut document = Document::new_untitled();
         document.sections[0].page = compact_test_page();
@@ -3807,6 +3969,7 @@ mod tests {
         for index in 0..12 {
             rows.push(TableRow {
                 cells: vec![TableCell {
+                    presentation: Default::default(),
                     blocks: vec![paragraph_block(format!("Structured row {index}"))],
                 }],
             });
@@ -3847,6 +4010,7 @@ mod tests {
         document.sections[0].blocks = vec![Block::Table(Table {
             rows: vec![TableRow {
                 cells: vec![TableCell {
+                    presentation: Default::default(),
                     blocks: vec![paragraph_block(long_cell_text)],
                 }],
             }],

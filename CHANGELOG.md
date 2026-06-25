@@ -47,6 +47,7 @@ All notable changes to 900Word are tracked here.
 - Personal Dictionary Manager MVP under Settings with local normalized word listing, per-word removal, generic unavailable states, privacy-safe IPC errors, and owner-only personal dictionary rewrites where supported.
 - Local Hunspell dictionary install MVP under Settings with native `.aff`/`.dic` selection, normalized app-data copies, generic selected-state labels, privacy-safe install errors, and no downloads, remote lookup, cloud sync, telemetry, plugin dictionaries, or document metadata changes.
 - Local user dictionary removal MVP under Settings with user-only remove actions, bundled dictionary protection, app-data-only Hunspell pair deletion, personal word preservation, active dictionary fallback, generic errors, and no paths, filenames, network behavior, telemetry, plugin dictionaries, or document metadata changes.
+- Table Cell Styling MVP with durable bounded cell background, per-cell text alignment, and border visible/hidden metadata in `word-core`, compact contextual editor controls, 900Word-authored ODT `word900` preservation, and sanitized HTML/print/PDF projection without table layout engine, merged cells, formulas, network behavior, telemetry, accounts, or cloud sync.
 
 ### Fixed
 

@@ -358,6 +358,18 @@ export type UiStringKey =
   | 'trackedChangeSelected'
   | 'typoReplacements'
   | 'tableColumns'
+  | 'tableCellAlignInherit'
+  | 'tableCellAlignment'
+  | 'tableCellBackground'
+  | 'tableCellBackgroundLightBlue'
+  | 'tableCellBackgroundLightGray'
+  | 'tableCellBackgroundLightGreen'
+  | 'tableCellBackgroundLightYellow'
+  | 'tableCellBackgroundNone'
+  | 'tableCellBorder'
+  | 'tableCellBorderHidden'
+  | 'tableCellBorderVisible'
+  | 'tableCellUpdated'
   | 'tableDeleted'
   | 'tableInserted'
   | 'tableOfContents'
@@ -759,6 +771,18 @@ const english: UiStrings = {
   trackedChangeSelected: 'Tracked change selected',
   typoReplacements: 'Replace common typos',
   tableColumns: 'Table columns',
+  tableCellAlignInherit: 'Inherit',
+  tableCellAlignment: 'Cell align',
+  tableCellBackground: 'Cell fill',
+  tableCellBackgroundLightBlue: 'Blue',
+  tableCellBackgroundLightGray: 'Gray',
+  tableCellBackgroundLightGreen: 'Green',
+  tableCellBackgroundLightYellow: 'Yellow',
+  tableCellBackgroundNone: 'None',
+  tableCellBorder: 'Cell border',
+  tableCellBorderHidden: 'Hidden',
+  tableCellBorderVisible: 'Visible',
+  tableCellUpdated: 'Table cell updated',
   tableDeleted: 'Table deleted',
   tableInserted: 'Table inserted',
   tableOfContents: 'Table of contents',
@@ -943,6 +967,10 @@ const spanish: Partial<UiStrings> = {
   stats: 'Estadisticas',
   telemetry: 'Telemetria',
   typoReplacements: 'Corregir errores comunes',
+  tableCellAlignment: 'Alinear celda',
+  tableCellBackground: 'Relleno de celda',
+  tableCellBorder: 'Borde de celda',
+  tableCellUpdated: 'Celda actualizada',
   templateLoaded: 'Plantilla cargada',
   templates: 'Plantillas',
   top: 'Superior',

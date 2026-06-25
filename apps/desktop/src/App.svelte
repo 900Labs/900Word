@@ -31,6 +31,7 @@
     setEditorLink,
     setEditorParagraphFormat,
     setSelectedImageAttrs,
+    setSelectedTableCellAttrs,
     setEditorSpellIssues,
     setEditorTextStyle,
     selectedEditorText,
@@ -44,6 +45,7 @@
     type EditorSelectionSnapshot,
     type EditorSpellIssueRange,
     type SupportedImageAttrs,
+    type SupportedTableCellAttrs,
     type SupportedListName,
     type SupportedMarkName,
     type SupportedParagraphAttrs,
@@ -243,6 +245,20 @@
     { id: 'center', label: 'Center' },
     { id: 'right', label: 'Right' }
   ];
+  const tableCellBackgrounds: Array<{ id: NonNullable<SupportedTableCellAttrs['backgroundColor']> | 'none'; labelKey: UiStringKey }> = [
+    { id: 'none', labelKey: 'tableCellBackgroundNone' },
+    { id: '#f1f5f9', labelKey: 'tableCellBackgroundLightGray' },
+    { id: '#fff3bf', labelKey: 'tableCellBackgroundLightYellow' },
+    { id: '#dbeafe', labelKey: 'tableCellBackgroundLightBlue' },
+    { id: '#dcfce7', labelKey: 'tableCellBackgroundLightGreen' }
+  ];
+  const tableCellAlignments: Array<{ id: NonNullable<SupportedTableCellAttrs['align']> | 'inherit'; labelKey: UiStringKey }> = [
+    { id: 'inherit', labelKey: 'tableCellAlignInherit' },
+    { id: 'left', labelKey: 'alignLeft' },
+    { id: 'center', labelKey: 'alignCenter' },
+    { id: 'right', labelKey: 'alignRight' },
+    { id: 'justify', labelKey: 'alignJustify' }
+  ];
   const localCommentAuthor = 'Local User';
   const localTrackedChangeAuthor = 'Local User';
   const maxCommentBodyChars = 2000;
@@ -286,6 +302,9 @@
   let imageCaption = $state('');
   let imageAlignment = $state<NonNullable<SupportedImageAttrs['alignment']>>('inline');
   let imageScalePercent = $state(100);
+  let tableCellBackground = $state<NonNullable<SupportedTableCellAttrs['backgroundColor']> | 'none'>('none');
+  let tableCellAlignment = $state<NonNullable<SupportedTableCellAttrs['align']> | 'inherit'>('inherit');
+  let tableCellBorder = $state<NonNullable<SupportedTableCellAttrs['border']>>('visible');
   let spellIssueRanges = $state<EditorSpellIssueRange[]>([]);
   let spellPopover = $state<{
     issue: EditorSpellIssueRange;
@@ -1135,6 +1154,9 @@
     imageCaption = activeFormatting.image?.caption ?? '';
     imageAlignment = activeFormatting.image?.alignment ?? 'inline';
     imageScalePercent = activeFormatting.image?.scalePercent ?? 100;
+    tableCellBackground = activeFormatting.table?.cell.backgroundColor ?? 'none';
+    tableCellAlignment = activeFormatting.table?.cell.align ?? 'inherit';
+    tableCellBorder = activeFormatting.table?.cell.border ?? 'visible';
     selectedCommentText = selectedEditorText(view, selection).trim();
   }
 
@@ -1180,6 +1202,43 @@
     if (value === 'inline' || value === 'left' || value === 'center' || value === 'right') {
       imageAlignment = value;
       applyImageAttrs({ alignment: value });
+    }
+  }
+
+  function applyTableCellAttrs(attrs: SupportedTableCellAttrs) {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    const changed = setSelectedTableCellAttrs(view, attrs, lastEditorSelection);
+    refreshSelectionFormatting();
+    status = changed ? tr('tableCellUpdated') : tr('paragraphUnchanged');
+  }
+
+  function setTableCellBackground(value: string) {
+    if (
+      value === 'none' ||
+      value === '#f1f5f9' ||
+      value === '#fff3bf' ||
+      value === '#dbeafe' ||
+      value === '#dcfce7'
+    ) {
+      tableCellBackground = value;
+      applyTableCellAttrs({ backgroundColor: value === 'none' ? null : value });
+    }
+  }
+
+  function setTableCellAlignment(value: string) {
+    if (value === 'inherit' || value === 'left' || value === 'center' || value === 'right' || value === 'justify') {
+      tableCellAlignment = value;
+      applyTableCellAttrs({ align: value === 'inherit' ? null : value });
+    }
+  }
+
+  function setTableCellBorder(value: string) {
+    if (value === 'visible' || value === 'hidden') {
+      tableCellBorder = value;
+      applyTableCellAttrs({ border: value });
     }
   }
 
@@ -3142,6 +3201,49 @@
       >
         Del
       </button>
+      {#if activeFormatting.table}
+        <label class="table-cell-field" title={tr('tableCellBackground')}>
+          {tr('tableCellBackground')}
+          <select
+            aria-label={tr('tableCellBackground')}
+            disabled={!editorEditable}
+            bind:value={tableCellBackground}
+            onpointerdown={() => captureToolbarSelection(true)}
+            onchange={(event) => setTableCellBackground(event.currentTarget.value)}
+          >
+            {#each tableCellBackgrounds as background}
+              <option value={background.id}>{tr(background.labelKey)}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="table-cell-field" title={tr('tableCellAlignment')}>
+          {tr('tableCellAlignment')}
+          <select
+            aria-label={tr('tableCellAlignment')}
+            disabled={!editorEditable}
+            bind:value={tableCellAlignment}
+            onpointerdown={() => captureToolbarSelection(true)}
+            onchange={(event) => setTableCellAlignment(event.currentTarget.value)}
+          >
+            {#each tableCellAlignments as alignment}
+              <option value={alignment.id}>{tr(alignment.labelKey)}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="table-cell-field" title={tr('tableCellBorder')}>
+          {tr('tableCellBorder')}
+          <select
+            aria-label={tr('tableCellBorder')}
+            disabled={!editorEditable}
+            bind:value={tableCellBorder}
+            onpointerdown={() => captureToolbarSelection(true)}
+            onchange={(event) => setTableCellBorder(event.currentTarget.value)}
+          >
+            <option value="visible">{tr('tableCellBorderVisible')}</option>
+            <option value="hidden">{tr('tableCellBorderHidden')}</option>
+          </select>
+        </label>
+      {/if}
     </div>
 
     {#if activeFormatting.image}

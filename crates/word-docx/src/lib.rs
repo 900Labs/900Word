@@ -2266,6 +2266,7 @@ fn parse_table_cell(
         .map(|item| item.block)
         .collect::<Vec<_>>();
     Ok(TableCell {
+        presentation: Default::default(),
         blocks: if blocks.is_empty() {
             vec![empty_paragraph_block()]
         } else {
@@ -7005,6 +7006,7 @@ mod tests {
             Block::Table(Table {
                 rows: vec![TableRow {
                     cells: vec![TableCell {
+                        presentation: Default::default(),
                         blocks: vec![Block::Paragraph(Paragraph {
                             bookmark_id: None,
                             style: StyleId::from("body"),

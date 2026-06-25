@@ -54,6 +54,12 @@ export interface SupportedImageAttrs {
   caption?: string | null;
 }
 
+export interface SupportedTableCellAttrs {
+  backgroundColor?: '#f1f5f9' | '#fff3bf' | '#dbeafe' | '#dcfce7' | null;
+  align?: 'left' | 'center' | 'right' | 'justify' | null;
+  border?: 'visible' | 'hidden' | null;
+}
+
 export interface EditorFindMatch extends FindRange {
   from: number;
   to: number;
@@ -94,6 +100,7 @@ export type SupportedTableEditAction =
 export interface EditorTableSnapshot {
   rows: number;
   columns: number;
+  cell: SupportedTableCellAttrs;
   canAddRow: boolean;
   canDeleteRow: boolean;
   canAddColumn: boolean;
@@ -1172,6 +1179,45 @@ export function setSelectedImageAttrsTransaction(
   return transaction.setNodeMarkup(selected.pos, selected.node.type, nextAttrs, selected.node.marks);
 }
 
+export function setSelectedTableCellAttrs(
+  view: EditorView | undefined,
+  attrs: SupportedTableCellAttrs,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  const transaction = setSelectedTableCellAttrsTransaction(view.state, attrs, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function setSelectedTableCellAttrsTransaction(
+  state: EditorState,
+  attrs: SupportedTableCellAttrs,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const context = selectedEditableTableContext(transaction);
+  if (!context) {
+    return undefined;
+  }
+
+  const nextAttrs = {
+    ...context.cell.node.attrs,
+    ...compactTableCellAttrs(attrs)
+  };
+  if (JSON.stringify(context.cell.node.attrs) === JSON.stringify(nextAttrs)) {
+    return undefined;
+  }
+  return transaction.setNodeMarkup(context.cell.pos, context.cell.node.type, nextAttrs, context.cell.node.marks);
+}
+
 export function imageScalePercentFromResizeDrag(snapshot: ImageResizeDragSnapshot): number {
   const initialWidth = Math.max(1, snapshot.initialWidthPx);
   const nextWidth = initialWidth + snapshot.deltaXPx;
@@ -2176,6 +2222,7 @@ function selectedTableSnapshot(transaction: Transaction): EditorTableSnapshot | 
   return {
     rows: context.rows,
     columns: context.columns,
+    cell: compactTableCellAttrs(context.cell.node.attrs),
     canAddRow: context.rows < MAX_TABLE_ROWS,
     canDeleteRow: context.rows > MIN_TABLE_ROWS,
     canAddColumn: context.columns < MAX_TABLE_COLUMNS,
@@ -2609,6 +2656,34 @@ function compactImageAttrs(attrs: SupportedImageAttrs): SupportedImageAttrs {
     compact.caption = attrs.caption.trim().length > 0 ? attrs.caption : null;
   }
   return compact;
+}
+
+function compactTableCellAttrs(attrs: SupportedTableCellAttrs | Record<string, unknown>): SupportedTableCellAttrs {
+  const compact: SupportedTableCellAttrs = {};
+  if (attrs.backgroundColor !== undefined) {
+    compact.backgroundColor = normalizeTableCellBackgroundColor(attrs.backgroundColor);
+  }
+  if (attrs.align !== undefined) {
+    compact.align = normalizeTableCellAlignment(attrs.align);
+  }
+  if (attrs.border !== undefined) {
+    compact.border = normalizeTableCellBorder(attrs.border);
+  }
+  return compact;
+}
+
+function normalizeTableCellBackgroundColor(value: unknown): SupportedTableCellAttrs['backgroundColor'] {
+  return value === '#f1f5f9' || value === '#fff3bf' || value === '#dbeafe' || value === '#dcfce7'
+    ? value
+    : null;
+}
+
+function normalizeTableCellAlignment(value: unknown): SupportedTableCellAttrs['align'] {
+  return value === 'left' || value === 'center' || value === 'right' || value === 'justify' ? value : null;
+}
+
+function normalizeTableCellBorder(value: unknown): NonNullable<SupportedTableCellAttrs['border']> {
+  return value === 'hidden' ? 'hidden' : 'visible';
 }
 
 function normalizeImageAlignment(value: unknown): 'inline' | 'left' | 'center' | 'right' {

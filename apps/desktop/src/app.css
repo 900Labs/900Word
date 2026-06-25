@@ -608,7 +608,8 @@ select:focus-visible {
 .app-shell[data-large-toolbar="true"] .image-text-field,
 .app-shell[data-large-toolbar="true"] .ruler-toggle,
 .app-shell[data-large-toolbar="true"] .review-toggle,
-.app-shell[data-large-toolbar="true"] .table-size-field {
+.app-shell[data-large-toolbar="true"] .table-size-field,
+.app-shell[data-large-toolbar="true"] .table-cell-field {
   min-height: 42px;
   padding-inline: 0.55rem;
 }
@@ -641,7 +642,8 @@ select:focus-visible {
   height: 1.15rem;
 }
 
-.table-size-field {
+.table-size-field,
+.table-cell-field {
   min-height: 34px;
   display: inline-flex;
   align-items: center;
@@ -655,6 +657,11 @@ select:focus-visible {
   width: 3rem;
   min-width: 3rem;
   padding: 0.3rem 0.35rem;
+}
+
+.table-cell-field select {
+  min-width: 5.6rem;
+  padding: 0.3rem 0.4rem;
 }
 
 .list-tools button,
