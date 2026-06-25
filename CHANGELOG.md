@@ -56,6 +56,7 @@ All notable changes to 900Word are tracked here.
 - Table Column Widths MVP with durable bounded per-mille column width hints for rectangular editable tables, compact contextual width controls, 900Word-authored ODT `word900` preservation, sanitized HTML/print colgroups, and proportional lightweight PDF table projection without adding a full layout engine or arbitrary CSS.
 - DOCX table width interoperability for bounded editable tables, importing simple `w:tblGrid` hints into sanitized per-mille `word-core` widths and exporting 900Word-authored widths as minimal generated DOCX grid hints while keeping ODT canonical and DOCX conversion-only.
 - DOCX table-of-contents interoperability for 900Word-authored generated TOCs, exporting visible styled TOC rows with safe internal bookmark links when targets are unique, importing the generated style/link shape back into `word-core`, and preserving safe paragraph/heading bookmark targets through minimal DOCX bookmark markers without claiming Word TOC field-code or page-number fidelity.
+- DOCX table cell presentation interoperability for the existing bounded 900Word cell styling subset, importing/exporting safe light cell fills, all-borders-hidden markers, and simple cell text alignment while ignoring arbitrary colors, partial borders, rich table themes, and full table layout fidelity.
 
 ### Fixed
 

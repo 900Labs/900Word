@@ -536,3 +536,13 @@ Status: complete.
 - Preserve unique safe paragraph/heading bookmark IDs through minimal DOCX `bookmarkStart`/`bookmarkEnd` markers.
 - Degrade generated-style TOC rows without safe internal links back to visible paragraphs instead of hidden or lossy structured content.
 - Keep ODT canonical and keep Word TOC field codes, page-number fidelity, automatic refresh, complex cross references, telemetry, network behavior, accounts, cloud sync, and full DOCX layout fidelity deferred.
+
+## Sprint 057: DOCX Table Cell Presentation Interoperability
+
+Status: complete.
+
+- Import safe DOCX table cell `w:shd` fills into the existing bounded 900Word light color palette.
+- Import all-four-sides hidden DOCX cell borders into the existing visible/hidden table cell border model.
+- Derive cell text alignment from simple matching paragraph `w:jc` values inside supported table cells.
+- Export 900Word-authored safe cell fills, hidden-border markers, and simple cell text alignment into generated DOCX table cells.
+- Keep ODT canonical and keep arbitrary colors, partial/per-side borders, rich table themes, merged cells, formulas, deterministic table layout, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
