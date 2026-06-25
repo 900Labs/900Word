@@ -484,6 +484,23 @@ select:focus-visible {
   min-width: 6.4rem;
 }
 
+.template-tools {
+  max-width: min(100%, 48rem);
+}
+
+.template-tools input {
+  width: 12rem;
+}
+
+.template-detail {
+  flex: 1 1 100%;
+  max-width: 100%;
+  color: #66717b;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .font-tools,
 .paragraph-tools,
 .list-tools,

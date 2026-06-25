@@ -10,6 +10,12 @@ describe('i18n', () => {
     expect(translate('es-ES', 'save')).toBe('Guardar');
   });
 
+  it('labels user template library controls with fallback', () => {
+    expect(translate('en-US', 'saveTemplate')).toBe('Save Template');
+    expect(translate('es-ES', 'deleteTemplate')).toBe('Eliminar plantilla');
+    expect(translate('ar', 'templateName')).toBe('Template name');
+  });
+
   it('interpolates status values', () => {
     expect(translate('en-US', 'matchCount', { current: 2, total: 5 })).toBe('2/5');
   });
