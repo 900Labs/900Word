@@ -52,6 +52,15 @@ describe('i18n', () => {
     );
   });
 
+  it('labels the personal dictionary manager in supported locales', () => {
+    expect(translate('en-US', 'personalDictionary')).toBe('Personal dictionary');
+    expect(translate('en-US', 'personalDictionaryWordRemoved', { word: 'qwerty' })).toBe(
+      'Removed word from the personal dictionary'
+    );
+    expect(translate('es-ES', 'personalDictionaryRefresh')).toBe('Actualizar palabras');
+    expect(translate('ar', 'personalDictionaryRemove')).toBe('Remove');
+  });
+
   it('labels expanded stats estimates clearly', () => {
     expect(translate('en-US', 'estimatedPages')).toBe('Estimated pages');
     expect(translate('en-US', 'statsEstimateNote')).toContain('estimates');

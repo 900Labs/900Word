@@ -222,6 +222,8 @@ pub fn run() {
             prepare_print_html,
             check_spelling,
             add_to_personal_dictionary,
+            list_personal_dictionary_words,
+            remove_from_personal_dictionary,
             list_dictionaries,
             get_settings,
             update_settings,
@@ -533,6 +535,27 @@ fn add_to_personal_dictionary(
 }
 
 #[tauri::command]
+fn list_personal_dictionary_words(
+    language_tag: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<String>, String> {
+    let user_root = user_dictionary_dir(&app)?;
+    ensure_user_dictionary_dir(&user_root)?;
+    list_personal_dictionary_words_with_root(&language_tag, &user_root)
+}
+
+#[tauri::command]
+fn remove_from_personal_dictionary(
+    word: String,
+    language_tag: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<String>, String> {
+    let user_root = user_dictionary_dir(&app)?;
+    ensure_user_dictionary_dir(&user_root)?;
+    remove_personal_dictionary_word_with_root(&word, &language_tag, &user_root)
+}
+
+#[tauri::command]
 fn list_dictionaries(app: tauri::AppHandle) -> Result<Vec<DictionaryInfo>, String> {
     let user_root = user_dictionary_dir(&app)?;
     ensure_user_dictionary_dir(&user_root)?;
@@ -659,6 +682,31 @@ fn check_spelling_with_root(
         issues: checker.check_with_personal_words(text, &personal_words),
         warnings,
     })
+}
+
+fn list_personal_dictionary_words_with_root(
+    language_tag: &str,
+    user_root: &Path,
+) -> Result<Vec<String>, String> {
+    word_spell::list_personal_words(user_root, language_tag).map_err(safe_personal_dictionary_error)
+}
+
+fn remove_personal_dictionary_word_with_root(
+    word: &str,
+    language_tag: &str,
+    user_root: &Path,
+) -> Result<Vec<String>, String> {
+    word_spell::remove_personal_word(user_root, language_tag, word)
+        .map_err(safe_personal_dictionary_error)
+}
+
+fn safe_personal_dictionary_error(error: word_spell::SpellError) -> String {
+    match error {
+        word_spell::SpellError::InvalidDictionary {
+            reason: "personal dictionary word is invalid",
+        } => "personal dictionary word is invalid".to_string(),
+        _ => "personal dictionary is unavailable".to_string(),
+    }
 }
 
 fn user_dictionary_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1747,6 +1795,28 @@ fn safe_io_error(error: std::io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn regular_files_in(root: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(root)
+            .expect("test directory should be readable")
+            .filter_map(|entry| {
+                let path = entry
+                    .expect("test directory entry should be readable")
+                    .path();
+                std::fs::symlink_metadata(&path)
+                    .expect("test file metadata should be readable")
+                    .file_type()
+                    .is_file()
+                    .then_some(path)
+            })
+            .collect()
+    }
+
+    fn only_regular_file_in(root: &Path) -> PathBuf {
+        let mut files = regular_files_in(root);
+        assert_eq!(files.len(), 1);
+        files.remove(0)
+    }
 
     #[test]
     fn rejects_wrong_extension() {
@@ -2854,6 +2924,101 @@ mod tests {
             .expect("personal dictionary check should succeed");
 
         assert!(result.issues.is_empty());
+    }
+
+    #[test]
+    fn personal_dictionary_words_list_plain_normalized_words() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        word_spell::add_personal_word(dir.path(), "en-US", "Qwerty")
+            .expect("personal word should write");
+        word_spell::add_personal_word(dir.path(), "en-US", "Alpha")
+            .expect("personal word should write");
+
+        let words = list_personal_dictionary_words_with_root("en-US", dir.path())
+            .expect("personal words should list");
+
+        assert_eq!(words, vec!["alpha".to_string(), "qwerty".to_string()]);
+        assert!(words
+            .iter()
+            .all(|word| !word.contains('/') && !word.contains('\\')));
+    }
+
+    #[test]
+    fn personal_dictionary_words_missing_file_is_empty() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+
+        let words = list_personal_dictionary_words_with_root("en-US", dir.path())
+            .expect("missing personal words should be empty");
+
+        assert!(words.is_empty());
+    }
+
+    #[test]
+    fn removing_personal_dictionary_word_updates_spell_check_boundary() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        word_spell::add_personal_word(dir.path(), "en-US", "qwerty")
+            .expect("personal word should write");
+
+        let remaining = remove_personal_dictionary_word_with_root("qwerty", "en-US", dir.path())
+            .expect("personal word should remove");
+        let result = check_spelling_with_root("hello qwerty", "en-US", dir.path())
+            .expect("spell check should still run");
+
+        assert!(remaining.is_empty());
+        assert_eq!(result.issues.len(), 1);
+        assert_eq!(result.issues[0].word, "qwerty");
+    }
+
+    #[test]
+    fn removing_invalid_personal_dictionary_word_returns_generic_error() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let invalid_word = "!";
+
+        let err = remove_personal_dictionary_word_with_root(invalid_word, "en-US", dir.path())
+            .expect_err("invalid personal word should fail");
+
+        assert_eq!(err, "personal dictionary word is invalid");
+        assert!(!err.contains(invalid_word));
+        assert!(!err.contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn invalid_personal_dictionary_language_returns_generic_error() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let invalid_language = "!";
+
+        let err = list_personal_dictionary_words_with_root(invalid_language, dir.path())
+            .expect_err("bad tag should fail");
+
+        assert_eq!(err, "personal dictionary is unavailable");
+        assert!(!err.contains(invalid_language));
+        assert!(!err.contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_personal_dictionary_word_preserves_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        word_spell::add_personal_word(dir.path(), "en-US", "qwerty")
+            .expect("personal word should write");
+        word_spell::add_personal_word(dir.path(), "en-US", "zebra")
+            .expect("personal word should write");
+        let path = only_regular_file_in(dir.path());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("test permissions should apply");
+
+        remove_personal_dictionary_word_with_root("qwerty", "en-US", dir.path())
+            .expect("personal word should remove");
+
+        let mode = std::fs::metadata(&path)
+            .expect("personal dictionary metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(mode, 0o600);
     }
 
     #[cfg(unix)]

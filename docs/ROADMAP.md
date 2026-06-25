@@ -417,3 +417,13 @@ Status: complete.
 - Rewrite the local settings file with private atomic writes instead of deleting it, preserving owner-only permissions where supported.
 - Return telemetry-disabled defaults to the frontend and show localized English/Spanish reset status text.
 - Keep settings import/export, cloud sync, accounts, telemetry, network behavior, plugin-managed settings, document metadata, recent-document persistence, and recovery locations out of scope.
+
+## Sprint 045: Personal Dictionary Manager MVP
+
+Status: complete.
+
+- Add local-only personal dictionary word listing and per-word removal for the active spell-check dictionary.
+- Return plain normalized words only and keep local personal dictionary paths, filenames, usernames, hostnames, account/cloud identity, telemetry identifiers, network state, recent paths, recovery locations, and document text out of frontend state and errors.
+- Reuse the existing app-data user dictionary root validation and owner-only local file permissions where supported.
+- Add a compact Settings personal dictionary section with refresh, remove, empty, and generic unavailable states.
+- Keep dictionary import/export, downloads, remote lookup, cloud sync, accounts, telemetry, network behavior, plugin-managed dictionaries, and document metadata changes out of scope.

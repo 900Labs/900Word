@@ -221,6 +221,15 @@ pub fn read_personal_words(
         .collect::<BTreeSet<_>>())
 }
 
+pub fn list_personal_words(
+    user_root: &Path,
+    language_tag: &str,
+) -> Result<Vec<String>, SpellError> {
+    Ok(read_personal_words(user_root, language_tag)?
+        .into_iter()
+        .collect())
+}
+
 pub fn add_personal_word(
     user_root: &Path,
     language_tag: &str,
@@ -249,6 +258,21 @@ pub fn add_personal_word(
     fs::write(&path, output).map_err(|_| SpellError::DictionaryIo)?;
     set_private_file_permissions(&path)?;
     Ok(())
+}
+
+pub fn remove_personal_word(
+    user_root: &Path,
+    language_tag: &str,
+    word: &str,
+) -> Result<Vec<String>, SpellError> {
+    let normalized = normalize_personal_word(word).ok_or(SpellError::InvalidDictionary {
+        reason: "personal dictionary word is invalid",
+    })?;
+    let mut words = read_personal_words(user_root, language_tag)?;
+    if !words.remove(&normalized) {
+        return Ok(words.into_iter().collect());
+    }
+    write_personal_words(user_root, language_tag, &words)
 }
 
 pub fn list_user_dictionaries(user_root: &Path) -> Vec<DictionaryInfo> {
@@ -378,6 +402,37 @@ fn personal_words_path(root: &Path, language_tag: &str) -> Result<PathBuf, Spell
     validate_language_tag(language_tag)?;
     let normalized = normalize_language_tag(language_tag).replace('-', "_");
     Ok(root.join(format!("personal-{normalized}.txt")))
+}
+
+fn write_personal_words(
+    user_root: &Path,
+    language_tag: &str,
+    words: &BTreeSet<String>,
+) -> Result<Vec<String>, SpellError> {
+    let path = personal_words_path(user_root, language_tag)?;
+    if words.is_empty() {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(SpellError::DictionaryIo),
+        }
+        return Ok(Vec::new());
+    }
+
+    let byte_len: usize = words.iter().map(|entry| entry.len() + 1).sum();
+    if byte_len as u64 > MAX_PERSONAL_DICTIONARY_BYTES {
+        return Err(SpellError::InvalidDictionary {
+            reason: "personal dictionary file is too large",
+        });
+    }
+    let mut output = String::new();
+    for entry in words {
+        output.push_str(entry);
+        output.push('\n');
+    }
+    fs::write(&path, output).map_err(|_| SpellError::DictionaryIo)?;
+    set_private_file_permissions(&path)?;
+    Ok(words.iter().cloned().collect())
 }
 
 #[cfg(unix)]
@@ -560,6 +615,28 @@ fn write_user_dictionary(
 mod tests {
     use super::*;
 
+    fn regular_files_in(root: &Path) -> Vec<PathBuf> {
+        fs::read_dir(root)
+            .expect("test directory should be readable")
+            .filter_map(|entry| {
+                let path = entry
+                    .expect("test directory entry should be readable")
+                    .path();
+                fs::symlink_metadata(&path)
+                    .expect("test file metadata should be readable")
+                    .file_type()
+                    .is_file()
+                    .then_some(path)
+            })
+            .collect()
+    }
+
+    fn only_regular_file_in(root: &Path) -> PathBuf {
+        let mut files = regular_files_in(root);
+        assert_eq!(files.len(), 1);
+        files.remove(0)
+    }
+
     #[test]
     fn english_checker_flags_unknown_word() {
         let checker = SpellChecker::bootstrap_english();
@@ -594,6 +671,85 @@ mod tests {
             .is_empty());
     }
 
+    #[test]
+    fn personal_words_list_is_normalized_and_sorted() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        add_personal_word(dir.path(), "en-US", "Qwerty").expect("personal word should write");
+        add_personal_word(dir.path(), "en-US", "Alpha").expect("personal word should write");
+
+        let words =
+            list_personal_words(dir.path(), "en-US").expect("personal words should be listed");
+
+        assert_eq!(words, vec!["alpha".to_string(), "qwerty".to_string()]);
+    }
+
+    #[test]
+    fn missing_personal_dictionary_lists_empty_words() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+
+        let words = list_personal_words(dir.path(), "en-US").expect("missing list should be empty");
+
+        assert!(words.is_empty());
+    }
+
+    #[test]
+    fn removing_personal_word_updates_the_local_list() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        add_personal_word(dir.path(), "en-US", "qwerty").expect("personal word should write");
+        add_personal_word(dir.path(), "en-US", "zebra").expect("personal word should write");
+
+        let remaining = remove_personal_word(dir.path(), "en-US", "qwerty")
+            .expect("personal word should remove");
+
+        assert_eq!(remaining, vec!["zebra".to_string()]);
+        assert_eq!(
+            list_personal_words(dir.path(), "en-US").expect("personal words should list"),
+            vec!["zebra".to_string()]
+        );
+    }
+
+    #[test]
+    fn removing_from_missing_personal_dictionary_is_empty() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+
+        let remaining = remove_personal_word(dir.path(), "en-US", "qwerty")
+            .expect("missing personal dictionary should be a no-op");
+
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn invalid_personal_word_remove_is_rejected_without_private_details() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let invalid_word = "!";
+
+        let err = remove_personal_word(dir.path(), "en-US", invalid_word)
+            .expect_err("invalid personal word should fail");
+
+        assert_eq!(
+            err,
+            SpellError::InvalidDictionary {
+                reason: "personal dictionary word is invalid"
+            }
+        );
+        assert!(!err.to_string().contains(invalid_word));
+        assert!(!err
+            .to_string()
+            .contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn removing_last_personal_word_deletes_the_private_file() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        add_personal_word(dir.path(), "en-US", "qwerty").expect("personal word should write");
+
+        let remaining = remove_personal_word(dir.path(), "en-US", "qwerty")
+            .expect("personal word should remove");
+
+        assert!(remaining.is_empty());
+        assert!(regular_files_in(dir.path()).is_empty());
+    }
+
     #[cfg(unix)]
     #[test]
     fn personal_dictionary_file_is_owner_only() {
@@ -602,7 +758,30 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir should exist");
         add_personal_word(dir.path(), "en-US", "qwerty").expect("personal word should write");
 
-        let mode = fs::metadata(dir.path().join("personal-en_US.txt"))
+        let mode = fs::metadata(only_regular_file_in(dir.path()))
+            .expect("personal dictionary file should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn personal_dictionary_remove_rewrite_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        add_personal_word(dir.path(), "en-US", "qwerty").expect("personal word should write");
+        add_personal_word(dir.path(), "en-US", "zebra").expect("personal word should write");
+        let path = only_regular_file_in(dir.path());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .expect("test permissions should apply");
+
+        remove_personal_word(dir.path(), "en-US", "qwerty").expect("personal word should remove");
+
+        let mode = fs::metadata(&path)
             .expect("personal dictionary file should exist")
             .permissions()
             .mode()
