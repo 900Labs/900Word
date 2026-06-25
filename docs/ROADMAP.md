@@ -293,3 +293,15 @@ Status: complete.
 - Emit generic warnings for degraded or ignored DOCX import content.
 - Export minimal valid `.docx` packages with paragraphs, headings, basic inline marks, safe hyperlinks, simple lists, and simple tables.
 - Keep cloud, accounts, telemetry, network behavior, external converters, heavy dependencies, macros, media import, comments, tracked changes, notes, headers/footers, and full DOCX fidelity deferred.
+
+## Sprint 032: PDF Pagination And Export Settings MVP
+
+Status: complete.
+
+- Add typed PDF export options in `word-export` while preserving the existing compatibility wrapper.
+- Generate valid multi-page PDF output with one page object per deterministic lightweight text page.
+- Use `word-core` page setup for PDF page size and margins, honor explicit page breaks, and keep text above the bottom margin.
+- Repeat simple header/footer text on generated pages and render page-number, page-count, and date fields deterministically.
+- Carry existing text projections for paragraphs, headings, lists, tables, TOCs, notes, and image alt/caption text into the PDF pagination path.
+- Add PDF page-range export settings in the desktop File > Export flow with backend validation and generic range errors.
+- Keep raster image embedding, embedded/subset fonts, active PDF link annotations, complex script shaping, page-bottom note layout, and editor-preview layout fidelity deferred.

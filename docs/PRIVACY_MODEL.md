@@ -12,7 +12,7 @@ The desktop shell uses native Tauri dialogs for ODT open and Save As flows. Dial
 
 Spell-check user dictionaries live under `{APP_DATA_DIR}/dictionaries`. The backend creates this folder with owner-only permissions on Unix platforms. Frontend dictionary state includes language tag, display name, source type, and license label only; it does not include local dictionary paths or filenames.
 
-TXT, HTML, and PDF export paths are user-entered in the Sprint 007 shell. Backend export commands validate format-specific extensions and traversal components, write atomically, and return only export format and byte length to frontend state. Export success messages do not include private filenames or local paths.
+TXT, HTML, and PDF export paths are user-entered in the desktop shell. Backend export commands validate format-specific extensions and traversal components, write atomically, and return only export format and byte length to frontend state. PDF page-range options are validated with generic errors. Export success and validation messages do not include private filenames, local paths, or document text.
 
 Sprint 011 hyperlink editing stores user-entered safe link targets inside document content. The editor validates links locally and does not fetch, preview, or open targets while editing.
 
@@ -38,6 +38,8 @@ Sprint 028 accessibility and low-resource settings are local desktop UI preferen
 
 Sprint 030 document inspector summaries are derived in the desktop UI from existing local document state, backend count summaries, and generic file-session state. The frontend inspector shows aggregate format, saved/unsaved, document-created and document-modified metadata timestamps, page, stats, embedded-image-byte, review, note, and privacy-warning indicators only. Saved paths remain backend-only, and the inspector does not render private local paths, private filenames, source image filenames, operating-system usernames, hostnames, account identifiers, contacts, cloud identity, recovery locations, network state, external services, or document text beyond already visible editor content.
 
+Sprint 032 PDF export settings are local UI state only. Page-range start/end values are sent to Rust as typed options and are not stored in the document. Invalid or empty ranges return generic errors without local paths, private filenames, usernames, hostnames, or document text.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -46,19 +48,19 @@ Logs may include high-level operation names and error categories. Logs must not 
 
 Exporters must avoid adding local usernames, hostnames, absolute paths, or private build metadata to ODT, HTML, TXT, PDF, or EPUB outputs.
 
-Sprint 007 HTML and print exports are generated from the `word-core` model with offline CSP metadata and no remote image or script emission. The basic PDF adapter is generated locally and does not embed local path metadata.
+Sprint 007 HTML and print exports are generated from the `word-core` model with offline CSP metadata and no remote image or script emission. The PDF adapter is generated locally and does not embed local path metadata.
 
-Sprint 013 TXT, HTML, print HTML, and basic PDF exports include simple header/footer text and render page fields with predictable placeholder values where pagination is not available. These outputs do not add local usernames, hostnames, absolute paths, or private build metadata.
+Sprint 013 TXT, HTML, and print HTML exports include simple header/footer text and render page fields with predictable placeholder values where pagination is not available. Sprint 032 PDF export renders simple header/footer text and page fields from generated page numbers, total page count, and document modified date values. These outputs do not add local usernames, hostnames, absolute paths, or private build metadata.
 
-Sprint 014 HTML and print HTML exporters embed allowlisted in-document image bytes as `data:` URLs. They do not emit remote image URLs, `file:` URLs, source paths, original local filenames, usernames, hostnames, or private build metadata. The basic PDF exporter remains text-oriented and may include image alt/caption text only.
+Sprint 014 HTML and print HTML exporters embed allowlisted in-document image bytes as `data:` URLs. They do not emit remote image URLs, `file:` URLs, source paths, original local filenames, usernames, hostnames, or private build metadata. The PDF exporter remains text-oriented and may include image alt/caption text only.
 
-Sprint 022 stores 900Word-authored comments in ODT with ODF annotation elements and `word900` metadata for local comment ID and resolved state. TXT, HTML, print HTML, and basic PDF export do not claim comment fidelity or active annotations; they continue to avoid local usernames, hostnames, absolute paths, account metadata, and private build metadata.
+Sprint 022 stores 900Word-authored comments in ODT with ODF annotation elements and `word900` metadata for local comment ID and resolved state. TXT, HTML, print HTML, and PDF export do not claim comment fidelity or active annotations; they continue to avoid local usernames, hostnames, absolute paths, account metadata, and private build metadata.
 
 Sprint 023 stores 900Word-authored tracked changes in ODT with `word900` metadata on inline text spans for local change ID, kind, author, and timestamp, plus document-level recording state. This is a 900Word-authored text-only compatibility boundary, not a claim of DOCX/PDF track changes or full external ODT change-tracking fidelity.
 
-Sprint 024 stores 900Word-authored table-of-contents metadata in ODT with `word900:block-type="table-of-contents"` and safe generated bookmark targets. TXT/basic PDF exports render TOCs as ordinary text, and HTML/print HTML exports render safe local fragment links without deterministic page-number claims or local/private build metadata.
+Sprint 024 stores 900Word-authored table-of-contents metadata in ODT with `word900:block-type="table-of-contents"` and safe generated bookmark targets. TXT/PDF exports render TOCs as ordinary text, and HTML/print HTML exports render safe local fragment links without deterministic TOC page-number claims or local/private build metadata.
 
-Sprint 025 stores 900Word-authored footnotes and endnotes in ODT with ODF note elements and bounded `word900` metadata for local note ID and kind. Notes imported as local note metadata are visible in the desktop Notes sidebar, while malformed or unsupported note structures fall back to ordinary visible text with generic warnings. TXT/basic PDF exports render notes as ordinary text, and HTML/print HTML exports render sanitized local note sections without deterministic page-bottom placement, active PDF annotations, local usernames, hostnames, absolute paths, account metadata, or private build metadata.
+Sprint 025 stores 900Word-authored footnotes and endnotes in ODT with ODF note elements and bounded `word900` metadata for local note ID and kind. Notes imported as local note metadata are visible in the desktop Notes sidebar, while malformed or unsupported note structures fall back to ordinary visible text with generic warnings. TXT/PDF exports render notes as ordinary text, and HTML/print HTML exports render sanitized local note sections without deterministic page-bottom placement, active PDF annotations, local usernames, hostnames, absolute paths, account metadata, or private build metadata.
 
 Sprint 026 does not add ODT, TXT, HTML, print HTML, or PDF metadata. Text produced by smart typing is ordinary user-authored document text after the user types it.
 
@@ -67,6 +69,8 @@ Sprint 027 does not add ODT, TXT, HTML, print HTML, PDF, or app metadata. The ex
 Sprint 028 does not add ODT, TXT, HTML, print HTML, PDF, or app metadata. The accessibility and low-resource controls remain desktop UI settings and do not change saved document packages or exported files.
 
 Sprint 030 does not add ODT, TXT, HTML, print HTML, PDF, or app metadata. The Document Inspector is an ephemeral desktop UI projection and does not change saved document packages or exported files.
+
+Sprint 032 PDF export does not add local path metadata, source filenames, usernames, hostnames, creation-date metadata, producer metadata, telemetry identifiers, remote resources, or private build metadata to generated PDFs.
 
 ## Network
 

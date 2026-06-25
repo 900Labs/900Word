@@ -90,6 +90,7 @@ export type UiStringKey =
   | 'exportPath'
   | 'exportPathPlaceholder'
   | 'exportPdf'
+  | 'exportPdfInvalidRange'
   | 'exportPdfPathRequired'
   | 'exportPdfPrepared'
   | 'exportPdfSaved'
@@ -230,6 +231,10 @@ export type UiStringKey =
   | 'pageSetupUpdated'
   | 'pageSize'
   | 'pdf'
+  | 'pdfAllPages'
+  | 'pdfPageRange'
+  | 'pdfPageRangeFrom'
+  | 'pdfPageRangeTo'
   | 'previous'
   | 'print'
   | 'printFrame'
@@ -438,6 +443,7 @@ const english: UiStrings = {
   exportPath: 'Export path',
   exportPathPlaceholder: 'Export .txt, .html, .pdf, or .docx path',
   exportPdf: 'Export PDF',
+  exportPdfInvalidRange: 'Enter a valid PDF page range.',
   exportPdfPathRequired: 'Enter a PDF export path in File > Export.',
   exportPdfPrepared: 'PDF export prepared ({bytes} bytes)',
   exportPdfSaved: 'PDF export written ({bytes} bytes)',
@@ -578,6 +584,10 @@ const english: UiStrings = {
   pageSetupUpdated: 'Page setup updated',
   pageSize: 'Page size',
   pdf: 'PDF',
+  pdfAllPages: 'All pages',
+  pdfPageRange: 'PDF pages',
+  pdfPageRangeFrom: 'From page',
+  pdfPageRangeTo: 'To page',
   previous: 'Prev',
   print: 'Print',
   printFrame: 'Print document',
@@ -719,7 +729,8 @@ const spanish: Partial<UiStrings> = {
   exportHtmlPrepared: 'Exportacion HTML preparada ({characters} caracteres)',
   exportHtmlSaved: 'Exportacion HTML escrita ({bytes} bytes)',
   exportPath: 'Ruta de exportacion',
-  exportPathPlaceholder: 'Ruta .txt, .html o .pdf',
+  exportPathPlaceholder: 'Ruta .txt, .html, .pdf o .docx',
+  exportPdfInvalidRange: 'Ingrese un rango de paginas PDF valido.',
   exportPdfPathRequired: 'Ingrese una ruta de exportacion PDF en Archivo > Exportar.',
   exportPdfPrepared: 'Exportacion PDF preparada ({bytes} bytes)',
   exportPdfSaved: 'Exportacion PDF escrita ({bytes} bytes)',
@@ -758,6 +769,10 @@ const spanish: Partial<UiStrings> = {
   pageSetupUpdated: 'Pagina actualizada',
   pageSize: 'Tamano de pagina',
   pdf: 'PDF',
+  pdfAllPages: 'Todas las paginas',
+  pdfPageRange: 'Paginas PDF',
+  pdfPageRangeFrom: 'Desde pagina',
+  pdfPageRangeTo: 'Hasta pagina',
   print: 'Imprimir',
   printPrepared: 'Vista de impresion preparada',
   recent: 'Recientes',
