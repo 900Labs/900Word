@@ -125,7 +125,17 @@ export interface ListBlock {
   };
 }
 
+export type TableCellBackgroundColor = '#f1f5f9' | '#fff3bf' | '#dbeafe' | '#dcfce7';
+export type TableCellBorder = 'visible' | 'hidden';
+
+export interface TableCellPresentation {
+  background_color?: TableCellBackgroundColor | null;
+  text_alignment?: ParagraphFormat['alignment'];
+  border?: TableCellBorder | null;
+}
+
 export interface TableCell {
+  presentation?: TableCellPresentation;
   blocks: Block[];
 }
 
@@ -286,6 +296,9 @@ export interface EditorTableCellNode {
   attrs?: {
     unsupported?: boolean;
     sourceEmpty?: boolean;
+    backgroundColor?: TableCellBackgroundColor | null;
+    align?: ParagraphFormat['alignment'];
+    border?: TableCellBorder | null;
   };
   content: EditorTableCellBlockNode[];
 }
@@ -1451,7 +1464,7 @@ function wordCoreTableToEditorNode(
           }
           return {
             type: 'table_cell',
-            attrs: { unsupported: false, sourceEmpty: cell.blocks.length === 0 },
+            attrs: editorTableCellAttrs(cell),
             content:
               cell.blocks.length > 0
                 ? cell.blocks.map((child) => blockToEditorNode(child, lists, styles) as EditorTableCellBlockNode)
@@ -1487,11 +1500,54 @@ function editorTableToWordCoreBlock(block: EditorTableNode, styles?: Record<stri
     value: {
       rows: block.content.map((row) => ({
         cells: row.content.map((cell) => ({
+          ...editorTableCellPresentationToWordCoreCell(cell.attrs),
           blocks: editorTableCellToWordCoreBlocks(cell, styles)
         }))
       }))
     }
   };
+}
+
+function editorTableCellAttrs(cell: TableCell): NonNullable<EditorTableCellNode['attrs']> {
+  const attrs: NonNullable<EditorTableCellNode['attrs']> = {
+    unsupported: false,
+    sourceEmpty: cell.blocks.length === 0
+  };
+  const presentation = cell.presentation ?? {};
+  const backgroundColor = normalizeTableCellBackgroundColor(presentation.background_color);
+  const alignment = normalizeTableCellAlignment(presentation.text_alignment);
+  const border = normalizeTableCellBorder(presentation.border);
+  if (backgroundColor) attrs.backgroundColor = backgroundColor;
+  if (alignment) attrs.align = alignment;
+  if (border !== 'visible') attrs.border = border;
+  return attrs;
+}
+
+function editorTableCellPresentationToWordCoreCell(
+  attrs: EditorTableCellNode['attrs']
+): { presentation?: TableCellPresentation } {
+  const presentation: TableCellPresentation = {};
+  const backgroundColor = normalizeTableCellBackgroundColor(attrs?.backgroundColor);
+  const alignment = normalizeTableCellAlignment(attrs?.align);
+  const border = normalizeTableCellBorder(attrs?.border);
+  if (backgroundColor) presentation.background_color = backgroundColor;
+  if (alignment) presentation.text_alignment = alignment;
+  if (border !== 'visible') presentation.border = border;
+  return Object.keys(presentation).length > 0 ? { presentation } : {};
+}
+
+function normalizeTableCellBackgroundColor(value: unknown): TableCellBackgroundColor | null {
+  return value === '#f1f5f9' || value === '#fff3bf' || value === '#dbeafe' || value === '#dcfce7'
+    ? value
+    : null;
+}
+
+function normalizeTableCellAlignment(value: unknown): ParagraphFormat['alignment'] {
+  return value === 'left' || value === 'center' || value === 'right' || value === 'justify' ? value : null;
+}
+
+function normalizeTableCellBorder(value: unknown): TableCellBorder {
+  return value === 'hidden' ? 'hidden' : 'visible';
 }
 
 function editorTableCellToWordCoreBlocks(

@@ -75,6 +75,13 @@ describe('i18n', () => {
     expect(translate('ar', 'personalDictionaryRemove')).toBe('Remove');
   });
 
+  it('labels table cell styling controls', () => {
+    expect(translate('en-US', 'tableCellBackground')).toBe('Cell fill');
+    expect(translate('en-US', 'tableCellAlignment')).toBe('Cell align');
+    expect(translate('en-US', 'tableCellBorderHidden')).toBe('Hidden');
+    expect(translate('es-ES', 'tableCellUpdated')).toBe('Celda actualizada');
+  });
+
   it('labels expanded stats estimates clearly', () => {
     expect(translate('en-US', 'estimatedPages')).toBe('Estimated pages');
     expect(translate('en-US', 'statsEstimateNote')).toContain('estimates');

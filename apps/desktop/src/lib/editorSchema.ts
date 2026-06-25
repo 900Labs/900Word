@@ -247,6 +247,36 @@ const nodes: Record<string, NodeSpec> = {
             throw new RangeError('unsupported table cell source state');
           }
         }
+      },
+      backgroundColor: {
+        default: null,
+        validate(value: unknown) {
+          if (
+            value !== null &&
+            value !== '#f1f5f9' &&
+            value !== '#fff3bf' &&
+            value !== '#dbeafe' &&
+            value !== '#dcfce7'
+          ) {
+            throw new RangeError('unsupported table cell background');
+          }
+        }
+      },
+      align: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && value !== 'left' && value !== 'center' && value !== 'right' && value !== 'justify') {
+            throw new RangeError('unsupported table cell alignment');
+          }
+        }
+      },
+      border: {
+        default: 'visible',
+        validate(value: unknown) {
+          if (value !== 'visible' && value !== 'hidden') {
+            throw new RangeError('unsupported table cell border');
+          }
+        }
       }
     },
     content: '(paragraph | heading | bullet_list | ordered_list)+',
@@ -257,7 +287,10 @@ const nodes: Record<string, NodeSpec> = {
         getAttrs(node) {
           return {
             unsupported: node.getAttribute('data-unsupported') === 'true',
-            sourceEmpty: node.getAttribute('data-source-empty') === 'true'
+            sourceEmpty: node.getAttribute('data-source-empty') === 'true',
+            backgroundColor: tableCellBackgroundColorAttr(node.getAttribute('data-background-color')),
+            align: tableCellAlignmentAttr(node.getAttribute('data-align')),
+            border: tableCellBorderAttr(node.getAttribute('data-border'))
           };
         }
       },
@@ -266,7 +299,10 @@ const nodes: Record<string, NodeSpec> = {
         getAttrs(node) {
           return {
             unsupported: node.getAttribute('data-unsupported') === 'true',
-            sourceEmpty: node.getAttribute('data-source-empty') === 'true'
+            sourceEmpty: node.getAttribute('data-source-empty') === 'true',
+            backgroundColor: tableCellBackgroundColorAttr(node.getAttribute('data-background-color')),
+            align: tableCellAlignmentAttr(node.getAttribute('data-align')),
+            border: tableCellBorderAttr(node.getAttribute('data-border'))
           };
         }
       }
@@ -823,7 +859,40 @@ function tableCellDomAttrs(attrs: Record<string, unknown>): Record<string, strin
   if (attrs.sourceEmpty === true) {
     domAttrs['data-source-empty'] = 'true';
   }
+  const backgroundColor = tableCellBackgroundColorAttr(attrs.backgroundColor);
+  const alignment = tableCellAlignmentAttr(attrs.align);
+  const border = tableCellBorderAttr(attrs.border);
+  const css: string[] = [];
+  if (backgroundColor) {
+    domAttrs['data-background-color'] = backgroundColor;
+    css.push(`background-color: ${backgroundColor}`);
+  }
+  if (alignment) {
+    domAttrs['data-align'] = alignment;
+    css.push(`text-align: ${alignment}`);
+  }
+  if (border === 'hidden') {
+    domAttrs['data-border'] = 'hidden';
+    css.push('border-color: transparent');
+  }
+  if (css.length > 0) {
+    domAttrs.style = css.join('; ');
+  }
   return domAttrs;
+}
+
+function tableCellBackgroundColorAttr(value: unknown): string | null {
+  return value === '#f1f5f9' || value === '#fff3bf' || value === '#dbeafe' || value === '#dcfce7'
+    ? value
+    : null;
+}
+
+function tableCellAlignmentAttr(value: unknown): string | null {
+  return value === 'left' || value === 'center' || value === 'right' || value === 'justify' ? value : null;
+}
+
+function tableCellBorderAttr(value: unknown): string {
+  return value === 'hidden' ? 'hidden' : 'visible';
 }
 
 function imageDomAttrs(attrs: Record<string, unknown>): Record<string, string> {

@@ -1131,6 +1131,7 @@ fn table_block(rows: Vec<Vec<&str>>) -> Block {
                 cells: cells
                     .into_iter()
                     .map(|cell| TableCell {
+                        presentation: Default::default(),
                         blocks: vec![paragraph_block(cell)],
                     })
                     .collect(),

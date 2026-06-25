@@ -292,6 +292,65 @@ describe('supportedSchema', () => {
     expect(doc.firstChild?.firstChild?.firstChild?.attrs.sourceEmpty).toBe(false);
   });
 
+  it('accepts bounded table cell presentation attrs', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          content: [
+            {
+              type: 'table_row',
+              content: [
+                {
+                  type: 'table_cell',
+                  attrs: {
+                    unsupported: false,
+                    sourceEmpty: false,
+                    backgroundColor: '#dcfce7',
+                    align: 'right',
+                    border: 'hidden'
+                  },
+                  content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+
+    const cell = doc.firstChild?.firstChild?.firstChild;
+    expect(cell?.attrs.backgroundColor).toBe('#dcfce7');
+    expect(cell?.attrs.align).toBe('right');
+    expect(cell?.attrs.border).toBe('hidden');
+  });
+
+  it('rejects unsupported table cell presentation attrs', () => {
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'table',
+            content: [
+              {
+                type: 'table_row',
+                content: [
+                  {
+                    type: 'table_cell',
+                    attrs: { unsupported: false, sourceEmpty: false, backgroundColor: '#fff', align: 'float', border: 'thick' },
+                    content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      })
+    ).toThrow('unsupported table cell background');
+  });
+
   it('rejects table nodes nested inside list items', () => {
     expect(() =>
       supportedSchema.nodeFromJSON({

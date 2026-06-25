@@ -6,13 +6,14 @@ use std::fmt::Display;
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    normalize_comment_author, validate_comment_body, validate_comment_id, validate_note_body,
-    validate_note_id, validate_note_label, validate_note_reference, validate_tracked_change_id,
-    AssetRef, Block, CommentThread, Document, DocumentWarning, Heading, ImageAlignment, ImageBlock,
-    ImagePresentation, Inline, InlineMark, InlineNoteReference, InlineStyle, ListBlock,
-    ListDefinition, ListItem, Note, NoteKind, PageField, PageRegion, PageRegionBlock,
-    PageRegionKind, PageRegionParagraph, PageRegions, PageSetup, Paragraph, ParagraphAlignment,
-    ParagraphFormat, Section, Style, StyleId, StyleKind, Table, TableCell, TableOfContents,
+    normalize_comment_author, sanitize_table_cell_background_color, validate_comment_body,
+    validate_comment_id, validate_note_body, validate_note_id, validate_note_label,
+    validate_note_reference, validate_tracked_change_id, AssetRef, Block, CommentThread, Document,
+    DocumentWarning, Heading, ImageAlignment, ImageBlock, ImagePresentation, Inline, InlineMark,
+    InlineNoteReference, InlineStyle, ListBlock, ListDefinition, ListItem, Note, NoteKind,
+    PageField, PageRegion, PageRegionBlock, PageRegionKind, PageRegionParagraph, PageRegions,
+    PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat, Section, Style, StyleId, StyleKind,
+    Table, TableCell, TableCellBorder, TableCellPresentation, TableOfContents,
     TableOfContentsEntry, TableRow, TrackChangesState, TrackedChange, TrackedChangeKind,
 };
 use zip::write::SimpleFileOptions;
@@ -696,7 +697,9 @@ fn render_table(table: &Table, document: &Document, output: &mut String) -> Resu
     for row in &table.rows {
         output.push_str("<table:table-row>");
         for cell in &row.cells {
-            output.push_str("<table:table-cell>");
+            output.push_str("<table:table-cell");
+            output.push_str(&table_cell_presentation_attrs(&cell.presentation));
+            output.push('>');
             for block in &cell.blocks {
                 render_block(block, document, output)?;
             }
@@ -706,6 +709,50 @@ fn render_table(table: &Table, document: &Document, output: &mut String) -> Resu
     }
     output.push_str("</table:table>");
     Ok(())
+}
+
+fn table_cell_presentation_attrs(presentation: &TableCellPresentation) -> String {
+    if presentation.is_default() {
+        return String::new();
+    }
+
+    let mut attrs = String::new();
+    if let Some(background_color) = presentation
+        .background_color
+        .as_deref()
+        .and_then(sanitize_table_cell_background_color)
+    {
+        attrs.push_str(" word900:cell-background-color=\"");
+        attrs.push_str(&escape_xml(&background_color));
+        attrs.push('"');
+    }
+    if let Some(alignment) = presentation.text_alignment {
+        attrs.push_str(" word900:cell-text-align=\"");
+        attrs.push_str(paragraph_alignment_name(alignment));
+        attrs.push('"');
+    }
+    if presentation.border != TableCellBorder::Visible {
+        attrs.push_str(" word900:cell-border=\"");
+        attrs.push_str(table_cell_border_name(presentation.border));
+        attrs.push('"');
+    }
+    attrs
+}
+
+fn paragraph_alignment_name(alignment: ParagraphAlignment) -> &'static str {
+    match alignment {
+        ParagraphAlignment::Left => "left",
+        ParagraphAlignment::Center => "center",
+        ParagraphAlignment::Right => "right",
+        ParagraphAlignment::Justify => "justify",
+    }
+}
+
+fn table_cell_border_name(border: TableCellBorder) -> &'static str {
+    match border {
+        TableCellBorder::Visible => "visible",
+        TableCellBorder::Hidden => "hidden",
+    }
 }
 
 fn render_image(
@@ -1672,9 +1719,10 @@ impl<'a> ParseState<'a> {
             b"table-row" => self
                 .contexts
                 .push(ParseContext::TableRow { cells: Vec::new() }),
-            b"table-cell" => self
-                .contexts
-                .push(ParseContext::TableCell { blocks: Vec::new() }),
+            b"table-cell" => self.contexts.push(ParseContext::TableCell {
+                presentation: parse_table_cell_presentation(start)?,
+                blocks: Vec::new(),
+            }),
             b"style" => self.start_style(start)?,
             b"page-layout" => {}
             b"page-layout-properties" => self.read_page_layout_properties(start)?,
@@ -2545,7 +2593,11 @@ impl<'a> ParseState<'a> {
     }
 
     fn finish_table_cell(&mut self) {
-        let Some(ParseContext::TableCell { blocks }) = self.contexts.pop() else {
+        let Some(ParseContext::TableCell {
+            presentation,
+            blocks,
+        }) = self.contexts.pop()
+        else {
             self.warn(
                 "odt_misnested_table_cell",
                 "Misnested table cell was ignored",
@@ -2553,7 +2605,10 @@ impl<'a> ParseState<'a> {
             return;
         };
         match self.contexts.last_mut() {
-            Some(ParseContext::TableRow { cells }) => cells.push(TableCell { blocks }),
+            Some(ParseContext::TableRow { cells }) => cells.push(TableCell {
+                presentation,
+                blocks,
+            }),
             _ => self.warn(
                 "odt_misnested_table_cell",
                 "Table cell outside a table row was ignored",
@@ -2640,7 +2695,7 @@ impl<'a> ParseState<'a> {
     fn push_block(&mut self, block: Block) {
         match self.contexts.last_mut() {
             Some(ParseContext::ListItem { blocks, .. })
-            | Some(ParseContext::TableCell { blocks }) => blocks.push(block),
+            | Some(ParseContext::TableCell { blocks, .. }) => blocks.push(block),
             Some(_) => self.warn(
                 "odt_unsupported_structure",
                 "Block appeared in an unsupported ODT container and was ignored",
@@ -2703,6 +2758,7 @@ enum ParseContext {
         cells: Vec<TableCell>,
     },
     TableCell {
+        presentation: TableCellPresentation,
         blocks: Vec<Block>,
     },
 }
@@ -3120,6 +3176,44 @@ fn attr_value_exact(start: &BytesStart<'_>, name: &[u8]) -> Result<Option<String
         }
     }
     Ok(None)
+}
+
+fn parse_table_cell_presentation(
+    start: &BytesStart<'_>,
+) -> Result<TableCellPresentation, OdtError> {
+    let background_color = attr_value_exact(start, b"word900:cell-background-color")?
+        .as_deref()
+        .and_then(sanitize_table_cell_background_color);
+    let text_alignment = attr_value_exact(start, b"word900:cell-text-align")?
+        .as_deref()
+        .and_then(parse_table_cell_alignment);
+    let border = attr_value_exact(start, b"word900:cell-border")?
+        .as_deref()
+        .and_then(parse_table_cell_border)
+        .unwrap_or_default();
+    Ok(TableCellPresentation {
+        background_color,
+        text_alignment,
+        border,
+    })
+}
+
+fn parse_table_cell_alignment(value: &str) -> Option<ParagraphAlignment> {
+    match value {
+        "left" => Some(ParagraphAlignment::Left),
+        "center" => Some(ParagraphAlignment::Center),
+        "right" => Some(ParagraphAlignment::Right),
+        "justify" => Some(ParagraphAlignment::Justify),
+        _ => None,
+    }
+}
+
+fn parse_table_cell_border(value: &str) -> Option<TableCellBorder> {
+    match value {
+        "visible" => Some(TableCellBorder::Visible),
+        "hidden" => Some(TableCellBorder::Hidden),
+        _ => None,
+    }
 }
 
 fn parse_mm_attr(value: &str) -> Option<u16> {
@@ -4683,6 +4777,109 @@ mod tests {
     }
 
     #[test]
+    fn table_cell_presentation_round_trips_through_word900_metadata() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Table(Table {
+            rows: vec![TableRow {
+                cells: vec![TableCell {
+                    presentation: TableCellPresentation {
+                        background_color: Some("#fff3bf".to_string()),
+                        text_alignment: Some(ParagraphAlignment::Center),
+                        border: TableCellBorder::Hidden,
+                    },
+                    blocks: vec![Block::Paragraph(Paragraph {
+                        bookmark_id: None,
+                        style: StyleId::from("body"),
+                        format: Default::default(),
+                        inlines: vec![Inline::text("Styled cell")],
+                    })],
+                }],
+            }],
+        })];
+
+        let bytes = write_odt_bytes(&document).expect("odt should write");
+        let content_xml = content_xml_from_package(&bytes);
+        assert!(content_xml.contains("word900:cell-background-color=\"#fff3bf\""));
+        assert!(content_xml.contains("word900:cell-text-align=\"center\""));
+        assert!(content_xml.contains("word900:cell-border=\"hidden\""));
+
+        let parsed = read_odt_bytes(&bytes).expect("odt should read");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a table");
+        };
+        let presentation = &table.rows[0].cells[0].presentation;
+        assert_eq!(presentation.background_color.as_deref(), Some("#fff3bf"));
+        assert_eq!(
+            presentation.text_alignment,
+            Some(ParagraphAlignment::Center)
+        );
+        assert_eq!(presentation.border, TableCellBorder::Hidden);
+    }
+
+    #[test]
+    fn table_cell_presentation_omits_unrecognized_background_color() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Table(Table {
+            rows: vec![TableRow {
+                cells: vec![TableCell {
+                    presentation: TableCellPresentation {
+                        background_color: Some("rgb(1, 2, 3)".to_string()),
+                        text_alignment: None,
+                        border: TableCellBorder::Visible,
+                    },
+                    blocks: vec![Block::Paragraph(Paragraph {
+                        bookmark_id: None,
+                        style: StyleId::from("body"),
+                        format: Default::default(),
+                        inlines: vec![Inline::text("Cell")],
+                    })],
+                }],
+            }],
+        })];
+
+        let bytes = write_odt_bytes(&document).expect("odt should write");
+        let content_xml = content_xml_from_package(&bytes);
+        assert!(!content_xml.contains("cell-background-color"));
+        assert!(!content_xml.contains("rgb(1"));
+    }
+
+    #[test]
+    fn invalid_external_table_cell_presentation_attrs_are_ignored() {
+        let content = r##"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:word900="urn:900labs:900word:metadata"
+              office:version="1.3">
+              <office:body><office:text>
+                <table:table>
+                  <table:table-row>
+                    <table:table-cell
+                      word900:cell-background-color="#ff00ff"
+                      word900:cell-text-align="diagonal"
+                      word900:cell-border="double">
+                      <text:p>External cell</text:p>
+                    </table:table-cell>
+                  </table:table-row>
+                </table:table>
+              </office:text></office:body>
+            </office:document-content>"##;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a table");
+        };
+        let presentation = &table.rows[0].cells[0].presentation;
+        assert!(presentation.is_default());
+        assert_eq!(presentation.background_color, None);
+        assert_eq!(presentation.text_alignment, None);
+        assert_eq!(presentation.border, TableCellBorder::Visible);
+    }
+
+    #[test]
     fn mismatched_table_of_contents_metadata_imports_as_visible_text() {
         let hidden_entries =
             escape_xml(r#"[{"level":1,"text":"Hidden payload","target_bookmark_id":"bm-hidden"}]"#);
@@ -4942,6 +5139,7 @@ mod tests {
                     TableRow {
                         cells: vec![
                             TableCell {
+                                presentation: Default::default(),
                                 blocks: vec![Block::Paragraph(Paragraph {
                                     bookmark_id: None,
                                     style: StyleId::from("body"),
@@ -4950,6 +5148,7 @@ mod tests {
                                 })],
                             },
                             TableCell {
+                                presentation: Default::default(),
                                 blocks: vec![Block::Paragraph(Paragraph {
                                     bookmark_id: None,
                                     style: StyleId::from("body"),
@@ -4961,6 +5160,7 @@ mod tests {
                     },
                     TableRow {
                         cells: vec![TableCell {
+                            presentation: Default::default(),
                             blocks: vec![Block::Paragraph(Paragraph {
                                 bookmark_id: None,
                                 style: StyleId::from("body"),

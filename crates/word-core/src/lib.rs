@@ -1105,7 +1105,49 @@ pub struct TableRow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableCell {
+    #[serde(default, skip_serializing_if = "TableCellPresentation::is_default")]
+    pub presentation: TableCellPresentation,
     pub blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TableCellPresentation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_alignment: Option<ParagraphAlignment>,
+    #[serde(default, skip_serializing_if = "TableCellBorder::is_default")]
+    pub border: TableCellBorder,
+}
+
+impl TableCellPresentation {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TableCellBorder {
+    #[default]
+    Visible,
+    Hidden,
+}
+
+pub fn sanitize_table_cell_background_color(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "#f1f5f9" => Some("#f1f5f9".to_string()),
+        "#fff3bf" => Some("#fff3bf".to_string()),
+        "#dbeafe" => Some("#dbeafe".to_string()),
+        "#dcfce7" => Some("#dcfce7".to_string()),
+        _ => None,
+    }
+}
+
+impl TableCellBorder {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2201,6 +2243,28 @@ mod tests {
         };
 
         assert_eq!(paragraph.bookmark_id, None);
+    }
+
+    #[test]
+    fn table_cell_presentation_defaults_are_backward_compatible() {
+        let default_cell = TableCell {
+            presentation: TableCellPresentation::default(),
+            blocks: Vec::new(),
+        };
+        assert!(default_cell.presentation.is_default());
+        assert_eq!(default_cell.presentation.border, TableCellBorder::Visible);
+
+        let styled = TableCellPresentation {
+            background_color: Some("#f1f5f9".to_string()),
+            text_alignment: Some(ParagraphAlignment::Right),
+            border: TableCellBorder::Hidden,
+        };
+        assert!(!styled.is_default());
+        assert_eq!(
+            sanitize_table_cell_background_color(" #F1F5F9 ").as_deref(),
+            Some("#f1f5f9")
+        );
+        assert_eq!(sanitize_table_cell_background_color("red"), None);
     }
 
     #[test]

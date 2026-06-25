@@ -445,3 +445,13 @@ Status: complete.
 - Remove only backend-computed app-data Hunspell pair files for a validated language tag, including the existing underscore alias pair, without accepting arbitrary deletion paths from the frontend.
 - Leave personal dictionary word lists intact, refresh dictionaries and personal words after removal, and fall back to bundled English or the first available dictionary when the active user dictionary is removed.
 - Keep downloads, remote lookup, cloud sync, accounts, telemetry, plugin-managed dictionaries, bundled dictionary deletion, document metadata changes, and rich removal diagnostics that expose private file details out of scope.
+
+## Sprint 048: Table Cell Styling MVP
+
+Status: complete.
+
+- Add durable `word-core` table-cell presentation metadata for bounded light background choices, optional per-cell text alignment, and border visible/hidden state.
+- Add ProseMirror projection, schema validation, sync, and compact contextual toolbar controls for supported editable table cells.
+- Preserve 900Word-authored metadata through ODT save/reopen with bounded `word900` attributes.
+- Reflect supported cell background, alignment, and border visibility in sanitized HTML/print HTML and the lightweight PDF table projection where practical.
+- Keep merged cells, formulas, cell sizing, rich table themes, arbitrary colors, per-side borders, external table-style compatibility claims, network behavior, telemetry, accounts, and cloud sync out of scope.
