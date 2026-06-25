@@ -59,6 +59,7 @@ All notable changes to 900Word are tracked here.
 - DOCX table cell presentation interoperability for the existing bounded 900Word cell styling subset, importing/exporting safe light cell fills, all-borders-hidden markers, and simple cell text alignment while ignoring arbitrary colors, partial borders, rich table themes, and full table layout fidelity.
 - DOCX paragraph formatting interoperability for the existing bounded 900Word paragraph format subset, importing/exporting simple alignment, automatic line spacing, spacing before/after, start/end indents, and first-line or hanging indents while ignoring unsupported line rules and out-of-bounds values.
 - DOCX inline formatting interoperability for the existing bounded 900Word inline text subset, importing/exporting strikethrough, superscript, subscript, supported menu font sizes, safe direct text colors, and the safe highlight palette while ignoring Word font-family inheritance, theme colors, arbitrary highlights, and broad run-style fidelity.
+- DOCX page setup interoperability for the existing bounded 900Word page setup model, importing/exporting simple section page width, height, and margins while keeping multi-section layout, orientation semantics, columns, header/footer distances, and deterministic pagination deferred.
 
 ### Fixed
 

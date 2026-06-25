@@ -564,3 +564,12 @@ Status: complete.
 - Export valid 900Word-authored inline formatting as generated DOCX `w:rPr` tags for the same bounded subset.
 - Ignore unsupported font sizes, theme colors, automatic colors, arbitrary highlight names, Word font family inheritance, character styles, complex script font variants, and broad run-style fidelity.
 - Keep ODT canonical and keep telemetry, network behavior, accounts, cloud sync, rich Word styles, and heavy dependencies deferred.
+
+## Sprint 060: DOCX Page Setup Interoperability
+
+Status: complete.
+
+- Import simple complete body-level section DOCX `w:pgSz` width/height and `w:pgMar` top/right/bottom/left values into the existing bounded `word-core` page setup model when the normalized values validate.
+- Export valid 900Word-authored page setup as generated DOCX section `w:pgSz` and `w:pgMar` tags.
+- Ignore invalid dimensions, invalid margins, header/footer distances, gutter, columns, multi-section layout, and orientation semantics beyond explicit width/height.
+- Keep ODT canonical and keep deterministic pagination, rich section layout fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
