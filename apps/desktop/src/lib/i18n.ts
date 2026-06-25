@@ -85,6 +85,10 @@ export type UiStringKey =
   | 'dictionaryNoneInstalled'
   | 'dictionaryOfflineState'
   | 'dictionaryRefresh'
+  | 'dictionaryRemove'
+  | 'dictionaryRemoveFailed'
+  | 'dictionaryRemoveInvalidLanguage'
+  | 'dictionaryRemoveSuccess'
   | 'dictionarySourceAppBundle'
   | 'dictionarySourceBundled'
   | 'dictionarySourceBundledUser'
@@ -481,6 +485,10 @@ const english: UiStrings = {
   dictionaryNoneInstalled: 'No installed dictionaries found.',
   dictionaryOfflineState: 'Offline/local only. Dictionaries are read from the app bundle and local user dictionary folder.',
   dictionaryRefresh: 'Refresh',
+  dictionaryRemove: 'Remove',
+  dictionaryRemoveFailed: 'Dictionary could not be removed',
+  dictionaryRemoveInvalidLanguage: 'Language tag is invalid',
+  dictionaryRemoveSuccess: 'Dictionary removed',
   dictionarySourceAppBundle: 'App bundle',
   dictionarySourceBundled: 'Bundled',
   dictionarySourceBundledUser: 'Bundled + user',
@@ -824,6 +832,10 @@ const spanish: Partial<UiStrings> = {
   dictionaryNoneInstalled: 'No hay diccionarios instalados.',
   dictionaryOfflineState: 'Los diccionarios son solo locales; no hay descargas, nube ni red.',
   dictionaryRefresh: 'Actualizar',
+  dictionaryRemove: 'Quitar',
+  dictionaryRemoveFailed: 'No se pudo quitar el diccionario',
+  dictionaryRemoveInvalidLanguage: 'La etiqueta de idioma no es valida',
+  dictionaryRemoveSuccess: 'Diccionario quitado',
   dictionarySourceAppBundle: 'Paquete de la app',
   dictionarySourceBundled: 'Incluido',
   dictionarySourceBundledUser: 'Incluido y usuario',

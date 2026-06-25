@@ -327,6 +327,7 @@
   let installDictionaryLanguageTag = $state('en-US');
   let installDictionaryAffPath = $state<string | null>(null);
   let installDictionaryDicPath = $state<string | null>(null);
+  let removingDictionaryLanguageTag = $state<string | null>(null);
   let settings = $state<Settings>({
     telemetry_enabled: false,
     language_tag: 'en-US',
@@ -745,9 +746,47 @@
     return tr('dictionaryInstallFailed');
   }
 
+  function dictionaryRemovalErrorStatus(error: unknown) {
+    const message = typeof error === 'string' ? error : '';
+    if (message === 'invalid language') {
+      return tr('dictionaryRemoveInvalidLanguage');
+    }
+    return tr('dictionaryRemoveFailed');
+  }
+
   async function handleDictionarySelectionChanged() {
     await tick();
     await refreshPersonalDictionaryWords(false);
+  }
+
+  async function removeInstalledUserDictionary(dictionary: DictionaryInfo) {
+    if (!dictionary.user || dictionary.bundled) {
+      return;
+    }
+    removingDictionaryLanguageTag = dictionary.language_tag;
+    const removedActiveDictionary = dictionaryMatchesSelectedLanguage(
+      dictionary,
+      normalizeDictionaryLanguageTag(settings.language_tag)
+    );
+    try {
+      await invoke('remove_user_dictionary', {
+        languageTag: dictionary.language_tag
+      });
+      dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
+      if (removedActiveDictionary) {
+        const fallbackDictionary =
+          dictionaries.find((candidate) => candidate.language_tag === 'en-US' && candidate.bundled) ??
+          dictionaries[0];
+        settings.language_tag = fallbackDictionary?.language_tag ?? 'en-US';
+      }
+      await refreshPersonalDictionaryWords(false);
+      await checkSpelling();
+      status = tr('dictionaryRemoveSuccess');
+    } catch (error) {
+      status = dictionaryRemovalErrorStatus(error);
+    } finally {
+      removingDictionaryLanguageTag = null;
+    }
   }
 
   async function removePersonalDictionaryWord(word: string) {
@@ -3714,6 +3753,16 @@
                       <dd>{dictionary.license}</dd>
                     </div>
                   </dl>
+                  {#if dictionary.user && !dictionary.bundled}
+                    <button
+                      aria-label={`${tr('dictionaryRemove')} ${dictionary.display_name}`}
+                      disabled={removingDictionaryLanguageTag === dictionary.language_tag}
+                      type="button"
+                      onclick={() => removeInstalledUserDictionary(dictionary)}
+                    >
+                      {tr('dictionaryRemove')}
+                    </button>
+                  {/if}
                 </article>
               {/each}
             {/if}

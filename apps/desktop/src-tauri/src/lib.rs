@@ -226,6 +226,7 @@ pub fn run() {
             remove_from_personal_dictionary,
             list_dictionaries,
             install_user_dictionary,
+            remove_user_dictionary,
             get_settings,
             update_settings,
             reset_settings,
@@ -576,6 +577,13 @@ fn install_user_dictionary(
 }
 
 #[tauri::command]
+fn remove_user_dictionary(language_tag: String, app: tauri::AppHandle) -> Result<(), String> {
+    let user_root = user_dictionary_dir(&app)?;
+    ensure_user_dictionary_dir(&user_root)?;
+    remove_user_dictionary_with_root(&language_tag, &user_root)
+}
+
+#[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Settings {
     let Ok(path) = settings_path(&app) else {
         return Settings::default();
@@ -725,6 +733,11 @@ fn install_user_dictionary_with_root(
         .map_err(safe_dictionary_install_error)
 }
 
+fn remove_user_dictionary_with_root(language_tag: &str, user_root: &Path) -> Result<(), String> {
+    word_spell::remove_user_dictionary(user_root, language_tag)
+        .map_err(safe_dictionary_removal_error)
+}
+
 fn safe_personal_dictionary_error(error: word_spell::SpellError) -> String {
     match error {
         word_spell::SpellError::InvalidDictionary {
@@ -752,6 +765,15 @@ fn safe_dictionary_install_error(error: word_spell::SpellError) -> String {
             reason: "dictionary word list is empty",
         } => "unsupported file".to_string(),
         _ => "dictionary could not be installed".to_string(),
+    }
+}
+
+fn safe_dictionary_removal_error(error: word_spell::SpellError) -> String {
+    match error {
+        word_spell::SpellError::InvalidDictionary {
+            reason: "language tag is invalid",
+        } => "invalid language".to_string(),
+        _ => "dictionary could not be removed".to_string(),
     }
 }
 
@@ -3158,6 +3180,50 @@ mod tests {
         assert_eq!(err, "unsupported file");
         assert!(!err.contains(private_path));
         assert!(!err.contains(user_dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn remove_user_dictionary_helper_removes_local_pair() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        write_test_dictionary(user_dir.path(), "sv-SE", &["hej", "dokument"]);
+
+        remove_user_dictionary_with_root("sv-SE", user_dir.path())
+            .expect("dictionary should remove");
+
+        assert!(!user_dir.path().join("sv-SE.aff").exists());
+        assert!(!user_dir.path().join("sv-SE.dic").exists());
+        assert!(
+            word_spell::list_dictionaries_with_user_root(user_dir.path())
+                .iter()
+                .all(|dictionary| dictionary.language_tag != "sv-SE")
+        );
+    }
+
+    #[test]
+    fn remove_user_dictionary_helper_sanitizes_invalid_language_error() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        let invalid_language = "privateclient";
+
+        let err = remove_user_dictionary_with_root(invalid_language, user_dir.path())
+            .expect_err("invalid language should fail");
+
+        assert_eq!(err, "invalid language");
+        assert!(!err.contains(invalid_language));
+        assert!(!err.contains(user_dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn remove_user_dictionary_helper_keeps_bundled_fallback_available() {
+        let user_dir = tempfile::tempdir().expect("user dir should exist");
+        write_test_dictionary(user_dir.path(), "en-US", &["localonly"]);
+
+        remove_user_dictionary_with_root("en-US", user_dir.path())
+            .expect("user override should remove");
+
+        let result = check_spelling_with_root("localonly", "en-US", user_dir.path())
+            .expect("bundled fallback should check");
+        assert_eq!(result.language_tag, "en-US");
+        assert_eq!(result.issues.len(), 1);
     }
 
     #[cfg(unix)]
