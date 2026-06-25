@@ -80,6 +80,8 @@ Sprint 059 DOCX inline formatting import/export uses only direct local run prope
 
 Sprint 060 DOCX page setup import/export uses only direct numeric body-level section page size and margin properties already present in preflighted DOCX XML or in the local `word-core` page setup model. Accepted imported values are normalized to validated millimeter values. Multi-section layout metadata, columns, header/footer distances, gutter, and orientation metadata beyond explicit dimensions are not preserved. Exported DOCX page setup tags are generated from local page values and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
 
+Sprint 061 DOCX explicit page-break import/export uses only top-level body paragraph `w:br w:type="page"` markers already present in preflighted DOCX XML or local `word-core` `PageBreak` blocks. Accepted imported values are normalized to local block structure; unsupported page-break contexts are degraded to visible inline spacing with generic warnings. Layout-generated page markers, column-break semantics, page-break paragraph flags, and pagination metadata are not preserved. Exported DOCX page-break runs are generated from local blocks and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -127,6 +129,8 @@ Sprint 040 DOCX export writes only simple local footnotes/endnotes already prese
 Sprint 059 DOCX export writes only bounded direct inline run properties already present in local document content. Generated run formatting does not use local paths, source filenames, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, Word theme metadata, arbitrary font family metadata, or private build metadata.
 
 Sprint 060 DOCX export writes only bounded numeric body-level section page setup values already present in local document content. Generated section page setup does not use local paths, source filenames, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, Word section metadata beyond the supported page size and margin fields, or private build metadata.
+
+Sprint 061 DOCX export writes only explicit page-break runs already represented as local `PageBreak` blocks. Generated page breaks do not use local paths, source filenames, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, layout-generated pagination metadata, or private build metadata.
 
 ## Network
 

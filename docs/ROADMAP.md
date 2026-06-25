@@ -573,3 +573,12 @@ Status: complete.
 - Export valid 900Word-authored page setup as generated DOCX section `w:pgSz` and `w:pgMar` tags.
 - Ignore invalid dimensions, invalid margins, header/footer distances, gutter, columns, multi-section layout, and orientation semantics beyond explicit width/height.
 - Keep ODT canonical and keep deterministic pagination, rich section layout fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
+
+## Sprint 061: DOCX Explicit Page Break Interoperability
+
+Status: complete.
+
+- Import explicit top-level body paragraph DOCX `w:br w:type="page"` runs into local `PageBreak` blocks.
+- Keep ordinary DOCX line breaks, tracked-change page breaks, and table-cell page breaks as visible inline spacing.
+- Export 900Word-authored `PageBreak` blocks as generated DOCX `w:br w:type="page"` runs.
+- Keep layout-generated page markers, column-break semantics, page-break paragraph flags, deterministic pagination, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
