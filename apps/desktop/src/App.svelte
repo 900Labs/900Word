@@ -67,6 +67,13 @@
   } from './lib/documentProjection';
   import { localeDirection, translate, uiLocales, type UiStringKey } from './lib/i18n';
   import {
+    identifyGlobalShortcut,
+    shortcutLabel,
+    shortcutLabels,
+    shortcutPlatformFromNavigator,
+    type GlobalShortcutCommand
+  } from './lib/keyboardShortcuts';
+  import {
     clampEditorZoom,
     editorViewportStyle,
     editorZoomStep,
@@ -266,6 +273,7 @@
     high_contrast: false
   });
   let uiDirection = $derived(localeDirection(settings.ui_locale));
+  const shortcutPlatform = shortcutPlatformFromNavigator();
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
   let selectionWordCount = $derived(activeFormatting.selectionWordCount);
@@ -293,6 +301,8 @@
   let editorHost: HTMLDivElement;
   let printFrame: HTMLIFrameElement;
   let findInput = $state<HTMLInputElement | undefined>();
+  let replaceInput = $state<HTMLInputElement | undefined>();
+  let exportPathInputElement = $state<HTMLInputElement | undefined>();
   let linkInput = $state<HTMLInputElement | undefined>();
   let fileMenuRoot = $state<HTMLDivElement | undefined>();
   let linkToolsRoot = $state<HTMLDivElement | undefined>();
@@ -562,6 +572,18 @@
     } catch (error) {
       setStatusFromError(error);
     }
+  }
+
+  async function runExportPdfShortcut() {
+    if (exportPathInput.trim().toLocaleLowerCase().endsWith('.pdf')) {
+      await exportPdf();
+      return;
+    }
+    fileMenuOpen = true;
+    exportMenuOpen = true;
+    status = tr('exportPdfPathRequired');
+    await tick();
+    exportPathInputElement?.focus();
   }
 
   async function printDocument() {
@@ -1117,11 +1139,12 @@
     selectFindMatch(activeFindIndex - 1);
   }
 
-  async function openFindPanel() {
+  async function openFindPanel(focusTarget: 'find' | 'replace' = 'find') {
     findPanelOpen = true;
     await tick();
-    findInput?.focus();
-    findInput?.select();
+    const input = focusTarget === 'replace' ? replaceInput : findInput;
+    input?.focus();
+    input?.select();
   }
 
   function toggleFindPanel() {
@@ -1129,7 +1152,7 @@
       findPanelOpen = false;
       view?.focus();
     } else {
-      openFindPanel();
+      openFindPanel('find');
     }
   }
 
@@ -1407,72 +1430,78 @@
       return;
     }
 
-    const mod = event.metaKey || event.ctrlKey;
-    if (!mod) {
+    const command = identifyGlobalShortcut(event);
+    if (!command) {
       return;
     }
 
-    const key = event.key.toLowerCase();
-    const target = event.target instanceof HTMLElement ? event.target : undefined;
-    const targetIsInput = target?.tagName === 'INPUT' || target?.tagName === 'SELECT' || target?.tagName === 'TEXTAREA';
-    if (targetIsInput && !['f', 'p', 's'].includes(key)) {
-      return;
-    }
-
-    if (key === 'b') {
-      event.preventDefault();
-      applyInlineMark('bold', tr('bold'));
-    } else if (key === 'i') {
-      event.preventDefault();
-      applyInlineMark('italic', tr('italic'));
-    } else if (key === 'u') {
-      event.preventDefault();
-      applyInlineMark('underline', tr('underline'));
-    } else if (event.altKey && ['1', '2', '3'].includes(key)) {
-      event.preventDefault();
-      applyHeading(Number(key));
-    } else if (event.shiftKey && event.code === 'Digit7') {
-      event.preventDefault();
-      applyList('ordered_list');
-    } else if (event.shiftKey && event.code === 'Digit8') {
-      event.preventDefault();
-      applyList('bullet_list');
-    } else if (key === ']') {
-      event.preventDefault();
-      adjustListLevel(1);
-    } else if (key === '[') {
-      event.preventDefault();
-      adjustListLevel(-1);
-    } else if (key === 'k') {
-      event.preventDefault();
-      void openLinkPanel();
-    } else if (key === 'f') {
-      event.preventDefault();
-      activeView = 'editor';
-      openFindPanel();
-    } else if (key === 'n') {
-      event.preventDefault();
-      newDocument().catch(setStatusFromError);
-    } else if (key === 'o') {
-      event.preventDefault();
-      openDocumentWithDialog().catch(setStatusFromError);
-    } else if (key === 's') {
-      event.preventDefault();
-      if (event.shiftKey) {
-        saveDocumentAsWithDialog().catch(setStatusFromError);
-      } else {
+    event.preventDefault();
+    switch (command) {
+      case 'newDocument':
+        newDocument().catch(setStatusFromError);
+        break;
+      case 'openDocument':
+        openDocumentWithDialog().catch(setStatusFromError);
+        break;
+      case 'saveDocument':
         saveCurrentDocument().catch(setStatusFromError);
-      }
-    } else if (key === 'p') {
-      event.preventDefault();
-      printDocument().catch(setStatusFromError);
-    } else if (key === 'z') {
-      event.preventDefault();
-      if (event.shiftKey) {
-        redoDocument();
-      } else {
-        undoDocument();
-      }
+        break;
+      case 'saveDocumentAs':
+        saveDocumentAsWithDialog().catch(setStatusFromError);
+        break;
+      case 'printDocument':
+        printDocument().catch(setStatusFromError);
+        break;
+      case 'undo':
+        void undoDocument();
+        break;
+      case 'redo':
+        void redoDocument();
+        break;
+      case 'bold':
+        applyInlineMark('bold', tr('bold'));
+        break;
+      case 'italic':
+        applyInlineMark('italic', tr('italic'));
+        break;
+      case 'underline':
+        applyInlineMark('underline', tr('underline'));
+        break;
+      case 'find':
+        activeView = 'editor';
+        void openFindPanel('find');
+        break;
+      case 'replace':
+        activeView = 'editor';
+        void openFindPanel('replace');
+        break;
+      case 'heading1':
+        applyHeading(1);
+        break;
+      case 'heading2':
+        applyHeading(2);
+        break;
+      case 'heading3':
+        applyHeading(3);
+        break;
+      case 'insertLink':
+        void openLinkPanel();
+        break;
+      case 'bulletList':
+        applyList('bullet_list');
+        break;
+      case 'numberedList':
+        applyList('ordered_list');
+        break;
+      case 'increaseIndent':
+        adjustListLevel(1);
+        break;
+      case 'decreaseIndent':
+        adjustListLevel(-1);
+        break;
+      case 'exportPdf':
+        runExportPdfShortcut().catch(setStatusFromError);
+        break;
     }
   }
 
@@ -1514,6 +1543,18 @@
 
   function tr(key: UiStringKey, values: Record<string, string | number> = {}) {
     return translate(settings.ui_locale, key, values);
+  }
+
+  function shortcut(command: GlobalShortcutCommand) {
+    return shortcutLabel(command, shortcutPlatform);
+  }
+
+  function shortcutList(command: GlobalShortcutCommand) {
+    return shortcutLabels(command, shortcutPlatform).join(', ');
+  }
+
+  function shortcutTitle(label: string, command: GlobalShortcutCommand) {
+    return `${label} (${shortcutList(command)})`;
   }
 
   onMount(() => {
@@ -1564,7 +1605,7 @@
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('new')}</span>
             </span>
-            <span class="menu-shortcut">Cmd+N</span>
+            <span class="menu-shortcut">{shortcut('newDocument')}</span>
           </button>
 
           <button class="menu-command" type="button" onclick={() => runFileMenuAction(openDocumentWithDialog)}>
@@ -1572,7 +1613,7 @@
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('open')}</span>
             </span>
-            <span class="menu-shortcut">Cmd+O</span>
+            <span class="menu-shortcut">{shortcut('openDocument')}</span>
           </button>
 
           <div class="menu-separator" role="separator"></div>
@@ -1587,14 +1628,14 @@
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('save')}</span>
             </span>
-            <span class="menu-shortcut">Cmd+S</span>
+            <span class="menu-shortcut">{shortcut('saveDocument')}</span>
           </button>
           <button class="menu-command" type="button" onclick={() => runFileMenuAction(saveDocumentAsWithDialog)}>
             <span class="menu-glyph glyph-save-as" aria-hidden="true"></span>
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('saveAs')}</span>
             </span>
-            <span class="menu-shortcut">Cmd+Shift+S</span>
+            <span class="menu-shortcut">{shortcut('saveDocumentAs')}</span>
           </button>
           <button class="menu-command" type="button" onclick={() => runFileMenuAction(autosaveDocument)}>
             <span class="menu-glyph glyph-autosave" aria-hidden="true"></span>
@@ -1635,6 +1676,7 @@
               <input
                 id="file-menu-export-path"
                 aria-label={tr('exportPath')}
+                bind:this={exportPathInputElement}
                 bind:value={exportPathInput}
                 placeholder={tr('exportPathPlaceholder')}
                 type="text"
@@ -1646,8 +1688,14 @@
                 <button class="format-option" type="button" onclick={() => runFileMenuAction(exportHtml)}>
                   <span>{tr('html')}</span>
                 </button>
-                <button class="format-option" type="button" onclick={() => runFileMenuAction(exportPdf)}>
+                <button
+                  class="format-option"
+                  title={shortcutTitle(tr('exportPdf'), 'exportPdf')}
+                  type="button"
+                  onclick={() => runFileMenuAction(exportPdf)}
+                >
                   <span>{tr('pdf')}</span>
+                  <span class="format-shortcut">{shortcut('exportPdf')}</span>
                 </button>
               </div>
             </div>
@@ -1658,7 +1706,7 @@
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('print')}</span>
             </span>
-            <span class="menu-shortcut">Cmd+P</span>
+            <span class="menu-shortcut">{shortcut('printDocument')}</span>
           </button>
         </div>
       {/if}
@@ -1703,8 +1751,8 @@
 
   <section class="command-bar" aria-label={tr('editingToolbar')}>
     <div class="tool-group" role="group" aria-label={tr('history')}>
-      <button type="button" onclick={undoDocument}>{tr('undo')}</button>
-      <button type="button" onclick={redoDocument}>{tr('redo')}</button>
+      <button title={shortcutTitle(tr('undo'), 'undo')} type="button" onclick={undoDocument}>{tr('undo')}</button>
+      <button title={shortcutTitle(tr('redo'), 'redo')} type="button" onclick={redoDocument}>{tr('redo')}</button>
     </div>
 
     <div class="tool-group view-mode-tools" role="group" aria-label={tr('viewMode')}>
@@ -1795,7 +1843,7 @@
         class="format-button strong"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('bold', tr('bold')))}
-        title={`${tr('bold')} (Cmd+B)`}
+        title={shortcutTitle(tr('bold'), 'bold')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('bold', tr('bold')))}
       >
@@ -1808,7 +1856,7 @@
         class="format-button italic"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('italic', tr('italic')))}
-        title={`${tr('italic')} (Cmd+I)`}
+        title={shortcutTitle(tr('italic'), 'italic')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('italic', tr('italic')))}
       >
@@ -1821,7 +1869,7 @@
         class="format-button underline"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('underline', tr('underline')))}
-        title={`${tr('underline')} (Cmd+U)`}
+        title={shortcutTitle(tr('underline'), 'underline')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('underline', tr('underline')))}
       >
@@ -1875,7 +1923,7 @@
         aria-pressed={Boolean(activeFormatting.linkHref)}
         class:active-format={Boolean(activeFormatting.linkHref)}
         disabled={!editorEditable}
-        title={`${tr('link')} (Cmd+K)`}
+        title={shortcutTitle(tr('link'), 'insertLink')}
         type="button"
         onpointerdown={(event) => runToolbarPointerCommand(event, () => void openLinkPanel())}
         onclick={(event) => runToolbarKeyboardCommand(event, () => void openLinkPanel())}
@@ -2009,6 +2057,7 @@
       <button
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyHeading(1))}
+        title={shortcutTitle(tr('heading1'), 'heading1')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(1))}
       >
@@ -2017,6 +2066,7 @@
       <button
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyHeading(2))}
+        title={shortcutTitle(tr('heading2'), 'heading2')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(2))}
       >
@@ -2025,6 +2075,7 @@
       <button
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyHeading(3))}
+        title={shortcutTitle(tr('heading3'), 'heading3')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(3))}
       >
@@ -2132,7 +2183,7 @@
         aria-pressed={activeFormatting.list?.type === 'bullet_list'}
         class:active-format={activeFormatting.list?.type === 'bullet_list'}
         disabled={!editorEditable}
-        title={tr('bulletList')}
+        title={shortcutTitle(tr('bulletList'), 'bulletList')}
         type="button"
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyList('bullet_list'))}
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyList('bullet_list'))}
@@ -2143,7 +2194,7 @@
         aria-pressed={activeFormatting.list?.type === 'ordered_list'}
         class:active-format={activeFormatting.list?.type === 'ordered_list'}
         disabled={!editorEditable}
-        title={tr('numberedList')}
+        title={shortcutTitle(tr('numberedList'), 'numberedList')}
         type="button"
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyList('ordered_list'))}
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyList('ordered_list'))}
@@ -2152,7 +2203,7 @@
       </button>
       <button
         disabled={!editorEditable}
-        title={tr('decreaseIndent')}
+        title={shortcutTitle(tr('decreaseIndent'), 'decreaseIndent')}
         type="button"
         onpointerdown={(event) => runToolbarPointerCommand(event, () => adjustListLevel(-1))}
         onclick={(event) => runToolbarKeyboardCommand(event, () => adjustListLevel(-1))}
@@ -2161,7 +2212,7 @@
       </button>
       <button
         disabled={!editorEditable}
-        title={tr('increaseIndent')}
+        title={shortcutTitle(tr('increaseIndent'), 'increaseIndent')}
         type="button"
         onpointerdown={(event) => runToolbarPointerCommand(event, () => adjustListLevel(1))}
         onclick={(event) => runToolbarKeyboardCommand(event, () => adjustListLevel(1))}
@@ -2346,7 +2397,7 @@
         aria-expanded={findPanelOpen}
         aria-label={tr('findAndReplace')}
         class="search-toggle"
-        title={tr('findAndReplace')}
+        title={`${tr('findAndReplace')} (${shortcut('find')}, ${shortcut('replace')})`}
         type="button"
         onclick={toggleFindPanel}
       >
@@ -2369,7 +2420,13 @@
           <button disabled={findRanges.length === 0} type="button" onclick={findPrevious}>{tr('previous')}</button>
           <button disabled={findRanges.length === 0} type="button" onclick={findNext}>{tr('next')}</button>
           <span class="match-count">{findRanges.length === 0 ? '0' : tr('matchCount', { current: activeFindIndex + 1, total: findRanges.length })}</span>
-          <input aria-label={tr('replace')} bind:value={replaceText} placeholder={tr('replace')} type="text" />
+          <input
+            aria-label={tr('replace')}
+            bind:this={replaceInput}
+            bind:value={replaceText}
+            placeholder={tr('replace')}
+            type="text"
+          />
           <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceCurrentMatch}>{tr('replace')}</button>
           <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceAllMatches}>{tr('all')}</button>
         </div>

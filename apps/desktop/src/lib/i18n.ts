@@ -63,6 +63,7 @@ export type UiStringKey =
   | 'exportPath'
   | 'exportPathPlaceholder'
   | 'exportPdf'
+  | 'exportPdfPathRequired'
   | 'exportPdfPrepared'
   | 'exportPdfSaved'
   | 'exportTxt'
@@ -316,6 +317,7 @@ const english: UiStrings = {
   exportPath: 'Export path',
   exportPathPlaceholder: 'Export .txt, .html, or .pdf path',
   exportPdf: 'Export PDF',
+  exportPdfPathRequired: 'Enter a PDF export path in File > Export.',
   exportPdfPrepared: 'PDF export prepared ({bytes} bytes)',
   exportPdfSaved: 'PDF export written ({bytes} bytes)',
   exportTxt: 'Export TXT',
@@ -528,6 +530,7 @@ const spanish: Partial<UiStrings> = {
   exportHtmlSaved: 'Exportacion HTML escrita ({bytes} bytes)',
   exportPath: 'Ruta de exportacion',
   exportPathPlaceholder: 'Ruta .txt, .html o .pdf',
+  exportPdfPathRequired: 'Ingrese una ruta de exportacion PDF en Archivo > Exportar.',
   exportPdfPrepared: 'Exportacion PDF preparada ({bytes} bytes)',
   exportPdfSaved: 'Exportacion PDF escrita ({bytes} bytes)',
   exportTxtPrepared: 'Exportacion TXT preparada ({characters} caracteres)',
