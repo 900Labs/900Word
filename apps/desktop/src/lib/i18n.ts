@@ -377,7 +377,13 @@ export type UiStringKey =
   | 'tableRows'
   | 'tableUpdated'
   | 'tables'
+  | 'deleteTemplate'
   | 'templateLoaded'
+  | 'templateDeleted'
+  | 'templateDeleteFailed'
+  | 'templateName'
+  | 'templateSaved'
+  | 'templateSaveFailed'
   | 'templates'
   | 'textFormatting'
   | 'textColor'
@@ -391,6 +397,7 @@ export type UiStringKey =
   | 'undoApplied'
   | 'updateStyle'
   | 'updateStyleFromSelection'
+  | 'saveTemplate'
   | 'useTemplate'
   | 'userDictionarySuffix'
   | 'version'
@@ -790,7 +797,13 @@ const english: UiStrings = {
   tableRows: 'Table rows',
   tableUpdated: 'Table updated',
   tables: 'Tables',
+  deleteTemplate: 'Delete Template',
   templateLoaded: 'Template loaded',
+  templateDeleted: 'Template deleted',
+  templateDeleteFailed: 'Template could not be deleted',
+  templateName: 'Template name',
+  templateSaved: 'Template saved',
+  templateSaveFailed: 'Template could not be saved',
   templates: 'Templates',
   textFormatting: 'Text formatting',
   textColor: 'Text color',
@@ -804,6 +817,7 @@ const english: UiStrings = {
   undoApplied: 'Undo applied',
   updateStyle: 'Update',
   updateStyleFromSelection: 'Update style from selection',
+  saveTemplate: 'Save Template',
   useTemplate: 'Use Template',
   userDictionarySuffix: 'user',
   version: 'Version',
@@ -951,6 +965,7 @@ const spanish: Partial<UiStrings> = {
   save: 'Guardar',
   saveAs: 'Guardar como...',
   saveSettings: 'Guardar ajustes',
+  saveTemplate: 'Guardar plantilla',
   saved: 'Guardado',
   settings: 'Ajustes',
   resetSettings: 'Restablecer ajustes',
@@ -971,7 +986,13 @@ const spanish: Partial<UiStrings> = {
   tableCellBackground: 'Relleno de celda',
   tableCellBorder: 'Borde de celda',
   tableCellUpdated: 'Celda actualizada',
+  deleteTemplate: 'Eliminar plantilla',
   templateLoaded: 'Plantilla cargada',
+  templateDeleted: 'Plantilla eliminada',
+  templateDeleteFailed: 'No se pudo eliminar la plantilla',
+  templateName: 'Nombre de plantilla',
+  templateSaved: 'Plantilla guardada',
+  templateSaveFailed: 'No se pudo guardar la plantilla',
   templates: 'Plantillas',
   top: 'Superior',
   txt: 'TXT',

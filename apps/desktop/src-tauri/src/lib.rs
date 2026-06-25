@@ -23,6 +23,17 @@ const RECOVERY_SNAPSHOTS_PER_DOCUMENT: usize = 3;
 const MAX_RECOVERY_SNAPSHOTS: usize = 20;
 const MAX_RECOVERY_TOKEN_LEN: usize = 96;
 const USER_DICTIONARY_DIR_NAME: &str = "dictionaries";
+const USER_TEMPLATE_DIR_NAME: &str = "templates";
+const USER_TEMPLATE_ID_PREFIX: &str = "user-template-v1-";
+const USER_TEMPLATE_DESCRIPTION: &str = "Saved local ODT template";
+const USER_TEMPLATE_SOURCE: &str = "Local user template";
+const GENERATED_TEMPLATE_SOURCE: &str = "Generated template";
+const USER_TEMPLATE_DEFAULT_NAME: &str = "User Template";
+const MAX_USER_TEMPLATE_NAME_CHARS: usize = 64;
+const MAX_USER_TEMPLATE_METADATA_BYTES: u64 = 4 * 1024;
+const MAX_USER_TEMPLATES: usize = 64;
+const TEMPLATE_UNAVAILABLE_ERROR: &str = "template is unavailable";
+const TEMPLATE_STORAGE_ERROR: &str = "template storage is unavailable";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
 const FALLBACK_LANGUAGE_TAG: &str = "en-US";
@@ -147,6 +158,20 @@ pub struct TemplateSummary {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub source: String,
+    pub is_user: bool,
+    pub deletable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UserTemplateMetadata {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Clone)]
+struct UserTemplateEntry {
+    metadata: UserTemplateMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +221,8 @@ pub fn run() {
             new_document,
             new_document_from_template,
             list_templates,
+            save_current_document_as_template,
+            delete_user_template,
             open_document,
             open_docx_document,
             open_recent_document,
@@ -249,8 +276,13 @@ fn new_document(state: State<'_, AppState>) -> Result<Document, String> {
 fn new_document_from_template(
     template_id: String,
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<Document, String> {
-    let document = build_template_document(&template_id)?;
+    let document = build_template_document(&template_id).or_else(|_| {
+        let user_root = user_template_dir(&app)?;
+        ensure_user_template_dir(&user_root)?;
+        read_user_template_document_from_dir(&template_id, &user_root)
+    })?;
     let mut session = lock_session(&state)?;
     session.document = document;
     session.undo = UndoStack::default();
@@ -260,8 +292,36 @@ fn new_document_from_template(
 }
 
 #[tauri::command]
-fn list_templates() -> Vec<TemplateSummary> {
-    template_summaries()
+fn list_templates(app: tauri::AppHandle) -> Vec<TemplateSummary> {
+    let Ok(user_root) = user_template_dir(&app) else {
+        return template_summaries();
+    };
+    list_templates_resilient_with_user_root(&user_root)
+}
+
+#[tauri::command]
+fn save_current_document_as_template(
+    display_name: String,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<TemplateSummary, String> {
+    let document = {
+        let session = lock_session(&state)?;
+        session.document.clone()
+    };
+    let user_root = user_template_dir(&app)?;
+    ensure_user_template_dir(&user_root)?;
+    save_user_template_document_to_dir(&document, &display_name, &user_root)
+}
+
+#[tauri::command]
+fn delete_user_template(template_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    if is_generated_template_id(&template_id) {
+        return Err("template cannot be deleted".to_string());
+    }
+    let user_root = user_template_dir(&app)?;
+    ensure_user_template_dir(&user_root)?;
+    delete_user_template_from_dir(&template_id, &user_root)
 }
 
 #[tauri::command]
@@ -867,48 +927,400 @@ fn template_summaries() -> Vec<TemplateSummary> {
             id: "blank".to_string(),
             name: "Blank".to_string(),
             description: "Untitled document with one body paragraph".to_string(),
+            source: GENERATED_TEMPLATE_SOURCE.to_string(),
+            is_user: false,
+            deletable: false,
         },
         TemplateSummary {
             id: "report".to_string(),
             name: "School Report".to_string(),
             description: "Class report outline with sections and bullet prompts".to_string(),
+            source: GENERATED_TEMPLATE_SOURCE.to_string(),
+            is_user: false,
+            deletable: false,
         },
         TemplateSummary {
             id: "letter".to_string(),
             name: "Formal Letter".to_string(),
             description: "Formal correspondence with generic placeholders".to_string(),
+            source: GENERATED_TEMPLATE_SOURCE.to_string(),
+            is_user: false,
+            deletable: false,
         },
         TemplateSummary {
             id: "project-report".to_string(),
             name: "Project Report".to_string(),
             description: "NGO or project update with milestone table".to_string(),
+            source: GENERATED_TEMPLATE_SOURCE.to_string(),
+            is_user: false,
+            deletable: false,
         },
         TemplateSummary {
             id: "resume".to_string(),
             name: "CV / Resume".to_string(),
             description: "Simple resume structure with placeholder sections".to_string(),
+            source: GENERATED_TEMPLATE_SOURCE.to_string(),
+            is_user: false,
+            deletable: false,
         },
         TemplateSummary {
             id: "meeting-minutes".to_string(),
             name: "Meeting Minutes".to_string(),
             description: "Agenda, decisions, and action-item tracker".to_string(),
+            source: GENERATED_TEMPLATE_SOURCE.to_string(),
+            is_user: false,
+            deletable: false,
         },
         TemplateSummary {
             id: "memo".to_string(),
             name: "Memo".to_string(),
             description: "Short internal memo with purpose and next steps".to_string(),
+            source: GENERATED_TEMPLATE_SOURCE.to_string(),
+            is_user: false,
+            deletable: false,
         },
         TemplateSummary {
             id: "invoice".to_string(),
             name: "Invoice".to_string(),
             description: "Invoice-style table layout with generic line items".to_string(),
+            source: GENERATED_TEMPLATE_SOURCE.to_string(),
+            is_user: false,
+            deletable: false,
         },
         TemplateSummary {
             id: "flyer".to_string(),
             name: "Flyer One-Pager".to_string(),
             description: "One-page announcement starter without embedded assets".to_string(),
+            source: GENERATED_TEMPLATE_SOURCE.to_string(),
+            is_user: false,
+            deletable: false,
         },
     ]
+}
+
+fn list_templates_with_user_root(user_root: &Path) -> Result<Vec<TemplateSummary>, String> {
+    let mut summaries = template_summaries();
+    summaries.extend(user_template_summaries_in_dir(user_root)?);
+    Ok(summaries)
+}
+
+fn list_templates_resilient_with_user_root(user_root: &Path) -> Vec<TemplateSummary> {
+    if ensure_user_template_dir(user_root).is_err() {
+        return template_summaries();
+    }
+    list_templates_with_user_root(user_root).unwrap_or_else(|_| template_summaries())
+}
+
+fn user_template_summaries_in_dir(dir: &Path) -> Result<Vec<TemplateSummary>, String> {
+    let mut entries = user_template_entries_in_dir(dir)?;
+    entries.sort_by(|left, right| {
+        left.metadata
+            .name
+            .to_ascii_lowercase()
+            .cmp(&right.metadata.name.to_ascii_lowercase())
+            .then_with(|| left.metadata.id.cmp(&right.metadata.id))
+    });
+    Ok(entries
+        .into_iter()
+        .map(|entry| user_template_summary(&entry.metadata))
+        .collect())
+}
+
+fn user_template_summary(metadata: &UserTemplateMetadata) -> TemplateSummary {
+    TemplateSummary {
+        id: metadata.id.clone(),
+        name: metadata.name.clone(),
+        description: USER_TEMPLATE_DESCRIPTION.to_string(),
+        source: USER_TEMPLATE_SOURCE.to_string(),
+        is_user: true,
+        deletable: true,
+    }
+}
+
+fn user_template_entries_in_dir(dir: &Path) -> Result<Vec<UserTemplateEntry>, String> {
+    match fs::symlink_metadata(dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() => {
+            return Err(TEMPLATE_STORAGE_ERROR.to_string());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(safe_template_io_error(error)),
+    }
+
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir).map_err(safe_template_io_error)? {
+        let entry = entry.map_err(safe_template_io_error)?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if validate_user_template_id(stem).is_err() {
+            continue;
+        }
+        let Ok(metadata) = read_user_template_metadata(&path) else {
+            continue;
+        };
+        if metadata.id != stem || validate_user_template_id(&metadata.id).is_err() {
+            continue;
+        }
+        let metadata = UserTemplateMetadata {
+            id: metadata.id,
+            name: sanitize_user_template_name(&metadata.name),
+        };
+        let Ok(odt_path) = user_template_odt_path_for_id(&metadata.id, dir) else {
+            continue;
+        };
+        if validate_user_template_file(&odt_path).is_err()
+            || validate_user_template_odt_package(&odt_path).is_err()
+        {
+            continue;
+        }
+        entries.push(UserTemplateEntry { metadata });
+        if entries.len() >= MAX_USER_TEMPLATES {
+            break;
+        }
+    }
+
+    Ok(entries)
+}
+
+fn save_user_template_document_to_dir(
+    document: &Document,
+    display_name: &str,
+    dir: &Path,
+) -> Result<TemplateSummary, String> {
+    ensure_user_template_dir(dir)?;
+    if user_template_entries_in_dir(dir)?.len() >= MAX_USER_TEMPLATES {
+        return Err("template limit reached".to_string());
+    }
+
+    let bytes = word_odf::write_odt_bytes(document).map_err(|_| "template could not be saved")?;
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err("template could not be saved".to_string());
+    }
+
+    for _ in 0..3 {
+        let id = new_user_template_id();
+        let odt_path = user_template_odt_path_for_id(&id, dir)?;
+        let metadata_path = user_template_metadata_path_for_id(&id, dir)?;
+        if odt_path.exists() || metadata_path.exists() {
+            continue;
+        }
+        let metadata = UserTemplateMetadata {
+            id,
+            name: sanitize_user_template_name(display_name),
+        };
+        let metadata_bytes = serde_json::to_vec_pretty(&metadata)
+            .map_err(|_| "template could not be saved".to_string())?;
+
+        write_bytes_atomically(&odt_path, &bytes, true)
+            .map_err(|_| "template could not be saved".to_string())?;
+        if let Err(error) = write_bytes_atomically(&metadata_path, &metadata_bytes, true)
+            .map_err(|_| "template could not be saved".to_string())
+        {
+            let _ = fs::remove_file(&odt_path);
+            return Err(error);
+        }
+        return Ok(user_template_summary(&metadata));
+    }
+
+    Err("template could not be saved".to_string())
+}
+
+fn read_user_template_document_from_dir(template_id: &str, dir: &Path) -> Result<Document, String> {
+    let path = user_template_odt_path_for_id(template_id, dir)?;
+    let metadata_path = user_template_metadata_path_for_id(template_id, dir)?;
+    let metadata = read_user_template_metadata(&metadata_path)?;
+    if metadata.id != validate_user_template_id(template_id)? {
+        return Err(TEMPLATE_UNAVAILABLE_ERROR.to_string());
+    }
+    validate_user_template_file(&path)?;
+    let bytes = fs::read(&path).map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())?;
+    let document =
+        word_odf::read_odt_bytes(&bytes).map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())?;
+    Ok(clone_template_document(document))
+}
+
+fn delete_user_template_from_dir(template_id: &str, dir: &Path) -> Result<(), String> {
+    let odt_path = user_template_odt_path_for_id(template_id, dir)?;
+    let metadata_path = user_template_metadata_path_for_id(template_id, dir)?;
+    validate_user_template_file(&odt_path)?;
+    validate_user_template_metadata_file(&metadata_path)?;
+
+    fs::remove_file(&odt_path).map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())?;
+    match fs::remove_file(&metadata_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(TEMPLATE_UNAVAILABLE_ERROR.to_string()),
+    }
+}
+
+fn read_user_template_metadata(path: &Path) -> Result<UserTemplateMetadata, String> {
+    validate_user_template_metadata_file(path)?;
+    let bytes = fs::read(path).map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())
+}
+
+fn validate_user_template_file(path: &Path) -> Result<(), String> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() || metadata.len() == 0 {
+        return Err(TEMPLATE_UNAVAILABLE_ERROR.to_string());
+    }
+    if metadata.len() > MAX_DOCUMENT_BYTES {
+        return Err(TEMPLATE_UNAVAILABLE_ERROR.to_string());
+    }
+    Ok(())
+}
+
+fn validate_user_template_metadata_file(path: &Path) -> Result<(), String> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink()
+        || !file_type.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_USER_TEMPLATE_METADATA_BYTES
+    {
+        return Err(TEMPLATE_UNAVAILABLE_ERROR.to_string());
+    }
+    Ok(())
+}
+
+fn validate_user_template_odt_package(path: &Path) -> Result<(), String> {
+    let bytes = fs::read(path).map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())?;
+    let limits = word_odf::PackageLimits {
+        max_package_size: MAX_DOCUMENT_BYTES,
+        ..Default::default()
+    };
+    word_odf::validate_odt_package(&bytes, limits)
+        .map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())
+}
+
+fn clone_template_document(mut document: Document) -> Document {
+    let fresh = Document::new_untitled();
+    document.id = fresh.id;
+    document.meta.created_at = fresh.meta.created_at;
+    document.meta.modified_at = fresh.meta.modified_at;
+    document
+}
+
+fn user_template_odt_path_for_id(template_id: &str, dir: &Path) -> Result<PathBuf, String> {
+    let template_id = validate_user_template_id(template_id)?;
+    Ok(dir.join(format!("{template_id}.odt")))
+}
+
+fn user_template_metadata_path_for_id(template_id: &str, dir: &Path) -> Result<PathBuf, String> {
+    let template_id = validate_user_template_id(template_id)?;
+    Ok(dir.join(format!("{template_id}.json")))
+}
+
+fn validate_user_template_id(template_id: &str) -> Result<String, String> {
+    let Some(uuid_part) = template_id.strip_prefix(USER_TEMPLATE_ID_PREFIX) else {
+        return Err(TEMPLATE_UNAVAILABLE_ERROR.to_string());
+    };
+    if uuid_part.len() != 32 || !uuid_part.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(TEMPLATE_UNAVAILABLE_ERROR.to_string());
+    }
+    uuid::Uuid::parse_str(uuid_part)
+        .map(|uuid| format!("{USER_TEMPLATE_ID_PREFIX}{}", uuid.simple()))
+        .map_err(|_| TEMPLATE_UNAVAILABLE_ERROR.to_string())
+}
+
+fn new_user_template_id() -> String {
+    format!("{USER_TEMPLATE_ID_PREFIX}{}", uuid::Uuid::new_v4().simple())
+}
+
+fn is_generated_template_id(template_id: &str) -> bool {
+    template_summaries()
+        .iter()
+        .any(|summary| summary.id == template_id)
+}
+
+fn sanitize_user_template_name(raw: &str) -> String {
+    if template_name_contains_private_shape(raw) {
+        return USER_TEMPLATE_DEFAULT_NAME.to_string();
+    }
+
+    let mut sanitized = String::new();
+    let mut previous_space = false;
+    for ch in raw.trim().chars() {
+        let replacement = if ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '-' | '_' | '(' | ')')
+        {
+            Some(ch)
+        } else if ch.is_whitespace() {
+            Some(' ')
+        } else {
+            None
+        };
+        let Some(ch) = replacement else {
+            continue;
+        };
+        if ch.is_whitespace() {
+            if !previous_space && !sanitized.is_empty() {
+                sanitized.push(' ');
+                previous_space = true;
+            }
+            continue;
+        }
+        sanitized.push(ch);
+        previous_space = false;
+        if sanitized.chars().count() >= MAX_USER_TEMPLATE_NAME_CHARS {
+            break;
+        }
+    }
+
+    let sanitized = sanitized.trim_matches(|ch: char| ch == '-' || ch == '_' || ch.is_whitespace());
+    if sanitized.is_empty() {
+        USER_TEMPLATE_DEFAULT_NAME.to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+fn template_name_contains_private_shape(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+        || trimmed.contains('@')
+        || lower.contains("file:")
+        || lower.contains("localhost")
+        || lower.contains("127.0.0.1")
+        || lower.contains(".odt")
+        || lower.contains(".docx")
+        || lower.contains(".doc")
+}
+
+fn user_template_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join(USER_TEMPLATE_DIR_NAME))
+        .map_err(|_| TEMPLATE_STORAGE_ERROR.to_string())
+}
+
+fn ensure_user_template_dir(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(safe_template_io_error)?;
+    let metadata = fs::symlink_metadata(path).map_err(safe_template_io_error)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(TEMPLATE_STORAGE_ERROR.to_string());
+    }
+    set_private_directory_permissions(path).map_err(|_| TEMPLATE_STORAGE_ERROR.to_string())
+}
+
+fn safe_template_io_error(error: std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+        _ => TEMPLATE_STORAGE_ERROR.to_string(),
+    }
 }
 
 fn build_template_document(template_id: &str) -> Result<Document, String> {
@@ -2045,6 +2457,26 @@ mod tests {
         std::fs::write(root.join(format!("{stem}.dic")), dic).expect("dic should write");
     }
 
+    fn write_test_user_template_metadata(root: &Path, id: &str, name: &str) {
+        let metadata = UserTemplateMetadata {
+            id: id.to_string(),
+            name: name.to_string(),
+        };
+        let path = user_template_metadata_path_for_id(id, root)
+            .expect("test template metadata path should validate");
+        let bytes = serde_json::to_vec(&metadata).expect("metadata should serialize");
+        std::fs::write(path, bytes).expect("metadata should write");
+    }
+
+    fn fixed_user_template_id() -> String {
+        format!(
+            "{USER_TEMPLATE_ID_PREFIX}{}",
+            uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111")
+                .expect("fixed uuid should parse")
+                .simple()
+        )
+    }
+
     #[test]
     fn rejects_wrong_extension() {
         let err = validate_path("document.txt", "odt").expect_err("txt path should fail");
@@ -2670,8 +3102,8 @@ mod tests {
             let exported_text =
                 word_export::export_txt(&document).expect("template text should export");
             let combined = format!(
-                "{}\n{}\n{}\n{}",
-                summary.name, summary.description, serialized, exported_text
+                "{}\n{}\n{}\n{}\n{}",
+                summary.name, summary.description, summary.source, serialized, exported_text
             )
             .to_lowercase();
 
@@ -2723,6 +3155,262 @@ mod tests {
             assert_eq!(err, "template is unavailable");
             assert!(!err.contains(template_id));
         }
+    }
+
+    #[test]
+    fn user_template_names_are_sanitized_without_path_or_filename_leaks() {
+        assert_eq!(
+            sanitize_user_template_name("  Weekly   Plan!  "),
+            "Weekly Plan"
+        );
+        assert_eq!(
+            sanitize_user_template_name("folder/private-client-name.odt"),
+            USER_TEMPLATE_DEFAULT_NAME
+        );
+        assert_eq!(
+            sanitize_user_template_name("folder\\private-client-name.docx"),
+            USER_TEMPLATE_DEFAULT_NAME
+        );
+        assert_eq!(
+            sanitize_user_template_name("account@example.invalid"),
+            USER_TEMPLATE_DEFAULT_NAME
+        );
+        assert_eq!(sanitize_user_template_name(""), USER_TEMPLATE_DEFAULT_NAME);
+    }
+
+    #[test]
+    fn user_template_ids_are_opaque_and_reject_paths() {
+        let id = fixed_user_template_id();
+
+        assert_eq!(
+            validate_user_template_id(&id).expect("id should validate"),
+            id
+        );
+        for rejected in [
+            "report",
+            "private-client",
+            "../user-template-v1-11111111111111111111111111111111",
+            "/tmp/user-template-v1-11111111111111111111111111111111",
+            "user-template-v1-private-client-name",
+            "user-template-v1-11111111111111111111111111111111.odt",
+        ] {
+            let err = validate_user_template_id(rejected).expect_err("id should fail");
+            assert_eq!(err, TEMPLATE_UNAVAILABLE_ERROR);
+            assert!(!err.contains(rejected));
+        }
+    }
+
+    #[test]
+    fn user_template_save_list_load_and_delete_round_trip() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let mut document = Document::new_untitled();
+        document.meta.title = "Private Draft Title".to_string();
+        document.sections[0].blocks =
+            vec![paragraph_block("Hidden body text should not summarize")];
+
+        let summary = save_user_template_document_to_dir(&document, "Local Planning", dir.path())
+            .expect("template should save");
+
+        assert!(summary.id.starts_with(USER_TEMPLATE_ID_PREFIX));
+        assert_ne!(summary.id, "Local Planning");
+        assert_eq!(summary.name, "Local Planning");
+        assert_eq!(summary.source, USER_TEMPLATE_SOURCE);
+        assert_eq!(summary.description, USER_TEMPLATE_DESCRIPTION);
+        assert!(summary.is_user);
+        assert!(summary.deletable);
+
+        let combined_summary =
+            serde_json::to_string(&summary).expect("summary should serialize to JSON");
+        assert!(!combined_summary.contains("Hidden body text"));
+        assert!(!combined_summary.contains("Private Draft Title"));
+
+        let summaries = list_templates_with_user_root(dir.path())
+            .expect("templates should list with user item");
+        assert!(summaries.iter().any(|template| template.id == "blank"));
+        assert!(summaries.iter().any(|template| template.id == summary.id));
+
+        let loaded = read_user_template_document_from_dir(&summary.id, dir.path())
+            .expect("template should load");
+        assert_ne!(loaded.id, document.id);
+        assert_eq!(loaded.meta.title, document.meta.title);
+        assert!(word_export::export_txt(&loaded)
+            .expect("loaded text should export")
+            .contains("Hidden body text should not summarize"));
+
+        delete_user_template_from_dir(&summary.id, dir.path()).expect("template should delete");
+        let remaining =
+            user_template_summaries_in_dir(dir.path()).expect("user templates should relist");
+        assert!(remaining.is_empty());
+        assert!(regular_files_in(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn user_template_storage_unavailable_still_lists_generated_templates() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let blocked_template_root = dir.path().join("templates");
+        std::fs::write(&blocked_template_root, b"not a directory")
+            .expect("blocking file should write");
+
+        let summaries = list_templates_resilient_with_user_root(&blocked_template_root);
+
+        assert_eq!(summaries.len(), template_summaries().len());
+        assert!(summaries.iter().any(|template| template.id == "blank"));
+        assert!(summaries.iter().all(|template| !template.is_user));
+        assert!(summaries.iter().all(|template| !template.deletable));
+    }
+
+    #[test]
+    fn path_shaped_user_template_name_does_not_leak_in_summary() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let document = Document::new_untitled();
+
+        let summary = save_user_template_document_to_dir(
+            &document,
+            "folder/private-client-name.odt",
+            dir.path(),
+        )
+        .expect("template should save");
+        let summary_json = serde_json::to_string(&summary).expect("summary should serialize");
+
+        assert_eq!(summary.name, USER_TEMPLATE_DEFAULT_NAME);
+        assert!(!summary_json.contains("private-client-name"));
+        assert!(!summary_json.contains(".odt"));
+        assert!(!summary.id.contains("User Template"));
+    }
+
+    #[test]
+    fn malformed_user_template_load_returns_generic_error() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let id = fixed_user_template_id();
+        write_test_user_template_metadata(dir.path(), &id, "Private Client");
+        let odt_path =
+            user_template_odt_path_for_id(&id, dir.path()).expect("template path should validate");
+        std::fs::write(&odt_path, b"not an odt package").expect("malformed template should write");
+
+        let err = read_user_template_document_from_dir(&id, dir.path())
+            .expect_err("malformed template should fail");
+
+        assert_eq!(err, TEMPLATE_UNAVAILABLE_ERROR);
+        assert!(!err.contains("Private Client"));
+        assert!(!err.contains(odt_path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn user_template_load_requires_metadata_sidecar() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let id = fixed_user_template_id();
+        let document = Document::new_untitled();
+        let bytes = word_odf::write_odt_bytes(&document).expect("template ODT should write");
+        let odt_path =
+            user_template_odt_path_for_id(&id, dir.path()).expect("template path should validate");
+        std::fs::write(&odt_path, bytes).expect("orphan template should write");
+
+        let err = read_user_template_document_from_dir(&id, dir.path())
+            .expect_err("orphan ODT should not load as a template");
+        let summaries =
+            user_template_summaries_in_dir(dir.path()).expect("listing should skip orphan ODT");
+
+        assert_eq!(err, TEMPLATE_UNAVAILABLE_ERROR);
+        assert!(summaries.is_empty());
+        assert!(!err.contains(odt_path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn oversized_user_template_load_returns_generic_error() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let id = fixed_user_template_id();
+        write_test_user_template_metadata(dir.path(), &id, "Oversized Template");
+        let odt_path =
+            user_template_odt_path_for_id(&id, dir.path()).expect("template path should validate");
+        let file = std::fs::File::create(&odt_path).expect("oversized file should create");
+        file.set_len(MAX_DOCUMENT_BYTES + 1)
+            .expect("oversized file length should set");
+
+        let err = read_user_template_document_from_dir(&id, dir.path())
+            .expect_err("oversized template should fail");
+
+        assert_eq!(err, TEMPLATE_UNAVAILABLE_ERROR);
+        assert!(!err.contains("Oversized Template"));
+        assert!(!err.contains(odt_path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn non_regular_user_template_file_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let id = fixed_user_template_id();
+        write_test_user_template_metadata(dir.path(), &id, "Directory Template");
+        let odt_path =
+            user_template_odt_path_for_id(&id, dir.path()).expect("template path should validate");
+        std::fs::create_dir(&odt_path).expect("directory placeholder should create");
+
+        let err = read_user_template_document_from_dir(&id, dir.path())
+            .expect_err("directory template should fail");
+        let summaries =
+            user_template_summaries_in_dir(dir.path()).expect("listing should skip invalid entry");
+
+        assert_eq!(err, TEMPLATE_UNAVAILABLE_ERROR);
+        assert!(summaries.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_user_template_file_is_not_listed_or_opened() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let external = tempfile::tempdir().expect("external temp dir should be created");
+        let id = fixed_user_template_id();
+        let document = Document::new_untitled();
+        let target = external.path().join("target.odt");
+        let bytes = word_odf::write_odt_bytes(&document).expect("target ODT should write");
+        std::fs::write(&target, bytes).expect("target should write");
+        write_test_user_template_metadata(dir.path(), &id, "Symlink Template");
+        let odt_path =
+            user_template_odt_path_for_id(&id, dir.path()).expect("template path should validate");
+        symlink(&target, &odt_path).expect("symlink should write");
+
+        let summaries =
+            user_template_summaries_in_dir(dir.path()).expect("listing should skip symlink");
+        let err = read_user_template_document_from_dir(&id, dir.path())
+            .expect_err("symlink template should fail");
+
+        assert!(summaries.is_empty());
+        assert_eq!(err, TEMPLATE_UNAVAILABLE_ERROR);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_user_templates_use_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let document = Document::new_untitled();
+        let summary = save_user_template_document_to_dir(&document, "Local Template", dir.path())
+            .expect("template should save");
+        let odt_path = user_template_odt_path_for_id(&summary.id, dir.path())
+            .expect("template path should validate");
+        let metadata_path = user_template_metadata_path_for_id(&summary.id, dir.path())
+            .expect("metadata path should validate");
+
+        let dir_mode = std::fs::metadata(dir.path())
+            .expect("dir metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        let odt_mode = std::fs::metadata(&odt_path)
+            .expect("template metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        let metadata_mode = std::fs::metadata(&metadata_path)
+            .expect("template metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(odt_mode, 0o600);
+        assert_eq!(metadata_mode, 0o600);
     }
 
     fn document_has_table(document: &Document) -> bool {

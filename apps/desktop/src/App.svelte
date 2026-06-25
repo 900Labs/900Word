@@ -188,6 +188,9 @@
     id: string;
     name: string;
     description: string;
+    source: string;
+    is_user: boolean;
+    deletable: boolean;
   }
 
   interface PageFormat {
@@ -288,6 +291,7 @@
   });
   let templates = $state<TemplateSummary[]>([]);
   let selectedTemplateId = $state('blank');
+  let userTemplateName = $state('');
   let selectedStyleId = $state('body');
   let selectedFontFamily = $state('system-ui');
   let selectedFontSize = $state(12);
@@ -366,6 +370,10 @@
   let canInstallDictionary = $derived(
     installDictionaryLanguageTag.trim().length > 0 && Boolean(installDictionaryAffPath && installDictionaryDicPath)
   );
+  let selectedTemplate = $derived(
+    templates.find((template) => template.id === selectedTemplateId) ?? templates[0]
+  );
+  let canSaveUserTemplate = $derived(userTemplateName.trim().length > 0);
   const shortcutPlatform = shortcutPlatformFromNavigator();
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
@@ -443,6 +451,48 @@
     });
     await loadDocumentIntoEditor(document, tr('templateLoaded'));
     await refreshFileState();
+  }
+
+  async function refreshTemplates(preferredTemplateId = selectedTemplateId) {
+    const nextTemplates = await invoke<TemplateSummary[]>('list_templates');
+    templates = nextTemplates;
+    if (templates.some((template) => template.id === preferredTemplateId)) {
+      selectedTemplateId = preferredTemplateId;
+    } else {
+      selectedTemplateId = templates[0]?.id ?? 'blank';
+    }
+  }
+
+  async function saveCurrentDocumentAsTemplate() {
+    if (!canSaveUserTemplate) {
+      return;
+    }
+    try {
+      await waitForEditorSync();
+      const summary = await invoke<TemplateSummary>('save_current_document_as_template', {
+        displayName: userTemplateName
+      });
+      userTemplateName = '';
+      await refreshTemplates(summary.id);
+      status = tr('templateSaved');
+    } catch {
+      status = tr('templateSaveFailed');
+    }
+  }
+
+  async function deleteSelectedUserTemplate() {
+    if (!selectedTemplate?.deletable) {
+      return;
+    }
+    try {
+      await invoke('delete_user_template', {
+        templateId: selectedTemplate.id
+      });
+      await refreshTemplates('blank');
+      status = tr('templateDeleted');
+    } catch {
+      status = tr('templateDeleteFailed');
+    }
   }
 
   async function loadDocumentIntoEditor(document: DocumentState, nextStatus: string) {
@@ -669,7 +719,7 @@
     installDictionaryLanguageTag = normalizeDictionaryLanguageTag(settings.language_tag);
     dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
     await refreshPersonalDictionaryWords(false);
-    templates = await invoke<TemplateSummary[]>('list_templates');
+    await refreshTemplates();
   }
 
   async function refreshDictionaries() {
@@ -3312,6 +3362,18 @@
         {/each}
       </select>
       <button type="button" onclick={newDocumentFromTemplate}>{tr('useTemplate')}</button>
+      <input
+        aria-label={tr('templateName')}
+        bind:value={userTemplateName}
+        maxlength="64"
+        placeholder={tr('templateName')}
+        type="text"
+      />
+      <button disabled={!canSaveUserTemplate} type="button" onclick={saveCurrentDocumentAsTemplate}>{tr('saveTemplate')}</button>
+      <button disabled={!selectedTemplate?.deletable} type="button" onclick={deleteSelectedUserTemplate}>{tr('deleteTemplate')}</button>
+      {#if selectedTemplate}
+        <span class="template-detail">{selectedTemplate.source} - {selectedTemplate.description}</span>
+      {/if}
     </div>
 
     <div class="tool-group search-tools" role="search" aria-label={tr('findAndReplace')}>

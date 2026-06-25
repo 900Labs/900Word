@@ -475,3 +475,13 @@ Status: complete.
 - Reject malformed or ambiguous metadata-bearing JPEGs with the existing generic unsupported-image error instead of storing partially rewritten bytes.
 - Preserve PNG, GIF, and WebP import behavior, `.odt` as canonical saved format, source path/filename omission, and the existing 8 MiB import limit.
 - Keep JPEG decoding, EXIF interpretation/selective preservation, compression, downsampling, resizing, crop/rotation, broad malformed-JPEG recovery, network behavior, telemetry, accounts, cloud sync, and heavy image-processing dependencies out of scope.
+
+## Sprint 051: User Template Library MVP
+
+Status: complete.
+
+- Add app-data-scoped local user templates stored as private ODT bytes plus private minimal metadata where supported.
+- Let users save the current document as a sanitized-name user template, list user templates together with generated templates, create a new unsaved clean document from a user template, and delete only user templates.
+- Use generated opaque user-template IDs and reject traversal, plain paths, symlinks, non-regular files, malformed ODT packages, and oversized template files with generic errors.
+- Keep generated template IDs stable and undeletable, with source/description summaries that do not include local paths, filenames, document text, usernames, hostnames, account/cloud identifiers, or telemetry identifiers.
+- Keep downloadable template packs, network catalogs, accounts, cloud sync, telemetry, remote assets, template previews, and richer browsing deferred.
