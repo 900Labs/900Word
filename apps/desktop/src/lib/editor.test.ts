@@ -261,6 +261,50 @@ describe('findEditorDocMatches', () => {
     expect(view.state.doc.firstChild?.firstChild?.marks.map((mark) => mark.type.name)).toEqual(['bold']);
   });
 
+  it('toggles each toolbar inline mark on a saved text selection after focus collapses', () => {
+    const marks: Array<Parameters<typeof toggleEditorMark>[1]> = [
+      'bold',
+      'italic',
+      'underline',
+      'superscript',
+      'subscript'
+    ];
+
+    for (const mark of marks) {
+      const doc = supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            attrs: { style: 'body' },
+            content: [{ type: 'text', text: 'Hello world' }]
+          }
+        ]
+      });
+      let state = EditorState.create({ doc });
+      state = state.apply(state.tr.setSelection(TextSelection.create(doc, 1)));
+      const view = {
+        state,
+        dispatch(transaction: Transaction) {
+          state = state.apply(transaction);
+          this.state = state;
+        },
+        focus() {}
+      };
+
+      const changed = toggleEditorMark(view as unknown as Parameters<typeof toggleEditorMark>[0], mark, {
+        from: 1,
+        to: 6,
+        empty: false
+      });
+
+      expect(changed, mark).toBe(true);
+      const markedText = view.state.doc.firstChild?.firstChild;
+      expect(markedText?.text, mark).toBe('Hello');
+      expect(markedText?.marks.map((appliedMark) => appliedMark.type.name), mark).toContain(mark);
+    }
+  });
+
   it('changes block type through the toolbar command path with a fallback selection', () => {
     const doc = supportedSchema.nodeFromJSON({
       type: 'doc',
@@ -296,6 +340,98 @@ describe('findEditorDocMatches', () => {
     expect(changed).toBe(true);
     expect(view.state.doc.firstChild?.type.name).toBe('heading');
     expect(view.state.doc.firstChild?.attrs.level).toBe(1);
+  });
+
+  it('applies toolbar block commands to a saved block selection after focus collapses', () => {
+    const commands: Array<{
+      label: string;
+      initialBlock: Record<string, unknown>;
+      blockName: Parameters<typeof setEditorBlockType>[1];
+      attrs: Parameters<typeof setEditorBlockType>[2];
+      expectedType: string;
+      expectedAttrs: Record<string, unknown>;
+    }> = [
+      {
+        label: 'paragraph',
+        initialBlock: {
+          type: 'heading',
+          attrs: { level: 1 },
+          content: [{ type: 'text', text: 'Heading text' }]
+        },
+        blockName: 'paragraph',
+        attrs: { style: 'body' },
+        expectedType: 'paragraph',
+        expectedAttrs: { style: 'body' }
+      },
+      {
+        label: 'heading 1',
+        initialBlock: {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Heading text' }]
+        },
+        blockName: 'heading',
+        attrs: { level: 1 },
+        expectedType: 'heading',
+        expectedAttrs: { level: 1 }
+      },
+      {
+        label: 'heading 2',
+        initialBlock: {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Heading text' }]
+        },
+        blockName: 'heading',
+        attrs: { level: 2 },
+        expectedType: 'heading',
+        expectedAttrs: { level: 2 }
+      },
+      {
+        label: 'heading 3',
+        initialBlock: {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Heading text' }]
+        },
+        blockName: 'heading',
+        attrs: { level: 3 },
+        expectedType: 'heading',
+        expectedAttrs: { level: 3 }
+      }
+    ];
+
+    for (const command of commands) {
+      const doc = supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [command.initialBlock]
+      });
+      let state = EditorState.create({ doc });
+      state = state.apply(state.tr.setSelection(TextSelection.create(doc, 1)));
+      const view = {
+        state,
+        dispatch(transaction: Transaction) {
+          state = state.apply(transaction);
+          this.state = state;
+        },
+        focus() {}
+      };
+
+      const changed = setEditorBlockType(
+        view as unknown as Parameters<typeof setEditorBlockType>[0],
+        command.blockName,
+        command.attrs,
+        {
+          from: 1,
+          to: 8,
+          empty: false
+        }
+      );
+
+      expect(changed, command.label).toBe(true);
+      expect(view.state.doc.firstChild?.type.name, command.label).toBe(command.expectedType);
+      expect(view.state.doc.firstChild?.attrs, command.label).toMatchObject(command.expectedAttrs);
+    }
   });
 
   it('applies direct text style to the selected text', () => {
