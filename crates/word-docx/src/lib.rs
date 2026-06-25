@@ -5,11 +5,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    normalize_comment_author, sanitize_bookmark_id, validate_comment_body, validate_comment_id,
-    validate_tracked_change_id, AssetRef, Block, CommentThread, Document, DocumentWarning, Heading,
-    ImageBlock, ImagePresentation, Inline, InlineMark, ListBlock, ListItem, PageField, PageRegion,
+    collect_ordered_note_references, normalize_comment_author, sanitize_bookmark_id,
+    validate_comment_body, validate_comment_id, validate_note_body, validate_note_id,
+    validate_note_reference, validate_tracked_change_id, AssetRef, Block, CommentThread, Document,
+    DocumentWarning, Heading, ImageBlock, ImagePresentation, Inline, InlineMark,
+    InlineNoteReference, ListBlock, ListItem, Note, NoteKind, PageField, PageRegion,
     PageRegionBlock, PageRegionParagraph, PageRegions, Paragraph, StyleId, Table, TableCell,
-    TableRow, TrackedChange, TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR,
+    TableRow, TrackedChange, TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -27,6 +29,10 @@ const REL_TYPE_NUMBERING: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
 const REL_TYPE_COMMENTS: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
+const REL_TYPE_FOOTNOTES: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
+const REL_TYPE_ENDNOTES: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
 const REL_TYPE_HEADER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
 const REL_TYPE_FOOTER: &str =
@@ -35,6 +41,7 @@ const REL_TYPE_IMAGE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const PAGE_REGION_XML: &str = "DOCX page region";
 const DOCX_COMMENTS_XML: &str = "DOCX comments";
+const DOCX_NOTES_XML: &str = "DOCX notes";
 const MAX_DOCX_IMAGE_PARTS: usize = 64;
 const MAX_DOCX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_DOCX_COMMENT_PARTS: usize = 4;
@@ -132,8 +139,15 @@ struct ParsedBlock {
 struct RelationshipMap {
     hyperlinks: BTreeMap<String, String>,
     comments: BTreeMap<String, String>,
+    notes: Vec<DocxNoteRelationship>,
     page_regions: BTreeMap<String, PageRegionRelationship>,
     images: BTreeMap<String, DocxImageRelationship>,
+}
+
+#[derive(Debug, Clone)]
+struct DocxNoteRelationship {
+    kind: NoteKind,
+    target: String,
 }
 
 #[derive(Debug, Clone)]
@@ -170,17 +184,71 @@ struct ImportedDocxComment {
     local_id: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ImportedDocxNotes {
+    footnotes: BTreeMap<String, ImportedDocxNote>,
+    endnotes: BTreeMap<String, ImportedDocxNote>,
+}
+
+impl ImportedDocxNotes {
+    fn get(&self, kind: NoteKind, raw_id: &str) -> Option<&ImportedDocxNote> {
+        match kind {
+            NoteKind::Footnote => self.footnotes.get(raw_id),
+            NoteKind::Endnote => self.endnotes.get(raw_id),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.footnotes.len() + self.endnotes.len()
+    }
+
+    fn has_unanchored(&self, referenced_raw_keys: &BTreeSet<String>) -> bool {
+        self.footnotes
+            .keys()
+            .any(|raw_id| !referenced_raw_keys.contains(&docx_note_key(NoteKind::Footnote, raw_id)))
+            || self.endnotes.keys().any(|raw_id| {
+                !referenced_raw_keys.contains(&docx_note_key(NoteKind::Endnote, raw_id))
+            })
+    }
+
+    fn insert(
+        &mut self,
+        kind: NoteKind,
+        raw_id: String,
+        note: ImportedDocxNote,
+    ) -> Option<ImportedDocxNote> {
+        match kind {
+            NoteKind::Footnote => self.footnotes.insert(raw_id, note),
+            NoteKind::Endnote => self.endnotes.insert(raw_id, note),
+        }
+    }
+
+    fn contains_raw_id(&self, kind: NoteKind, raw_id: &str) -> bool {
+        match kind {
+            NoteKind::Footnote => self.footnotes.contains_key(raw_id),
+            NoteKind::Endnote => self.endnotes.contains_key(raw_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ImportedDocxNote {
+    body: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DocxImportContext<'a> {
     rels: &'a RelationshipMap,
     images: &'a ImportedDocxImages,
     comments: &'a ImportedDocxComments,
+    notes: &'a ImportedDocxNotes,
 }
 
 struct DocxBodyParseState<'a> {
     warnings: &'a mut WarningSink,
     anchored_comment_ids: &'a mut BTreeSet<String>,
     revisions: &'a mut RevisionImportState,
+    notes: &'a mut NoteImportState,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -240,6 +308,44 @@ struct DocxCommentExport {
 }
 
 #[derive(Debug, Clone, Default)]
+struct DocxNoteExports {
+    rel_id_footnotes: Option<String>,
+    rel_id_endnotes: Option<String>,
+    ids: BTreeMap<String, DocxNoteExportId>,
+    footnotes: Vec<DocxNoteExport>,
+    endnotes: Vec<DocxNoteExport>,
+}
+
+impl DocxNoteExports {
+    fn has_footnotes(&self) -> bool {
+        !self.footnotes.is_empty()
+    }
+
+    fn has_endnotes(&self) -> bool {
+        !self.endnotes.is_empty()
+    }
+
+    fn numeric_id(&self, reference: &InlineNoteReference) -> Option<u32> {
+        self.ids
+            .get(&reference.id)
+            .filter(|export| export.kind == reference.kind)
+            .map(|export| export.numeric_id)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DocxNoteExportId {
+    kind: NoteKind,
+    numeric_id: u32,
+}
+
+#[derive(Debug, Clone)]
+struct DocxNoteExport {
+    numeric_id: u32,
+    body: String,
+}
+
+#[derive(Debug, Clone, Default)]
 struct DocxRevisionExports {
     ids: BTreeMap<String, u32>,
 }
@@ -269,6 +375,7 @@ struct ParsedDocument {
     blocks: Vec<Block>,
     page_regions: PageRegions,
     anchored_comment_ids: BTreeSet<String>,
+    notes: BTreeMap<String, Note>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -376,6 +483,109 @@ impl RevisionImportState {
             ),
             created_at: safe_docx_revision_timestamp(attr_value(start, b"date", name)?),
         }))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct NoteImportState {
+    footnotes: usize,
+    endnotes: usize,
+    raw_to_local: BTreeMap<String, String>,
+    notes: BTreeMap<String, Note>,
+}
+
+impl NoteImportState {
+    fn reference(
+        &mut self,
+        start: &BytesStart<'_>,
+        kind: NoteKind,
+        imported_notes: &ImportedDocxNotes,
+        warnings: &mut WarningSink,
+        name: &str,
+        hidden_context: bool,
+    ) -> Result<Option<InlineNoteReference>, DocxError> {
+        let Some(raw_id) = attr_value(start, b"id", name)?
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            warnings.warn(
+                "docx_note_reference_ignored",
+                "Unsupported DOCX note references were imported as visible fallback text",
+            );
+            return Ok(None);
+        };
+
+        if hidden_context {
+            warnings.warn(
+                "docx_note_reference_ignored",
+                "Unsupported DOCX note references were imported as visible fallback text",
+            );
+            return Ok(None);
+        }
+
+        let key = docx_note_key(kind, &raw_id);
+        if self.raw_to_local.contains_key(&key) {
+            warnings.warn(
+                "docx_note_reference_ignored",
+                "Unsupported DOCX note references were imported as visible fallback text",
+            );
+            return Ok(None);
+        }
+
+        let Some(note) = imported_notes.get(kind, &raw_id) else {
+            warnings.warn(
+                "docx_note_reference_ignored",
+                "Unsupported DOCX note references were imported as visible fallback text",
+            );
+            return Ok(None);
+        };
+
+        if self.notes.len() >= MAX_NOTES {
+            warnings.warn(
+                "docx_notes_over_limit",
+                "Excess DOCX notes were imported as visible fallback text",
+            );
+            return Ok(None);
+        }
+
+        let sequence = match kind {
+            NoteKind::Footnote => {
+                self.footnotes += 1;
+                self.footnotes
+            }
+            NoteKind::Endnote => {
+                self.endnotes += 1;
+                self.endnotes
+            }
+        };
+        let local_id = next_imported_docx_note_id(kind, sequence);
+        let reference = InlineNoteReference {
+            id: local_id.clone(),
+            kind,
+            label: sequence.to_string(),
+        };
+        if validate_note_reference(&reference).is_err() {
+            warnings.warn(
+                "docx_note_reference_ignored",
+                "Unsupported DOCX note references were imported as visible fallback text",
+            );
+            return Ok(None);
+        }
+
+        self.raw_to_local.insert(key, local_id.clone());
+        self.notes.insert(
+            local_id.clone(),
+            Note {
+                id: local_id,
+                kind,
+                body: note.body.clone(),
+            },
+        );
+        Ok(Some(reference))
+    }
+
+    fn referenced_raw_keys(&self) -> BTreeSet<String> {
+        self.raw_to_local.keys().cloned().collect()
     }
 }
 
@@ -584,16 +794,22 @@ pub fn read_docx_bytes_with_limits(
     let page_region_part_xml = read_page_region_parts(&mut archive, &rels, &mut warnings)?;
     let comments_part_xml = read_comment_parts(&mut archive, &rels, &mut warnings)?;
     let imported_comments = parse_docx_comments(&comments_part_xml, &mut warnings)?;
+    let note_part_xml = read_note_parts(&mut archive, &rels, &mut warnings)?;
+    let imported_notes = parse_docx_notes(&note_part_xml, &mut warnings)?;
     let numbering = if numbering_xml.is_empty() {
         NumberingMap::default()
     } else {
         parse_numbering_xml(&numbering_xml, &mut warnings)?
     };
+    let context = DocxImportContext {
+        rels: &rels,
+        images: &imported_images,
+        comments: &imported_comments,
+        notes: &imported_notes,
+    };
     let parsed_document = parse_document_xml(
         &document_xml,
-        &rels,
-        &imported_images,
-        &imported_comments,
+        &context,
         &page_region_part_xml,
         &numbering,
         &mut warnings,
@@ -614,6 +830,7 @@ pub fn read_docx_bytes_with_limits(
         .into_iter()
         .filter(|(id, _)| parsed_document.anchored_comment_ids.contains(id))
         .collect();
+    document.notes = parsed_document.notes;
     prune_comment_ids_from_blocks(
         &mut document.sections[0].blocks,
         &parsed_document.anchored_comment_ids,
@@ -642,6 +859,8 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     let page_region_exports = collect_page_region_exports(document, next_rel_id);
     let next_rel_id = next_rel_id + page_region_exports.parts.len();
     let comment_exports = collect_docx_comment_exports(document, next_rel_id);
+    let next_rel_id = next_rel_id + usize::from(comment_exports.has_comments());
+    let note_exports = collect_docx_note_exports(document, next_rel_id);
     let revision_exports = collect_docx_revision_exports(document);
     let compressed = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let cursor = Cursor::new(Vec::new());
@@ -649,7 +868,13 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
 
     writer.start_file("[Content_Types].xml", compressed)?;
     writer.write_all(
-        render_content_types_xml(&page_region_exports, &image_exports, &comment_exports).as_bytes(),
+        render_content_types_xml(
+            &page_region_exports,
+            &image_exports,
+            &comment_exports,
+            &note_exports,
+        )
+        .as_bytes(),
     )?;
 
     writer.start_file("_rels/.rels", compressed)?;
@@ -663,6 +888,7 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
             &page_region_exports,
             &image_exports,
             &comment_exports,
+            &note_exports,
             &revision_exports,
         )
         .as_bytes(),
@@ -675,6 +901,7 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
             &page_region_exports,
             &image_exports,
             &comment_exports,
+            &note_exports,
         )
         .as_bytes(),
     )?;
@@ -696,6 +923,15 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     if comment_exports.has_comments() {
         writer.start_file("word/comments.xml", compressed)?;
         writer.write_all(render_comments_xml(&comment_exports).as_bytes())?;
+    }
+    if note_exports.has_footnotes() {
+        writer.start_file("word/footnotes.xml", compressed)?;
+        writer
+            .write_all(render_notes_xml(NoteKind::Footnote, &note_exports.footnotes).as_bytes())?;
+    }
+    if note_exports.has_endnotes() {
+        writer.start_file("word/endnotes.xml", compressed)?;
+        writer.write_all(render_notes_xml(NoteKind::Endnote, &note_exports.endnotes).as_bytes())?;
     }
 
     Ok(writer.finish()?.into_inner())
@@ -836,6 +1072,39 @@ fn parse_relationships_xml(
                             );
                         }
                     }
+                    (Some(_id), Some(rel_type), Some(target))
+                        if rel_type == REL_TYPE_FOOTNOTES || rel_type == REL_TYPE_ENDNOTES =>
+                    {
+                        if target_mode_is_external(target_mode.as_deref()) {
+                            warnings.warn(
+                                "docx_notes_relationship_ignored",
+                                "Unsupported DOCX note relationships were ignored during import",
+                            );
+                            continue;
+                        }
+                        let kind = if rel_type == REL_TYPE_FOOTNOTES {
+                            NoteKind::Footnote
+                        } else {
+                            NoteKind::Endnote
+                        };
+                        if relationships.notes.iter().any(|note| note.kind == kind) {
+                            warnings.warn(
+                                "docx_notes_relationship_ignored",
+                                "Unsupported DOCX note relationships were ignored during import",
+                            );
+                            continue;
+                        }
+                        if let Some(target) = resolve_note_target(&target, kind) {
+                            relationships
+                                .notes
+                                .push(DocxNoteRelationship { kind, target });
+                        } else {
+                            warnings.warn(
+                                "docx_notes_relationship_ignored",
+                                "Unsupported DOCX note relationships were ignored during import",
+                            );
+                        }
+                    }
                     (Some(id), Some(rel_type), Some(target)) if rel_type == REL_TYPE_IMAGE => {
                         if target_mode_is_external(target_mode.as_deref()) {
                             warnings.warn(
@@ -937,6 +1206,338 @@ fn read_comment_parts<R: Read + std::io::Seek>(
         }
     }
     Ok(parts)
+}
+
+#[derive(Debug, Clone)]
+struct DocxNotePartXml {
+    kind: NoteKind,
+    xml: String,
+}
+
+fn read_note_parts<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    rels: &RelationshipMap,
+    warnings: &mut WarningSink,
+) -> Result<Vec<DocxNotePartXml>, DocxError> {
+    let mut parts = Vec::new();
+    let mut seen = BTreeSet::new();
+    for relationship in &rels.notes {
+        if !seen.insert(relationship.target.clone()) {
+            continue;
+        }
+        match archive.by_name(&relationship.target) {
+            Ok(mut file) => {
+                let mut xml = String::new();
+                file.read_to_string(&mut xml)?;
+                parts.push(DocxNotePartXml {
+                    kind: relationship.kind,
+                    xml,
+                });
+            }
+            Err(zip::result::ZipError::FileNotFound) => {
+                warnings.warn(
+                    "docx_notes_part_missing",
+                    "DOCX notes with missing content were ignored during import",
+                );
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(parts)
+}
+
+fn parse_docx_notes(
+    parts: &[DocxNotePartXml],
+    warnings: &mut WarningSink,
+) -> Result<ImportedDocxNotes, DocxError> {
+    let mut imported = ImportedDocxNotes::default();
+    for part in parts {
+        parse_docx_note_part_xml(&part.xml, part.kind, &mut imported, warnings)?;
+    }
+    Ok(imported)
+}
+
+fn parse_docx_note_part_xml(
+    xml: &str,
+    kind: NoteKind,
+    imported: &mut ImportedDocxNotes,
+    warnings: &mut WarningSink,
+) -> Result<(), DocxError> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let note_element = docx_note_element_name(kind);
+
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCX_NOTES_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == note_element => {
+                if is_docx_note_separator(&start)? {
+                    skip_element(&mut reader, note_element, DOCX_NOTES_XML)?;
+                    continue;
+                }
+                if imported.len() >= MAX_NOTES {
+                    warnings.warn(
+                        "docx_notes_over_limit",
+                        "Excess DOCX notes were imported as visible fallback text",
+                    );
+                    skip_element(&mut reader, note_element, DOCX_NOTES_XML)?;
+                    continue;
+                }
+                parse_docx_note(&mut reader, &start, kind, imported, warnings)?;
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == note_element => {
+                if !is_docx_note_separator(&start)? {
+                    warnings.warn(
+                        "docx_note_ignored",
+                        "Unsupported DOCX notes were ignored during import",
+                    );
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn parse_docx_note(
+    reader: &mut Reader<&[u8]>,
+    start: &BytesStart<'_>,
+    kind: NoteKind,
+    imported: &mut ImportedDocxNotes,
+    warnings: &mut WarningSink,
+) -> Result<(), DocxError> {
+    let note_element = docx_note_element_name(kind);
+    let Some(raw_id) = attr_value(start, b"id", DOCX_NOTES_XML)?
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        warnings.warn(
+            "docx_note_ignored",
+            "Unsupported DOCX notes were ignored during import",
+        );
+        skip_element(reader, note_element, DOCX_NOTES_XML)?;
+        return Ok(());
+    };
+    if imported.contains_raw_id(kind, &raw_id) {
+        warnings.warn(
+            "docx_note_ignored",
+            "Unsupported DOCX notes were ignored during import",
+        );
+        skip_element(reader, note_element, DOCX_NOTES_XML)?;
+        return Ok(());
+    }
+
+    let mut paragraphs = Vec::new();
+    let mut degraded = false;
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCX_NOTES_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"p" => {
+                let parsed = parse_docx_note_paragraph(reader, warnings)?;
+                degraded |= parsed.degraded;
+                paragraphs.push(parsed.text);
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == note_element => break,
+            Event::Start(start) => {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCX_NOTES_XML)?;
+            }
+            Event::Empty(_) => {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if degraded {
+        warnings.warn(
+            "docx_note_ignored",
+            "Unsupported DOCX notes were ignored during import",
+        );
+        return Ok(());
+    }
+
+    let body = paragraphs
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Ok(body) = validate_note_body(&body) else {
+        warnings.warn(
+            "docx_note_ignored",
+            "Unsupported DOCX notes were ignored during import",
+        );
+        return Ok(());
+    };
+    imported.insert(kind, raw_id, ImportedDocxNote { body });
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct ParsedDocxNoteText {
+    text: String,
+    degraded: bool,
+}
+
+fn parse_docx_note_paragraph(
+    reader: &mut Reader<&[u8]>,
+    warnings: &mut WarningSink,
+) -> Result<ParsedDocxNoteText, DocxError> {
+    let mut text = String::new();
+    let mut degraded = false;
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCX_NOTES_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"pPr" => {
+                skip_element(reader, b"pPr", DOCX_NOTES_XML)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
+                let parsed = parse_docx_note_run(reader, warnings)?;
+                degraded |= parsed.degraded;
+                text.push_str(&parsed.text);
+            }
+            Event::Start(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCX_NOTES_XML)?;
+            }
+            Event::Empty(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"p" => break,
+            Event::Start(start) => {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCX_NOTES_XML)?;
+            }
+            Event::Empty(_) => {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(ParsedDocxNoteText { text, degraded })
+}
+
+fn parse_docx_note_run(
+    reader: &mut Reader<&[u8]>,
+    warnings: &mut WarningSink,
+) -> Result<ParsedDocxNoteText, DocxError> {
+    let mut text = String::new();
+    let mut degraded = false;
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCX_NOTES_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"rPr" => {
+                skip_element(reader, b"rPr", DOCX_NOTES_XML)?;
+            }
+            Event::Start(start)
+                if matches!(local_name(start.name().as_ref()), b"t" | b"delText") =>
+            {
+                let end = local_name(start.name().as_ref()).to_vec();
+                text.push_str(&read_text_element(reader, &end, DOCX_NOTES_XML)?);
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"tab" => {
+                text.push('\t');
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"br" => {
+                text.push('\n');
+            }
+            Event::Empty(start)
+                if matches!(
+                    local_name(start.name().as_ref()),
+                    b"footnoteRef" | b"endnoteRef"
+                ) => {}
+            Event::Start(start)
+                if matches!(
+                    local_name(start.name().as_ref()),
+                    b"footnoteRef" | b"endnoteRef"
+                ) =>
+            {
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCX_NOTES_XML)?;
+            }
+            Event::Start(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCX_NOTES_XML)?;
+            }
+            Event::Empty(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"r" => break,
+            Event::Start(start) => {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCX_NOTES_XML)?;
+            }
+            Event::Empty(_) => {
+                degraded = true;
+                warnings.warn(
+                    "docx_note_content_degraded",
+                    "Unsupported DOCX note content was ignored during import",
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(ParsedDocxNoteText { text, degraded })
 }
 
 fn parse_docx_comments(
@@ -1294,9 +1895,7 @@ fn parse_numbering_xml(xml: &str, warnings: &mut WarningSink) -> Result<Numberin
 
 fn parse_document_xml(
     xml: &str,
-    rels: &RelationshipMap,
-    imported_images: &ImportedDocxImages,
-    imported_comments: &ImportedDocxComments,
+    context: &DocxImportContext<'_>,
     page_region_part_xml: &BTreeMap<String, String>,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
@@ -1307,18 +1906,15 @@ fn parse_document_xml(
     let mut page_regions = PageRegions::default();
     let mut anchored_comment_ids = BTreeSet::new();
     let mut revision_state = RevisionImportState::default();
+    let mut note_state = NoteImportState::default();
     let mut in_body = false;
-    let context = DocxImportContext {
-        rels,
-        images: imported_images,
-        comments: imported_comments,
-    };
 
     {
         let mut state = DocxBodyParseState {
             warnings,
             anchored_comment_ids: &mut anchored_comment_ids,
             revisions: &mut revision_state,
+            notes: &mut note_state,
         };
 
         loop {
@@ -1331,13 +1927,13 @@ fn parse_document_xml(
                 }
                 Event::End(end) if local_name(end.name().as_ref()) == b"body" => break,
                 Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"p" => {
-                    let blocks = parse_paragraph(&mut reader, &context, numbering, &mut state)?;
+                    let blocks = parse_paragraph(&mut reader, context, numbering, &mut state)?;
                     for block in blocks {
                         push_parsed_block(&mut parsed, block);
                     }
                 }
                 Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"tbl" => {
-                    let table = parse_table(&mut reader, &context, numbering, &mut state)?;
+                    let table = parse_table(&mut reader, context, numbering, &mut state)?;
                     push_parsed_block(
                         &mut parsed,
                         ParsedBlock {
@@ -1352,7 +1948,7 @@ fn parse_document_xml(
                     let references = parse_section_properties(&mut reader, state.warnings)?;
                     page_regions = build_page_regions(
                         &references,
-                        rels,
+                        context.rels,
                         page_region_part_xml,
                         state.warnings,
                     )?;
@@ -1377,10 +1973,21 @@ fn parse_document_xml(
         }
     }
 
+    if context
+        .notes
+        .has_unanchored(&note_state.referenced_raw_keys())
+    {
+        warnings.warn(
+            "docx_unanchored_notes_ignored",
+            "Unsupported DOCX notes without supported body references were ignored during import",
+        );
+    }
+
     Ok(ParsedDocument {
         blocks: parsed.into_iter().map(|item| item.block).collect(),
         page_regions,
         anchored_comment_ids,
+        notes: note_state.notes,
     })
 }
 
@@ -1787,7 +2394,7 @@ fn parse_paragraph(
                     None,
                     context,
                     &mut comment_state,
-                    state.warnings,
+                    state,
                     DOCUMENT_XML,
                     None,
                 )?;
@@ -1800,7 +2407,7 @@ fn parse_paragraph(
                     link,
                     context,
                     &mut comment_state,
-                    state.warnings,
+                    state,
                     DOCUMENT_XML,
                     None,
                 )?;
@@ -2041,7 +2648,7 @@ fn parse_hyperlink(
     link: HyperlinkRef,
     context: &DocxImportContext<'_>,
     comment_state: &mut CommentImportState,
-    warnings: &mut WarningSink,
+    state: &mut DocxBodyParseState<'_>,
     name: &str,
     tracked_change: Option<&TrackedChange>,
 ) -> Result<Vec<ParagraphContent>, DocxError> {
@@ -2054,7 +2661,7 @@ fn parse_hyperlink(
                     link.href.clone(),
                     context,
                     comment_state,
-                    warnings,
+                    state,
                     name,
                     tracked_change,
                 )?;
@@ -2063,7 +2670,7 @@ fn parse_hyperlink(
             Event::Start(start)
                 if docx_tracked_change_kind(local_name(start.name().as_ref())).is_some() =>
             {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_revision_markup_degraded",
                     "Unsupported DOCX tracked-change markup was imported as visible text when available",
                 );
@@ -2074,7 +2681,7 @@ fn parse_hyperlink(
             Event::Start(start)
                 if is_unsupported_docx_revision_markup(local_name(start.name().as_ref())) =>
             {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_revision_markup_degraded",
                     "Unsupported DOCX tracked-change markup was imported as visible text when available",
                 );
@@ -2099,7 +2706,7 @@ fn parse_paragraph_run(
     link: Option<String>,
     context: &DocxImportContext<'_>,
     comment_state: &mut CommentImportState,
-    warnings: &mut WarningSink,
+    state: &mut DocxBodyParseState<'_>,
     name: &str,
     tracked_change: Option<&TrackedChange>,
 ) -> Result<Vec<ParagraphContent>, DocxError> {
@@ -2110,7 +2717,7 @@ fn parse_paragraph_run(
     loop {
         match reader.read_event().map_err(|err| xml_error(name, err))? {
             Event::Start(start) if local_name(start.name().as_ref()) == b"rPr" => {
-                properties = parse_run_properties(reader, name, warnings)?;
+                properties = parse_run_properties(reader, name, state.warnings)?;
             }
             Event::Start(start)
                 if matches!(local_name(start.name().as_ref()), b"t" | b"delText") =>
@@ -2134,13 +2741,13 @@ fn parse_paragraph_run(
                     tracked_change,
                 );
                 if let Some(image) =
-                    parse_drawing(reader, context.rels, context.images, warnings, name)?
+                    parse_drawing(reader, context.rels, context.images, state.warnings, name)?
                 {
                     content.push(ParagraphContent::Image(image));
                 }
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"drawing" => {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_image_reference_ignored",
                     "Unsupported DOCX image references were ignored during import",
                 );
@@ -2148,7 +2755,7 @@ fn parse_paragraph_run(
             Event::Empty(start)
                 if matches!(local_name(start.name().as_ref()), b"object" | b"pict") =>
             {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_media_ignored",
                     "Unsupported DOCX media content was ignored during import",
                 );
@@ -2156,7 +2763,7 @@ fn parse_paragraph_run(
             Event::Start(start)
                 if matches!(local_name(start.name().as_ref()), b"object" | b"pict") =>
             {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_media_ignored",
                     "Unsupported DOCX media content was ignored during import",
                 );
@@ -2164,31 +2771,73 @@ fn parse_paragraph_run(
                 skip_element(reader, &end, name)?;
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"commentReference" => {
-                comment_state.reference_marker(&start, context.comments, warnings)?;
+                comment_state.reference_marker(&start, context.comments, state.warnings)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"commentReference" => {
-                comment_state.reference_marker(&start, context.comments, warnings)?;
+                comment_state.reference_marker(&start, context.comments, state.warnings)?;
                 let end = local_name(start.name().as_ref()).to_vec();
                 skip_element(reader, &end, name)?;
             }
             Event::Empty(start)
-                if matches!(
-                    local_name(start.name().as_ref()),
-                    b"footnoteReference" | b"endnoteReference" | b"fldChar" | b"instrText"
-                ) =>
+                if docx_note_reference_kind(local_name(start.name().as_ref())).is_some() =>
             {
-                warnings.warn(
+                flush_run_text_content(
+                    &mut content,
+                    &mut text,
+                    &properties,
+                    link.clone(),
+                    Some(comment_state),
+                    tracked_change,
+                );
+                let kind = docx_note_reference_kind(local_name(start.name().as_ref()))
+                    .expect("note reference kind checked above");
+                push_docx_note_reference_content(
+                    &mut content,
+                    &properties,
+                    context.notes,
+                    state,
+                    &start,
+                    kind,
+                    tracked_change.is_some(),
+                )?;
+            }
+            Event::Start(start)
+                if docx_note_reference_kind(local_name(start.name().as_ref())).is_some() =>
+            {
+                flush_run_text_content(
+                    &mut content,
+                    &mut text,
+                    &properties,
+                    link.clone(),
+                    Some(comment_state),
+                    tracked_change,
+                );
+                let kind = docx_note_reference_kind(local_name(start.name().as_ref()))
+                    .expect("note reference kind checked above");
+                push_docx_note_reference_content(
+                    &mut content,
+                    &properties,
+                    context.notes,
+                    state,
+                    &start,
+                    kind,
+                    tracked_change.is_some(),
+                )?;
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, name)?;
+            }
+            Event::Empty(start)
+                if matches!(local_name(start.name().as_ref()), b"fldChar" | b"instrText") =>
+            {
+                state.warnings.warn(
                     "docx_inline_metadata_ignored",
                     "Unsupported DOCX inline metadata was ignored during import",
                 );
             }
             Event::Start(start)
-                if matches!(
-                    local_name(start.name().as_ref()),
-                    b"footnoteReference" | b"endnoteReference" | b"fldChar" | b"instrText"
-                ) =>
+                if matches!(local_name(start.name().as_ref()), b"fldChar" | b"instrText") =>
             {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_inline_metadata_ignored",
                     "Unsupported DOCX inline metadata was ignored during import",
                 );
@@ -2197,13 +2846,13 @@ fn parse_paragraph_run(
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"r" => break,
             Event::Empty(_) => {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_unsupported_run_content",
                     "Unsupported DOCX run content was ignored during import",
                 );
             }
             Event::Start(start) => {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_unsupported_run_content",
                     "Unsupported DOCX run content was ignored during import",
                 );
@@ -2224,6 +2873,34 @@ fn parse_paragraph_run(
         tracked_change,
     );
     Ok(content)
+}
+
+fn push_docx_note_reference_content(
+    content: &mut Vec<ParagraphContent>,
+    properties: &RunProperties,
+    imported_notes: &ImportedDocxNotes,
+    state: &mut DocxBodyParseState<'_>,
+    start: &BytesStart<'_>,
+    kind: NoteKind,
+    hidden_context: bool,
+) -> Result<(), DocxError> {
+    if let Some(reference) = state.notes.reference(
+        start,
+        kind,
+        imported_notes,
+        state.warnings,
+        DOCUMENT_XML,
+        hidden_context,
+    )? {
+        let mut inline = Inline::note_reference(reference);
+        inline.marks = properties.marks();
+        content.push(ParagraphContent::Inline(Box::new(inline)));
+    } else {
+        let mut inline = Inline::text(docx_note_reference_fallback_text(kind));
+        inline.marks = properties.marks();
+        content.push(ParagraphContent::Inline(Box::new(inline)));
+    }
+    Ok(())
 }
 
 fn parse_drawing(
@@ -2326,7 +3003,7 @@ fn parse_revision_container(
                     None,
                     context,
                     comment_state,
-                    state.warnings,
+                    state,
                     name,
                     tracked_change.as_ref(),
                 )?;
@@ -2339,7 +3016,7 @@ fn parse_revision_container(
                     link,
                     context,
                     comment_state,
-                    state.warnings,
+                    state,
                     name,
                     tracked_change.as_ref(),
                 )?;
@@ -3033,6 +3710,52 @@ fn docx_tracked_change_kind(name: &[u8]) -> Option<TrackedChangeKind> {
     }
 }
 
+fn docx_note_reference_kind(name: &[u8]) -> Option<NoteKind> {
+    match name {
+        b"footnoteReference" => Some(NoteKind::Footnote),
+        b"endnoteReference" => Some(NoteKind::Endnote),
+        _ => None,
+    }
+}
+
+fn docx_note_element_name(kind: NoteKind) -> &'static [u8] {
+    match kind {
+        NoteKind::Footnote => b"footnote",
+        NoteKind::Endnote => b"endnote",
+    }
+}
+
+fn is_docx_note_separator(start: &BytesStart<'_>) -> Result<bool, DocxError> {
+    Ok(matches!(
+        attr_value(start, b"type", DOCX_NOTES_XML)?.as_deref(),
+        Some("separator" | "continuationSeparator" | "continuationNotice")
+    ))
+}
+
+fn docx_note_key(kind: NoteKind, raw_id: &str) -> String {
+    let prefix = match kind {
+        NoteKind::Footnote => "footnote",
+        NoteKind::Endnote => "endnote",
+    };
+    format!("{prefix}:{raw_id}")
+}
+
+fn next_imported_docx_note_id(kind: NoteKind, index: usize) -> String {
+    let kind = match kind {
+        NoteKind::Footnote => "footnote",
+        NoteKind::Endnote => "endnote",
+    };
+    let candidate = format!("note-docx-{kind}-{index}");
+    validate_note_id(&candidate).unwrap_or(candidate)
+}
+
+fn docx_note_reference_fallback_text(kind: NoteKind) -> &'static str {
+    match kind {
+        NoteKind::Footnote => "[footnote]",
+        NoteKind::Endnote => "[endnote]",
+    }
+}
+
 fn is_any_docx_revision_markup(name: &[u8]) -> bool {
     docx_tracked_change_kind(name).is_some() || is_unsupported_docx_revision_markup(name)
 }
@@ -3165,6 +3888,7 @@ fn render_content_types_xml(
     page_regions: &DocxPageRegionExports,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
 ) -> String {
     let mut output = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -3193,6 +3917,18 @@ fn render_content_types_xml(
         output.push_str(
             r#"
   <Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/>"#,
+        );
+    }
+    if notes.has_footnotes() {
+        output.push_str(
+            r#"
+  <Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>"#,
+        );
+    }
+    if notes.has_endnotes() {
+        output.push_str(
+            r#"
+  <Override PartName="/word/endnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"/>"#,
         );
     }
     for part in &page_regions.parts {
@@ -3227,6 +3963,7 @@ fn render_document_rels_xml(
     page_regions: &DocxPageRegionExports,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
 ) -> String {
     let mut output = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -3271,6 +4008,20 @@ fn render_document_rels_xml(
         output.push_str(REL_TYPE_COMMENTS);
         output.push_str("\" Target=\"comments.xml\"/>");
     }
+    if let Some(rel_id) = notes.rel_id_footnotes.as_deref() {
+        output.push_str("\n  <Relationship Id=\"");
+        output.push_str(&escape_xml(rel_id));
+        output.push_str("\" Type=\"");
+        output.push_str(REL_TYPE_FOOTNOTES);
+        output.push_str("\" Target=\"footnotes.xml\"/>");
+    }
+    if let Some(rel_id) = notes.rel_id_endnotes.as_deref() {
+        output.push_str("\n  <Relationship Id=\"");
+        output.push_str(&escape_xml(rel_id));
+        output.push_str("\" Type=\"");
+        output.push_str(REL_TYPE_ENDNOTES);
+        output.push_str("\" Target=\"endnotes.xml\"/>");
+    }
     output.push_str("\n</Relationships>");
     output
 }
@@ -3281,6 +4032,7 @@ fn render_document_xml(
     page_regions: &DocxPageRegionExports,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
     revisions: &DocxRevisionExports,
 ) -> String {
     let mut output = String::from(
@@ -3291,7 +4043,15 @@ fn render_document_xml(
 
     for section in &document.sections {
         for block in &section.blocks {
-            render_block_xml(block, hyperlinks, images, comments, revisions, &mut output);
+            render_block_xml(
+                block,
+                hyperlinks,
+                images,
+                comments,
+                notes,
+                revisions,
+                &mut output,
+            );
         }
     }
 
@@ -3372,6 +4132,7 @@ fn render_page_region_block_xml(block: &PageRegionBlock, output: &mut String) {
                 &paragraph.inlines,
                 &HyperlinkIds::default(),
                 &DocxCommentExports::default(),
+                &DocxNoteExports::default(),
                 &DocxRevisionExports::default(),
                 output,
             );
@@ -3385,24 +4146,28 @@ fn render_block_xml(
     hyperlinks: &HyperlinkIds,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
     revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
     match block {
-        Block::Paragraph(paragraph) => {
-            render_paragraph_xml(paragraph, None, hyperlinks, comments, revisions, output)
-        }
+        Block::Paragraph(paragraph) => render_paragraph_xml(
+            paragraph, None, hyperlinks, comments, notes, revisions, output,
+        ),
         Block::Heading(heading) => {
-            render_heading_xml(heading, hyperlinks, comments, revisions, output)
+            render_heading_xml(heading, hyperlinks, comments, notes, revisions, output)
         }
-        Block::List(list) => render_list_xml(list, hyperlinks, images, comments, revisions, output),
-        Block::Table(table) => {
-            render_table_xml(table, hyperlinks, images, comments, revisions, output)
+        Block::List(list) => {
+            render_list_xml(list, hyperlinks, images, comments, notes, revisions, output)
         }
+        Block::Table(table) => render_table_xml(
+            table, hyperlinks, images, comments, notes, revisions, output,
+        ),
         Block::TableOfContents(table_of_contents) => render_fallback_paragraph(
             &table_of_contents_text(table_of_contents),
             hyperlinks,
             comments,
+            notes,
             revisions,
             output,
         ),
@@ -3419,6 +4184,7 @@ fn render_block_xml(
                         caption.trim(),
                         hyperlinks,
                         comments,
+                        notes,
                         revisions,
                         output,
                     );
@@ -3428,6 +4194,7 @@ fn render_block_xml(
                     &image_fallback_text(image),
                     hyperlinks,
                     comments,
+                    notes,
                     revisions,
                     output,
                 );
@@ -3515,13 +4282,21 @@ fn render_heading_xml(
     heading: &Heading,
     hyperlinks: &HyperlinkIds,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
     revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
     output.push_str("<w:p><w:pPr><w:pStyle w:val=\"Heading");
     output.push_str(&heading.level.clamp(1, 3).to_string());
     output.push_str("\"/></w:pPr>");
-    render_inlines_xml(&heading.inlines, hyperlinks, comments, revisions, output);
+    render_inlines_xml(
+        &heading.inlines,
+        hyperlinks,
+        comments,
+        notes,
+        revisions,
+        output,
+    );
     output.push_str("</w:p>");
 }
 
@@ -3530,6 +4305,7 @@ fn render_paragraph_xml(
     list_marker: Option<ListMarker>,
     hyperlinks: &HyperlinkIds,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
     revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
@@ -3541,7 +4317,14 @@ fn render_paragraph_xml(
         output.push_str(if marker.ordered { "2" } else { "1" });
         output.push_str("\"/></w:numPr></w:pPr>");
     }
-    render_inlines_xml(&paragraph.inlines, hyperlinks, comments, revisions, output);
+    render_inlines_xml(
+        &paragraph.inlines,
+        hyperlinks,
+        comments,
+        notes,
+        revisions,
+        output,
+    );
     output.push_str("</w:p>");
 }
 
@@ -3550,6 +4333,7 @@ fn render_list_xml(
     hyperlinks: &HyperlinkIds,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
     revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
@@ -3565,6 +4349,7 @@ fn render_list_xml(
                     }),
                     hyperlinks,
                     comments,
+                    notes,
                     revisions,
                     output,
                 ),
@@ -3583,6 +4368,7 @@ fn render_list_xml(
                         }),
                         hyperlinks,
                         comments,
+                        notes,
                         revisions,
                         output,
                     );
@@ -3592,6 +4378,7 @@ fn render_list_xml(
                     hyperlinks,
                     images,
                     comments,
+                    notes,
                     revisions,
                     output,
                 ),
@@ -3599,6 +4386,7 @@ fn render_list_xml(
                     &block_text(block),
                     hyperlinks,
                     comments,
+                    notes,
                     revisions,
                     output,
                 ),
@@ -3612,6 +4400,7 @@ fn render_table_xml(
     hyperlinks: &HyperlinkIds,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
     revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
@@ -3626,19 +4415,20 @@ fn render_table_xml(
                 for block in &cell.blocks {
                     match block {
                         Block::Paragraph(paragraph) => render_paragraph_xml(
-                            paragraph, None, hyperlinks, comments, revisions, output,
+                            paragraph, None, hyperlinks, comments, notes, revisions, output,
                         ),
-                        Block::Heading(heading) => {
-                            render_heading_xml(heading, hyperlinks, comments, revisions, output)
-                        }
-                        Block::List(list) => {
-                            render_list_xml(list, hyperlinks, images, comments, revisions, output)
-                        }
+                        Block::Heading(heading) => render_heading_xml(
+                            heading, hyperlinks, comments, notes, revisions, output,
+                        ),
+                        Block::List(list) => render_list_xml(
+                            list, hyperlinks, images, comments, notes, revisions, output,
+                        ),
                         Block::Image(image) => render_block_xml(
                             &Block::Image(image.clone()),
                             hyperlinks,
                             images,
                             comments,
+                            notes,
                             revisions,
                             output,
                         ),
@@ -3646,6 +4436,7 @@ fn render_table_xml(
                             &block_text(block),
                             hyperlinks,
                             comments,
+                            notes,
                             revisions,
                             output,
                         ),
@@ -3663,6 +4454,7 @@ fn render_fallback_paragraph(
     text: &str,
     hyperlinks: &HyperlinkIds,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
     revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
@@ -3680,6 +4472,7 @@ fn render_fallback_paragraph(
         None,
         hyperlinks,
         comments,
+        notes,
         revisions,
         output,
     );
@@ -3689,6 +4482,7 @@ fn render_inlines_xml(
     inlines: &[Inline],
     hyperlinks: &HyperlinkIds,
     comments: &DocxCommentExports,
+    notes: &DocxNoteExports,
     revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
@@ -3712,7 +4506,7 @@ fn render_inlines_xml(
                 output.push_str("<w:hyperlink w:anchor=\"");
                 output.push_str(&escape_xml(anchor));
                 output.push_str("\">");
-                render_inline_xml(inline, revisions, output);
+                render_inline_xml(inline, notes, revisions, output);
                 output.push_str("</w:hyperlink>");
                 render_comment_range_ends_xml(
                     &comment_ids_exiting(&current_comment_ids, &next_comment_ids),
@@ -3726,7 +4520,7 @@ fn render_inlines_xml(
                 output.push_str("<w:hyperlink r:id=\"");
                 output.push_str(&escape_xml(id));
                 output.push_str("\" w:history=\"1\">");
-                render_inline_xml(inline, revisions, output);
+                render_inline_xml(inline, notes, revisions, output);
                 output.push_str("</w:hyperlink>");
                 render_comment_range_ends_xml(
                     &comment_ids_exiting(&current_comment_ids, &next_comment_ids),
@@ -3737,7 +4531,7 @@ fn render_inlines_xml(
                 continue;
             }
         }
-        render_inline_xml(inline, revisions, output);
+        render_inline_xml(inline, notes, revisions, output);
         render_comment_range_ends_xml(
             &comment_ids_exiting(&current_comment_ids, &next_comment_ids),
             comments,
@@ -3793,7 +4587,18 @@ fn render_comment_range_ends_xml(
     }
 }
 
-fn render_inline_xml(inline: &Inline, revisions: &DocxRevisionExports, output: &mut String) {
+fn render_inline_xml(
+    inline: &Inline,
+    notes: &DocxNoteExports,
+    revisions: &DocxRevisionExports,
+    output: &mut String,
+) {
+    if let Some(reference) = inline.note_reference.as_ref() {
+        if let Some(numeric_id) = notes.numeric_id(reference) {
+            render_note_reference_xml(inline, reference.kind, numeric_id, output);
+            return;
+        }
+    }
     if let Some(change) = exportable_docx_revision_change(inline) {
         if let Some(numeric_id) = revisions.numeric_id(&change.id) {
             render_tracked_change_xml(inline, change, numeric_id, output);
@@ -3801,6 +4606,22 @@ fn render_inline_xml(inline: &Inline, revisions: &DocxRevisionExports, output: &
         }
     }
     render_run_xml_with_text_element(inline, "t", output);
+}
+
+fn render_note_reference_xml(
+    inline: &Inline,
+    kind: NoteKind,
+    numeric_id: u32,
+    output: &mut String,
+) {
+    output.push_str("<w:r>");
+    render_run_properties_xml(&inline.marks, output);
+    output.push_str(match kind {
+        NoteKind::Footnote => "<w:footnoteReference w:id=\"",
+        NoteKind::Endnote => "<w:endnoteReference w:id=\"",
+    });
+    output.push_str(&numeric_id.to_string());
+    output.push_str("\"/></w:r>");
 }
 
 fn render_tracked_change_xml(
@@ -3856,19 +4677,7 @@ fn render_run_xml_with_text_element(inline: &Inline, text_element: &str, output:
         return;
     }
     output.push_str("<w:r>");
-    if !inline.marks.is_empty() {
-        output.push_str("<w:rPr>");
-        if inline.marks.contains(&InlineMark::Bold) {
-            output.push_str("<w:b/>");
-        }
-        if inline.marks.contains(&InlineMark::Italic) {
-            output.push_str("<w:i/>");
-        }
-        if inline.marks.contains(&InlineMark::Underline) {
-            output.push_str("<w:u w:val=\"single\"/>");
-        }
-        output.push_str("</w:rPr>");
-    }
+    render_run_properties_xml(&inline.marks, output);
 
     let mut text_buffer = String::new();
     for ch in inline.text.chars() {
@@ -3886,6 +4695,22 @@ fn render_run_xml_with_text_element(inline: &Inline, text_element: &str, output:
     }
     flush_text_run(&mut text_buffer, text_element, output);
     output.push_str("</w:r>");
+}
+
+fn render_run_properties_xml(marks: &[InlineMark], output: &mut String) {
+    if !marks.is_empty() {
+        output.push_str("<w:rPr>");
+        if marks.contains(&InlineMark::Bold) {
+            output.push_str("<w:b/>");
+        }
+        if marks.contains(&InlineMark::Italic) {
+            output.push_str("<w:i/>");
+        }
+        if marks.contains(&InlineMark::Underline) {
+            output.push_str("<w:u w:val=\"single\"/>");
+        }
+        output.push_str("</w:rPr>");
+    }
 }
 
 fn flush_text_run(text: &mut String, text_element: &str, output: &mut String) {
@@ -3946,6 +4771,71 @@ fn render_comments_xml(comments: &DocxCommentExports) -> String {
     }
     output.push_str("</w:comments>");
     output
+}
+
+fn render_notes_xml(kind: NoteKind, notes: &[DocxNoteExport]) -> String {
+    let root = match kind {
+        NoteKind::Footnote => "footnotes",
+        NoteKind::Endnote => "endnotes",
+    };
+    let element = match kind {
+        NoteKind::Footnote => "footnote",
+        NoteKind::Endnote => "endnote",
+    };
+    let reference = match kind {
+        NoteKind::Footnote => "footnoteRef",
+        NoteKind::Endnote => "endnoteRef",
+    };
+    let mut output = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#);
+    output.push_str("<w:");
+    output.push_str(root);
+    output.push_str(r#" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#);
+    output.push_str("<w:");
+    output.push_str(element);
+    output.push_str(r#" w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:"#);
+    output.push_str(element);
+    output.push_str("><w:");
+    output.push_str(element);
+    output.push_str(r#" w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:"#);
+    output.push_str(element);
+    output.push('>');
+    for note in notes {
+        output.push_str("<w:");
+        output.push_str(element);
+        output.push_str(" w:id=\"");
+        output.push_str(&note.numeric_id.to_string());
+        output.push_str("\">");
+        render_note_body_xml(&note.body, reference, &mut output);
+        output.push_str("</w:");
+        output.push_str(element);
+        output.push('>');
+    }
+    output.push_str("</w:");
+    output.push_str(root);
+    output.push('>');
+    output
+}
+
+fn render_note_body_xml(body: &str, reference: &str, output: &mut String) {
+    let mut first = true;
+    for line in body.split('\n') {
+        output.push_str("<w:p>");
+        if first {
+            output.push_str("<w:r><w:");
+            output.push_str(reference);
+            output.push_str("/></w:r>");
+        }
+        if !line.is_empty() {
+            render_run_xml_with_text_element(&Inline::text(line), "t", output);
+        }
+        output.push_str("</w:p>");
+        first = false;
+    }
+    if first {
+        output.push_str("<w:p><w:r><w:");
+        output.push_str(reference);
+        output.push_str("/></w:r></w:p>");
+    }
 }
 
 fn collect_external_hyperlinks(document: &Document) -> BTreeSet<String> {
@@ -4091,6 +4981,62 @@ fn collect_docx_comment_exports(document: &Document, first_rel_id: usize) -> Doc
         ids,
         comments,
     }
+}
+
+fn collect_docx_note_exports(document: &Document, first_rel_id: usize) -> DocxNoteExports {
+    let references = collect_ordered_note_references(&document.sections);
+    let mut exports = DocxNoteExports::default();
+    for reference in references {
+        if exports.ids.contains_key(&reference.id) || exports.ids.len() >= MAX_NOTES {
+            continue;
+        }
+        if validate_note_reference(&reference).is_err() {
+            continue;
+        }
+        let Some(note) = document.notes.get(&reference.id) else {
+            continue;
+        };
+        if note.id != reference.id || note.kind != reference.kind {
+            continue;
+        }
+        let Ok(body) = validate_note_body(&note.body) else {
+            continue;
+        };
+        match reference.kind {
+            NoteKind::Footnote => {
+                let numeric_id = exports.footnotes.len() as u32 + 1;
+                exports.ids.insert(
+                    reference.id.clone(),
+                    DocxNoteExportId {
+                        kind: reference.kind,
+                        numeric_id,
+                    },
+                );
+                exports.footnotes.push(DocxNoteExport { numeric_id, body });
+            }
+            NoteKind::Endnote => {
+                let numeric_id = exports.endnotes.len() as u32 + 1;
+                exports.ids.insert(
+                    reference.id.clone(),
+                    DocxNoteExportId {
+                        kind: reference.kind,
+                        numeric_id,
+                    },
+                );
+                exports.endnotes.push(DocxNoteExport { numeric_id, body });
+            }
+        }
+    }
+
+    let mut next_rel_id = first_rel_id;
+    if exports.has_footnotes() {
+        exports.rel_id_footnotes = Some(format!("rId{next_rel_id}"));
+        next_rel_id += 1;
+    }
+    if exports.has_endnotes() {
+        exports.rel_id_endnotes = Some(format!("rId{next_rel_id}"));
+    }
+    exports
 }
 
 fn collect_docx_revision_exports(document: &Document) -> DocxRevisionExports {
@@ -4453,6 +5399,43 @@ fn resolve_comments_target(target: &str) -> Option<String> {
         return None;
     }
     if validate_entry_path(&combined, PackageLimits::default()).is_ok() {
+        Some(combined)
+    } else {
+        None
+    }
+}
+
+fn resolve_note_target(target: &str, kind: NoteKind) -> Option<String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('\\')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+    {
+        return None;
+    }
+    let combined = if trimmed.starts_with("word/") {
+        trimmed.to_string()
+    } else {
+        format!("word/{trimmed}")
+    };
+    if combined
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return None;
+    }
+    let lower = combined.to_ascii_lowercase();
+    let file_name = lower.strip_prefix("word/")?;
+    if file_name.contains('/') {
+        return None;
+    }
+    let expected = match kind {
+        NoteKind::Footnote => "footnotes.xml",
+        NoteKind::Endnote => "endnotes.xml",
+    };
+    if file_name == expected && validate_entry_path(&combined, PackageLimits::default()).is_ok() {
         Some(combined)
     } else {
         None
@@ -5166,6 +6149,353 @@ mod tests {
             .inlines
             .iter()
             .all(|inline| inline.comment_ids == vec![comment_id.clone()]));
+    }
+
+    #[test]
+    fn imports_simple_docx_footnotes_and_endnotes_from_body_list_and_table() {
+        let bytes = synthetic_docx_with_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p><w:r><w:t>Claim</w:t></w:r><w:r><w:footnoteReference w:id="5"/></w:r></w:p>
+  <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:t>List item</w:t></w:r><w:r><w:endnoteReference w:id="9"/></w:r></w:p>
+  <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r><w:r><w:footnoteReference w:id="6"/></w:r></w:p></w:tc></w:tr></w:tbl>
+</w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rFootnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>
+<Relationship Id="rEndnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"/>
+</Relationships>"#,
+            ),
+            Some(
+                r#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:abstractNum w:abstractNumId="4"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum>
+<w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num>
+</w:numbering>"#,
+            ),
+            &[
+                (
+                    "word/footnotes.xml",
+                    r#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:footnote w:type="separator" w:id="-1"/>
+<w:footnote w:type="continuationSeparator" w:id="0"/>
+<w:footnote w:id="5"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t>Foot body</w:t></w:r><w:r><w:tab/></w:r><w:r><w:t>tab</w:t></w:r></w:p><w:p><w:r><w:t>Second line</w:t></w:r></w:p></w:footnote>
+<w:footnote w:id="6"><w:p><w:r><w:t>Cell footnote</w:t></w:r></w:p></w:footnote>
+</w:footnotes>"#,
+                ),
+                (
+                    "word/endnotes.xml",
+                    r#"<w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:endnote w:type="separator" w:id="-1"/>
+<w:endnote w:type="continuationSeparator" w:id="0"/>
+<w:endnote w:id="9"><w:p><w:r><w:endnoteRef/></w:r><w:r><w:t>End body</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>line</w:t></w:r></w:p></w:endnote>
+</w:endnotes>"#,
+                ),
+            ],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("docx notes should import");
+
+        assert!(document.warnings.is_empty(), "{:?}", document.warnings);
+        assert_eq!(document.notes.len(), 3);
+        assert_eq!(
+            document.notes["note-docx-footnote-1"].body,
+            "Foot body\ttab\nSecond line"
+        );
+        assert_eq!(
+            document.notes["note-docx-footnote-1"].kind,
+            NoteKind::Footnote
+        );
+        assert_eq!(document.notes["note-docx-endnote-1"].body, "End body\nline");
+        assert_eq!(
+            document.notes["note-docx-endnote-1"].kind,
+            NoteKind::Endnote
+        );
+        assert_eq!(document.notes["note-docx-footnote-2"].body, "Cell footnote");
+
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(
+            paragraph.inlines[1].note_reference,
+            Some(InlineNoteReference {
+                id: "note-docx-footnote-1".to_string(),
+                kind: NoteKind::Footnote,
+                label: "1".to_string(),
+            })
+        );
+
+        let Block::List(list) = &document.sections[0].blocks[1] else {
+            panic!("list expected");
+        };
+        let Block::Paragraph(list_paragraph) = &list.items[0].blocks[0] else {
+            panic!("list paragraph expected");
+        };
+        assert_eq!(
+            list_paragraph.inlines[1].note_reference,
+            Some(InlineNoteReference {
+                id: "note-docx-endnote-1".to_string(),
+                kind: NoteKind::Endnote,
+                label: "1".to_string(),
+            })
+        );
+
+        let Block::Table(table) = &document.sections[0].blocks[2] else {
+            panic!("table expected");
+        };
+        let Block::Paragraph(cell_paragraph) = &table.rows[0].cells[0].blocks[0] else {
+            panic!("cell paragraph expected");
+        };
+        assert_eq!(
+            cell_paragraph.inlines[1].note_reference,
+            Some(InlineNoteReference {
+                id: "note-docx-footnote-2".to_string(),
+                kind: NoteKind::Footnote,
+                label: "2".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn unsafe_missing_and_remote_docx_note_relationships_use_generic_fallbacks() {
+        for (target, target_mode, extra_parts, expected_code) in [
+            (
+                "../private/footnotes.xml",
+                "",
+                Vec::new(),
+                "docx_notes_relationship_ignored",
+            ),
+            (
+                "notes/footnotes.xml",
+                "",
+                Vec::new(),
+                "docx_notes_relationship_ignored",
+            ),
+            (
+                "footnotes.xml",
+                r#" TargetMode="External""#,
+                Vec::new(),
+                "docx_notes_relationship_ignored",
+            ),
+            ("footnotes.xml", "", Vec::new(), "docx_notes_part_missing"),
+        ] {
+            let rels_xml = format!(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rFootnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="{target}"{target_mode}/>
+</Relationships>"#
+            );
+            let bytes = synthetic_docx_with_parts(
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:p><w:r><w:t>Claim</w:t></w:r><w:r><w:footnoteReference w:id="7"/></w:r></w:p></w:body></w:document>"#,
+                Some(&rels_xml),
+                None,
+                &extra_parts,
+            );
+
+            let document = read_docx_bytes(&bytes).expect("unsafe notes should degrade");
+
+            assert!(document.notes.is_empty());
+            let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+                panic!("paragraph expected");
+            };
+            assert_eq!(inline_text(&paragraph.inlines), "Claim[footnote]");
+            assert!(paragraph
+                .inlines
+                .iter()
+                .all(|inline| inline.note_reference.is_none()));
+            assert!(document
+                .warnings
+                .iter()
+                .any(|warning| warning.code == expected_code));
+            assert_docx_note_warnings_are_generic(&document, "Hidden note body");
+        }
+    }
+
+    #[test]
+    fn malformed_unanchored_and_hidden_docx_notes_are_generic_and_not_imported() {
+        let bytes = synthetic_docx_with_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:p><w:r><w:t>Claim</w:t></w:r><w:r><w:footnoteReference w:id="7"/></w:r></w:p></w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rFootnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>
+</Relationships>"#,
+            ),
+            None,
+            &[(
+                "word/footnotes.xml",
+                r#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:footnote w:id="7"><w:p><w:r><w:t>Visible fragment</w:t></w:r><w:ins><w:r><w:t>Hidden note body</w:t></w:r></w:ins></w:p></w:footnote>
+<w:footnote w:id="8"><w:p><w:r><w:t>Unanchored private body</w:t></w:r></w:p></w:footnote>
+</w:footnotes>"#,
+            )],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("malformed notes should degrade");
+
+        assert!(document.notes.is_empty());
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(inline_text(&paragraph.inlines), "Claim[footnote]");
+        assert!(paragraph
+            .inlines
+            .iter()
+            .all(|inline| inline.note_reference.is_none()));
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_note_content_degraded"));
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_note_reference_ignored"));
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_unanchored_notes_ignored"));
+        assert_docx_note_warnings_are_generic(&document, "Hidden note body");
+        assert_docx_note_warnings_are_generic(&document, "Visible fragment");
+        assert_docx_note_warnings_are_generic(&document, "Unanchored private body");
+    }
+
+    #[test]
+    fn excess_docx_notes_import_until_limit_then_use_visible_fallback() {
+        let mut body = String::new();
+        let mut footnotes = String::from(
+            r#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+        );
+        for index in 1..=MAX_NOTES + 1 {
+            body.push_str("<w:r><w:footnoteReference w:id=\"");
+            body.push_str(&index.to_string());
+            body.push_str("\"/></w:r>");
+            footnotes.push_str("<w:footnote w:id=\"");
+            footnotes.push_str(&index.to_string());
+            footnotes.push_str("\"><w:p><w:r><w:t>Note ");
+            footnotes.push_str(&index.to_string());
+            footnotes.push_str("</w:t></w:r></w:p></w:footnote>");
+        }
+        footnotes.push_str("</w:footnotes>");
+        let document_xml = format!(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p>{body}</w:p></w:body></w:document>"#
+        );
+        let bytes = synthetic_docx_with_parts(
+            &document_xml,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rFootnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>
+</Relationships>"#,
+            ),
+            None,
+            &[("word/footnotes.xml", &footnotes)],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("excess notes should degrade");
+
+        assert_eq!(document.notes.len(), MAX_NOTES);
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(paragraph.inlines.len(), MAX_NOTES + 1);
+        assert!(paragraph.inlines[..MAX_NOTES]
+            .iter()
+            .all(|inline| inline.note_reference.is_some()));
+        assert_eq!(paragraph.inlines[MAX_NOTES].text, "[footnote]");
+        assert!(paragraph.inlines[MAX_NOTES].note_reference.is_none());
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_notes_over_limit"));
+        assert_docx_note_warnings_are_generic(&document, "Note 513");
+    }
+
+    #[test]
+    fn exports_docx_note_parts_references_and_round_trips_without_local_metadata() {
+        let mut document = Document::new_untitled();
+        document.notes.insert(
+            "note-source".to_string(),
+            Note {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Source <body> & details".to_string(),
+            },
+        );
+        document.notes.insert(
+            "note-appendix".to_string(),
+            Note {
+                id: "note-appendix".to_string(),
+                kind: NoteKind::Endnote,
+                body: "Appendix\tbody".to_string(),
+            },
+        );
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: ParagraphFormat::default(),
+            inlines: vec![
+                Inline::text("Claim"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-source".to_string(),
+                    kind: NoteKind::Footnote,
+                    label: "1".to_string(),
+                }),
+                Inline::text(" Appendix"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-appendix".to_string(),
+                    kind: NoteKind::Endnote,
+                    label: "1".to_string(),
+                }),
+            ],
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write notes");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let content_types = read_zip_text_part(&bytes, "[Content_Types].xml");
+        let document_rels = read_zip_text_part(&bytes, DOCUMENT_RELS);
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+        let footnotes_xml = read_zip_text_part(&bytes, "word/footnotes.xml");
+        let endnotes_xml = read_zip_text_part(&bytes, "word/endnotes.xml");
+
+        assert!(content_types.contains("/word/footnotes.xml"));
+        assert!(content_types.contains("/word/endnotes.xml"));
+        assert!(document_rels.contains("relationships/footnotes"));
+        assert!(document_rels.contains("relationships/endnotes"));
+        assert!(document_rels.contains(r#"Target="footnotes.xml""#));
+        assert!(document_rels.contains(r#"Target="endnotes.xml""#));
+        assert!(document_xml.contains(r#"<w:footnoteReference w:id="1"/>"#));
+        assert!(document_xml.contains(r#"<w:endnoteReference w:id="1"/>"#));
+        assert!(footnotes_xml.contains("Source &lt;body&gt; &amp; details"));
+        assert!(endnotes_xml.contains("<w:tab/>"));
+        for xml in [&document_xml, &document_rels, &footnotes_xml, &endnotes_xml] {
+            assert!(!xml.contains("note-source"));
+            assert!(!xml.contains("note-appendix"));
+            assert!(!xml.contains("Users"));
+            assert!(!xml.contains("C:/"));
+        }
+
+        let parsed = read_docx_bytes(&bytes).expect("written notes package should import");
+        assert_eq!(parsed.notes.len(), 2);
+        assert_eq!(
+            parsed.notes["note-docx-footnote-1"].body,
+            "Source <body> & details"
+        );
+        assert_eq!(parsed.notes["note-docx-endnote-1"].body, "Appendix\tbody");
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(
+            paragraph.inlines[1]
+                .note_reference
+                .as_ref()
+                .map(|reference| (reference.id.as_str(), reference.kind)),
+            Some(("note-docx-footnote-1", NoteKind::Footnote))
+        );
+        assert_eq!(
+            paragraph.inlines[3]
+                .note_reference
+                .as_ref()
+                .map(|reference| (reference.id.as_str(), reference.kind)),
+            Some(("note-docx-endnote-1", NoteKind::Endnote))
+        );
     }
 
     #[test]
@@ -6333,6 +7663,22 @@ mod tests {
         }
     }
 
+    fn assert_docx_note_warnings_are_generic(document: &Document, private_body: &str) {
+        for warning in &document.warnings {
+            assert!(!warning.message.contains("private"));
+            assert!(!warning.message.contains("Private"));
+            assert!(!warning.message.contains("footnotes.xml"));
+            assert!(!warning.message.contains("endnotes.xml"));
+            assert!(!warning.message.contains("word/footnotes"));
+            assert!(!warning.message.contains("word/endnotes"));
+            assert!(!warning.message.contains("C:/"));
+            assert!(!warning.message.contains("Users"));
+            assert!(!warning.message.contains("placeholder"));
+            assert!(!warning.message.contains("example.invalid"));
+            assert!(!warning.message.contains(private_body));
+        }
+    }
+
     fn read_zip_text_part(bytes: &[u8], name: &str) -> String {
         let mut archive = ZipArchive::new(Cursor::new(bytes)).expect("written docx should open");
         let mut xml = String::new();
@@ -6380,6 +7726,7 @@ mod tests {
                     &DocxPageRegionExports::default(),
                     &DocxImageExports::default(),
                     &DocxCommentExports::default(),
+                    &DocxNoteExports::default(),
                 )
                 .as_bytes(),
             )
