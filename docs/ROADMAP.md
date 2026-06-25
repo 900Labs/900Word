@@ -516,3 +516,13 @@ Status: complete.
 - Emit bounded PDF `/Link` annotations with `/Dest` arrays for safe internal text links and generated TOC entries whose target exists in exported PDF content.
 - Preserve existing per-page and per-document annotation caps and approximate text-run rectangles without creating page-wide clickable areas.
 - Keep ODT canonical and keep full PDF outline/bookmark trees, exact glyph-level geometry, remote fetching, telemetry, accounts, cloud behavior, heavy PDF dependencies, and full layout fidelity deferred.
+
+## Sprint 055: PDF Note Backlinks
+
+Status: complete.
+
+- Extend the lightweight PDF linked-text projection to turn valid local footnote/endnote reference labels into internal destination links to appended note-body rows.
+- Mark generated note-body rows as PDF destinations and make their visible row labels link back to the first exported note reference when that reference is present in the selected page range.
+- Preserve existing per-page and per-document annotation caps and omit links when either endpoint is outside the selected PDF pages.
+- Avoid writing note IDs, raw internal target strings, paths, filenames, usernames, hostnames, telemetry identifiers, account/cloud identifiers, or network state to PDF bytes or logs.
+- Keep ODT canonical and keep page-bottom footnote layout, note continuation fidelity, rich note formatting/layout, exact glyph-level geometry, remote fetching, telemetry, accounts, cloud behavior, heavy PDF dependencies, and full layout fidelity deferred.

@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use word_core::{
     collect_ordered_note_references, sanitize_table_cell_background_color,
-    sanitize_table_column_widths, AssetRef, Block, Document, Heading, ImageAlignment, ImageBlock,
-    Inline, InlineMark, NoteKind, PageField, PageRegion, PageRegionBlock, PageSetup, Paragraph,
-    ParagraphAlignment, ParagraphFormat, Section, Style, StyleKind, TableCellBorder,
-    TableCellPresentation, TableOfContents,
+    sanitize_table_column_widths, validate_note_reference, AssetRef, Block, Document, Heading,
+    ImageAlignment, ImageBlock, Inline, InlineMark, NoteKind, PageField, PageRegion,
+    PageRegionBlock, PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat, Section, Style,
+    StyleKind, TableCellBorder, TableCellPresentation, TableOfContents,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -106,21 +106,23 @@ struct PdfProjectedText {
     text: PdfLinkedText,
 }
 
-struct PdfProjectionContext<'a> {
+struct PdfProjectionState<'a> {
     bookmark_id_counts: &'a BTreeMap<String, usize>,
+    active_note_ids: &'a BTreeSet<String>,
+    emitted_note_reference_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct PdfLinkedText {
     runs: Vec<PdfLinkedRun>,
-    pending_destinations: Vec<String>,
+    pending_destinations: Vec<PdfDestinationId>,
 }
 
 #[derive(Debug, Clone)]
 struct PdfLinkedRun {
     text: String,
     target: Option<PdfLinkTarget>,
-    destinations: Vec<String>,
+    destinations: Vec<PdfDestinationId>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,20 +142,20 @@ struct PdfLineLink {
 #[derive(Debug, Clone)]
 struct PdfLineDestination {
     offset: usize,
-    id: String,
+    id: PdfDestinationId,
 }
 
 #[derive(Debug, Clone)]
 struct PdfLinkedChar {
     ch: char,
     target: Option<PdfLinkTarget>,
-    destinations: Vec<String>,
+    destinations: Vec<PdfDestinationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PdfLinkTarget {
     Uri(String),
-    Destination(String),
+    Destination(PdfDestinationId),
 }
 
 #[derive(Debug, Clone)]
@@ -165,7 +167,7 @@ struct PdfLinkAnnotation {
 #[derive(Debug, Clone)]
 enum PdfAnnotationTarget {
     Uri(String),
-    Destination(String),
+    Destination(PdfDestinationId),
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +175,13 @@ struct PdfDestination {
     page_number: usize,
     left: f32,
     top: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum PdfDestinationId {
+    Bookmark(String),
+    NoteBody(String),
+    NoteReference(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -193,7 +202,7 @@ struct PdfRenderedPage {
 struct PdfAnnotationCollector<'a> {
     annotations: &'a mut Vec<PdfLinkAnnotation>,
     remaining: &'a mut usize,
-    destinations: &'a BTreeMap<String, PdfDestination>,
+    destinations: &'a BTreeMap<PdfDestinationId, PdfDestination>,
 }
 
 struct PdfImageCollector<'a> {
@@ -234,16 +243,16 @@ impl PdfLinkedText {
         self.push_link(text, PdfLinkTarget::Uri(uri.to_string()));
     }
 
-    fn push_destination_link(&mut self, text: &str, destination_id: &str) {
-        self.push_link(text, PdfLinkTarget::Destination(destination_id.to_string()));
+    fn push_destination_link(&mut self, text: &str, destination_id: PdfDestinationId) {
+        self.push_link(text, PdfLinkTarget::Destination(destination_id));
     }
 
     fn push_link(&mut self, text: &str, target: PdfLinkTarget) {
         self.push_run(text, Some(target));
     }
 
-    fn push_destination_marker(&mut self, destination_id: &str) {
-        self.pending_destinations.push(destination_id.to_string());
+    fn push_destination_marker(&mut self, destination_id: PdfDestinationId) {
+        self.pending_destinations.push(destination_id);
     }
 
     fn is_empty(&self) -> bool {
@@ -262,7 +271,7 @@ impl PdfLinkedText {
             .extend(other.pending_destinations.clone());
     }
 
-    fn take_pending_destinations(&mut self) -> Vec<String> {
+    fn take_pending_destinations(&mut self) -> Vec<PdfDestinationId> {
         std::mem::take(&mut self.pending_destinations)
     }
 
@@ -270,7 +279,7 @@ impl PdfLinkedText {
         &mut self,
         text: &str,
         target: Option<PdfLinkTarget>,
-        mut destinations: Vec<String>,
+        mut destinations: Vec<PdfDestinationId>,
     ) {
         if text.is_empty() {
             self.pending_destinations.append(&mut destinations);
@@ -506,7 +515,7 @@ struct PdfPageRenderContext<'a> {
     document: &'a Document,
     page: &'a PdfPage,
     total_pages: usize,
-    destinations: &'a BTreeMap<String, PdfDestination>,
+    destinations: &'a BTreeMap<PdfDestinationId, PdfDestination>,
     margin_left: f32,
     content_width: f32,
 }
@@ -913,24 +922,24 @@ fn pdf_flow_items(document: &Document) -> Result<Vec<PdfFlowItem>, ExportError> 
 
     let mut items = Vec::new();
     let bookmark_id_counts = collect_pdf_safe_bookmark_id_counts(&document.sections);
-    let context = PdfProjectionContext {
+    let note_references = collect_pdf_ordered_note_references(document);
+    let active_note_ids = note_references
+        .iter()
+        .map(|reference| reference.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut state = PdfProjectionState {
         bookmark_id_counts: &bookmark_id_counts,
+        active_note_ids: &active_note_ids,
+        emitted_note_reference_ids: BTreeSet::new(),
     };
     for (section_index, section) in document.sections.iter().enumerate() {
         for block in &section.blocks {
-            push_block_pdf_items(block, document, section_index, &context, &mut items);
+            push_block_pdf_items(block, document, section_index, &mut state, &mut items);
         }
     }
 
-    let mut notes = String::new();
-    push_notes_text(document, &mut notes);
     let note_section_index = document.sections.len().saturating_sub(1);
-    for line in notes.lines() {
-        items.push(PdfFlowItem::Text(PdfProjectedText {
-            section_index: note_section_index,
-            text: PdfLinkedText::from_plain(line),
-        }));
-    }
+    push_pdf_notes_items(document, &note_references, note_section_index, &mut items);
 
     if items.is_empty() {
         items.push(PdfFlowItem::Text(PdfProjectedText {
@@ -946,7 +955,7 @@ fn push_block_pdf_items(
     block: &Block,
     document: &Document,
     section_index: usize,
-    context: &PdfProjectionContext<'_>,
+    state: &mut PdfProjectionState<'_>,
     items: &mut Vec<PdfFlowItem>,
 ) {
     match block {
@@ -954,20 +963,17 @@ fn push_block_pdf_items(
         Block::Table(table) => {
             let column_widths = table.sanitized_column_widths().unwrap_or_default();
             for row in &table.rows {
-                let cells = row
-                    .cells
-                    .iter()
-                    .map(|cell| {
-                        let mut cell_text = PdfLinkedText::default();
-                        for block in &cell.blocks {
-                            cell_text.append(&pdf_block_linked_text(block, document, context));
-                        }
-                        PdfProjectedTableCell {
-                            text: cell_text.trimmed(),
-                            presentation: cell.presentation.clone(),
-                        }
-                    })
-                    .collect();
+                let mut cells = Vec::new();
+                for cell in &row.cells {
+                    let mut cell_text = PdfLinkedText::default();
+                    for block in &cell.blocks {
+                        cell_text.append(&pdf_block_linked_text(block, document, state));
+                    }
+                    cells.push(PdfProjectedTableCell {
+                        text: cell_text.trimmed(),
+                        presentation: cell.presentation.clone(),
+                    });
+                }
                 items.push(PdfFlowItem::TableRow(PdfProjectedTableRow {
                     section_index,
                     column_widths: column_widths.clone(),
@@ -1005,7 +1011,7 @@ fn push_block_pdf_items(
             }));
         }
         _ => {
-            let text = pdf_block_linked_text(block, document, context);
+            let text = pdf_block_linked_text(block, document, state);
             for line in text.split_lines() {
                 items.push(PdfFlowItem::Text(PdfProjectedText {
                     section_index,
@@ -1023,17 +1029,17 @@ fn push_block_pdf_items(
 fn pdf_block_linked_text(
     block: &Block,
     document: &Document,
-    context: &PdfProjectionContext<'_>,
+    state: &mut PdfProjectionState<'_>,
 ) -> PdfLinkedText {
     let mut output = PdfLinkedText::default();
     match block {
         Block::Paragraph(paragraph) => {
-            push_pdf_bookmark_destination(paragraph.bookmark_id.as_deref(), context, &mut output);
-            push_inlines_pdf_linked_text(&paragraph.inlines, document, &mut output)
+            push_pdf_bookmark_destination(paragraph.bookmark_id.as_deref(), state, &mut output);
+            push_inlines_pdf_linked_text(&paragraph.inlines, document, state, &mut output)
         }
         Block::Heading(heading) => {
-            push_pdf_bookmark_destination(heading.bookmark_id.as_deref(), context, &mut output);
-            push_inlines_pdf_linked_text(&heading.inlines, document, &mut output)
+            push_pdf_bookmark_destination(heading.bookmark_id.as_deref(), state, &mut output);
+            push_inlines_pdf_linked_text(&heading.inlines, document, state, &mut output)
         }
         Block::TableOfContents(table_of_contents) => {
             push_table_of_contents_pdf_linked_text(table_of_contents, &mut output);
@@ -1055,7 +1061,7 @@ fn pdf_block_linked_text(
                     output.push_plain("- ");
                 }
                 for block in &item.blocks {
-                    output.append(&pdf_block_linked_text(block, document, context));
+                    output.append(&pdf_block_linked_text(block, document, state));
                     output.push_plain("\n");
                 }
             }
@@ -1070,7 +1076,7 @@ fn pdf_block_linked_text(
                     first_cell = false;
                     let mut cell_text = PdfLinkedText::default();
                     for block in &cell.blocks {
-                        cell_text.append(&pdf_block_linked_text(block, document, context));
+                        cell_text.append(&pdf_block_linked_text(block, document, state));
                     }
                     output.append(&cell_text.trimmed());
                 }
@@ -1111,14 +1117,41 @@ fn push_inlines_pdf_text(inlines: &[Inline], document: &Document, output: &mut S
 fn push_inlines_pdf_linked_text(
     inlines: &[Inline],
     document: &Document,
+    state: &mut PdfProjectionState<'_>,
     output: &mut PdfLinkedText,
 ) {
     for inline in inlines {
+        if let Some(reference) = inline
+            .note_reference
+            .as_ref()
+            .and_then(|reference| validate_note_reference(reference).ok())
+        {
+            if state.active_note_ids.contains(&reference.id)
+                && document
+                    .notes
+                    .get(&reference.id)
+                    .is_some_and(|note| note.kind == reference.kind)
+            {
+                if state
+                    .emitted_note_reference_ids
+                    .insert(reference.id.clone())
+                {
+                    output.push_destination_marker(PdfDestinationId::NoteReference(
+                        reference.id.clone(),
+                    ));
+                }
+                output.push_destination_link(
+                    &reference.label,
+                    PdfDestinationId::NoteBody(reference.id.clone()),
+                );
+                continue;
+            }
+        }
         let text = inline_pdf_text(inline, document);
         match inline.link.as_deref().and_then(sanitize_pdf_link_target) {
             Some(PdfLinkTarget::Uri(uri)) => output.push_uri(&text, &uri),
             Some(PdfLinkTarget::Destination(destination_id)) => {
-                output.push_destination_link(&text, &destination_id)
+                output.push_destination_link(&text, destination_id)
             }
             None => output.push_plain(&text),
         }
@@ -1408,7 +1441,8 @@ fn push_table_of_contents_pdf_linked_text(
             output.push_plain("  ");
         }
         if let Some(target) = sanitize_bookmark_id(&entry.target_bookmark_id) {
-            output.push_destination_link(&entry.text, target);
+            output
+                .push_destination_link(&entry.text, PdfDestinationId::Bookmark(target.to_string()));
         } else {
             output.push_plain(&entry.text);
         }
@@ -1417,14 +1451,14 @@ fn push_table_of_contents_pdf_linked_text(
 
 fn push_pdf_bookmark_destination(
     bookmark_id: Option<&str>,
-    context: &PdfProjectionContext<'_>,
+    state: &PdfProjectionState<'_>,
     output: &mut PdfLinkedText,
 ) {
     let Some(bookmark_id) = bookmark_id.and_then(sanitize_bookmark_id) else {
         return;
     };
-    if context.bookmark_id_counts.get(bookmark_id).copied() == Some(1) {
-        output.push_destination_marker(bookmark_id);
+    if state.bookmark_id_counts.get(bookmark_id).copied() == Some(1) {
+        output.push_destination_marker(PdfDestinationId::Bookmark(bookmark_id.to_string()));
     }
 }
 
@@ -1474,6 +1508,166 @@ fn collect_pdf_safe_bookmark_id_counts_from_blocks(
             }
             Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
         }
+    }
+}
+
+fn collect_pdf_ordered_note_references(document: &Document) -> Vec<word_core::InlineNoteReference> {
+    let mut references = Vec::new();
+    let mut seen = BTreeSet::new();
+    for section in &document.sections {
+        collect_pdf_note_references_from_blocks(
+            document,
+            &section.blocks,
+            &mut references,
+            &mut seen,
+        );
+    }
+    references
+}
+
+fn collect_pdf_note_references_from_blocks(
+    document: &Document,
+    blocks: &[Block],
+    references: &mut Vec<word_core::InlineNoteReference>,
+    seen: &mut BTreeSet<String>,
+) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => collect_pdf_note_references_from_inlines(
+                document,
+                &paragraph.inlines,
+                references,
+                seen,
+            ),
+            Block::Heading(heading) => collect_pdf_note_references_from_inlines(
+                document,
+                &heading.inlines,
+                references,
+                seen,
+            ),
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_pdf_note_references_from_blocks(
+                        document,
+                        &item.blocks,
+                        references,
+                        seen,
+                    );
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_pdf_note_references_from_blocks(
+                            document,
+                            &cell.blocks,
+                            references,
+                            seen,
+                        );
+                    }
+                }
+            }
+            Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn collect_pdf_note_references_from_inlines(
+    document: &Document,
+    inlines: &[Inline],
+    references: &mut Vec<word_core::InlineNoteReference>,
+    seen: &mut BTreeSet<String>,
+) {
+    for inline in inlines {
+        let Some(reference) = inline
+            .note_reference
+            .as_ref()
+            .and_then(|reference| validate_note_reference(reference).ok())
+        else {
+            continue;
+        };
+        if document
+            .notes
+            .get(&reference.id)
+            .is_some_and(|note| note.kind == reference.kind)
+            && seen.insert(reference.id.clone())
+        {
+            references.push(reference);
+        }
+    }
+}
+
+fn push_pdf_notes_items(
+    document: &Document,
+    references: &[word_core::InlineNoteReference],
+    section_index: usize,
+    items: &mut Vec<PdfFlowItem>,
+) {
+    push_pdf_note_kind_items(
+        document,
+        references,
+        NoteKind::Footnote,
+        "Footnotes",
+        section_index,
+        items,
+    );
+    push_pdf_note_kind_items(
+        document,
+        references,
+        NoteKind::Endnote,
+        "Endnotes",
+        section_index,
+        items,
+    );
+}
+
+fn push_pdf_note_kind_items(
+    document: &Document,
+    references: &[word_core::InlineNoteReference],
+    kind: NoteKind,
+    title: &str,
+    section_index: usize,
+    items: &mut Vec<PdfFlowItem>,
+) {
+    let rows = references
+        .iter()
+        .filter(|reference| reference.kind == kind)
+        .filter_map(|reference| {
+            let note = document.notes.get(&reference.id)?;
+            if note.kind != reference.kind {
+                return None;
+            }
+            let mut row = PdfLinkedText::default();
+            row.push_destination_marker(PdfDestinationId::NoteBody(reference.id.clone()));
+            row.push_destination_link(
+                &format!("[{}]", reference.label),
+                PdfDestinationId::NoteReference(reference.id.clone()),
+            );
+            row.push_plain(" ");
+            row.push_plain(&note.body);
+            Some(row)
+        })
+        .collect::<Vec<_>>();
+
+    if rows.is_empty() {
+        return;
+    }
+
+    if !items.is_empty() {
+        items.push(PdfFlowItem::Text(PdfProjectedText {
+            section_index,
+            text: PdfLinkedText::default(),
+        }));
+    }
+    items.push(PdfFlowItem::Text(PdfProjectedText {
+        section_index,
+        text: PdfLinkedText::from_plain(title),
+    }));
+    for row in rows {
+        items.push(PdfFlowItem::Text(PdfProjectedText {
+            section_index,
+            text: row,
+        }));
     }
 }
 
@@ -2377,6 +2571,7 @@ fn sanitize_pdf_link_target(href: &str) -> Option<PdfLinkTarget> {
     if let Some(fragment) = safe_href.strip_prefix('#') {
         return sanitize_bookmark_id(fragment)
             .map(str::to_string)
+            .map(PdfDestinationId::Bookmark)
             .map(PdfLinkTarget::Destination);
     }
     if safe_href.len() > PDF_MAX_URI_BYTES
@@ -2968,8 +3163,8 @@ fn collect_pdf_destinations(
     document: &Document,
     pages: &[PdfPage],
     total_pages: usize,
-) -> BTreeMap<String, PdfDestination> {
-    let mut candidates: BTreeMap<String, Option<PdfDestination>> = BTreeMap::new();
+) -> BTreeMap<PdfDestinationId, PdfDestination> {
+    let mut candidates: BTreeMap<PdfDestinationId, Option<PdfDestination>> = BTreeMap::new();
     for page in pages {
         let page_width = mm_to_points(page.page_setup.width_mm);
         if page_width <= 0.0 {
@@ -3007,7 +3202,7 @@ fn collect_pdf_body_item_destinations(
     context: &PdfDestinationCollectionContext<'_>,
     item: &PdfPageBodyItem,
     cursor_y: &mut f32,
-    candidates: &mut BTreeMap<String, Option<PdfDestination>>,
+    candidates: &mut BTreeMap<PdfDestinationId, Option<PdfDestination>>,
 ) {
     match item {
         PdfPageBodyItem::TextLine(line) => {
@@ -3078,7 +3273,7 @@ fn collect_pdf_line_destinations(
     x: f32,
     baseline_y: f32,
     page_number: usize,
-    candidates: &mut BTreeMap<String, Option<PdfDestination>>,
+    candidates: &mut BTreeMap<PdfDestinationId, Option<PdfDestination>>,
 ) {
     let char_width = font_size * PDF_TEXT_WIDTH_FACTOR;
     for destination in &line.destinations {
@@ -3096,8 +3291,8 @@ fn collect_pdf_line_destinations(
 }
 
 fn push_pdf_destination_candidate(
-    candidates: &mut BTreeMap<String, Option<PdfDestination>>,
-    id: String,
+    candidates: &mut BTreeMap<PdfDestinationId, Option<PdfDestination>>,
+    id: PdfDestinationId,
     destination: PdfDestination,
 ) {
     match candidates.get_mut(&id) {
@@ -3114,7 +3309,7 @@ fn render_pdf_page(
     total_pages: usize,
     annotation_limit: usize,
     image_limit: usize,
-    destinations: &BTreeMap<String, PdfDestination>,
+    destinations: &BTreeMap<PdfDestinationId, PdfDestination>,
 ) -> PdfRenderedPage {
     let page_width = mm_to_points(page.page_setup.width_mm);
     let page_height = mm_to_points(page.page_setup.height_mm);
@@ -3595,7 +3790,7 @@ fn push_pdf_line_annotations(
     baseline_y: f32,
     annotations: &mut Vec<PdfLinkAnnotation>,
     remaining_annotations: &mut usize,
-    destinations: &BTreeMap<String, PdfDestination>,
+    destinations: &BTreeMap<PdfDestinationId, PdfDestination>,
 ) {
     if *remaining_annotations == 0 {
         return;
@@ -3634,7 +3829,7 @@ fn push_pdf_line_annotations(
 
 fn pdf_link_annotation_object(
     annotation: &PdfLinkAnnotation,
-    destinations: &BTreeMap<String, PdfDestination>,
+    destinations: &BTreeMap<PdfDestinationId, PdfDestination>,
     page_object_numbers: &BTreeMap<usize, usize>,
 ) -> String {
     let action = match &annotation.target {
@@ -3953,6 +4148,237 @@ mod tests {
         assert!(pdf
             .windows("Footnotes".len())
             .any(|window| window == b"Footnotes"));
+        let pdf_text = String::from_utf8_lossy(&pdf);
+        assert_eq!(pdf_link_annotation_count(&pdf_text), 4);
+        assert_eq!(pdf_dest_annotation_count(&pdf_text), 4);
+        assert!(!pdf_text.contains("/S /URI"));
+        assert!(!pdf_text.contains("note-source"));
+        assert!(!pdf_text.contains("note-end"));
+        assert!(pdf_contains(&pdf, "Source body"));
+        assert!(pdf_contains(&pdf, "Endnote body"));
+    }
+
+    #[test]
+    fn pdf_export_omits_note_links_when_note_body_is_outside_selected_page_range() {
+        let mut document = Document::new_untitled();
+        document.notes.insert(
+            "note-source".to_string(),
+            Note {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Source body".to_string(),
+            },
+        );
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![
+                    Inline::text("Claim"),
+                    Inline::note_reference(InlineNoteReference {
+                        id: "note-source".to_string(),
+                        kind: NoteKind::Footnote,
+                        label: "1".to_string(),
+                    }),
+                ],
+            }),
+            Block::PageBreak,
+        ];
+
+        let pdf = export_pdf_with_options(
+            &document,
+            PdfExportOptions {
+                page_range: Some(PdfPageRange { start: 1, end: 1 }),
+            },
+        )
+        .expect("valid page range should export");
+        let pdf_text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_page_object_count(&pdf_text), 1);
+        assert_eq!(pdf_link_annotation_count(&pdf_text), 0);
+        assert_eq!(pdf_dest_annotation_count(&pdf_text), 0);
+        assert!(!pdf_text.contains("/Annots ["));
+        assert!(!pdf_text.contains("note-source"));
+        assert!(pdf_contains(&pdf, "Claim"));
+        assert!(!pdf_contains(&pdf, "Footnotes"));
+        assert!(!pdf_contains(&pdf, "Source body"));
+    }
+
+    #[test]
+    fn pdf_export_omits_note_backlinks_when_reference_is_outside_selected_page_range() {
+        let mut document = Document::new_untitled();
+        document.notes.insert(
+            "note-source".to_string(),
+            Note {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Source body".to_string(),
+            },
+        );
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![
+                    Inline::text("Claim"),
+                    Inline::note_reference(InlineNoteReference {
+                        id: "note-source".to_string(),
+                        kind: NoteKind::Footnote,
+                        label: "1".to_string(),
+                    }),
+                ],
+            }),
+            Block::PageBreak,
+        ];
+
+        let pdf = export_pdf_with_options(
+            &document,
+            PdfExportOptions {
+                page_range: Some(PdfPageRange { start: 2, end: 2 }),
+            },
+        )
+        .expect("valid page range should export");
+        let pdf_text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_page_object_count(&pdf_text), 1);
+        assert_eq!(pdf_link_annotation_count(&pdf_text), 0);
+        assert_eq!(pdf_dest_annotation_count(&pdf_text), 0);
+        assert!(!pdf_text.contains("/Annots ["));
+        assert!(!pdf_text.contains("note-source"));
+        assert!(!pdf_contains(&pdf, "Claim"));
+        assert!(pdf_contains(&pdf, "Footnotes"));
+        assert!(pdf_contains(&pdf, "Source body"));
+    }
+
+    #[test]
+    fn pdf_export_keeps_mismatched_duplicate_note_reference_plain() {
+        let mut document = Document::new_untitled();
+        document.notes.insert(
+            "note-source".to_string(),
+            Note {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Source body".to_string(),
+            },
+        );
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: "body".into(),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Claim"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-source".to_string(),
+                    kind: NoteKind::Footnote,
+                    label: "1".to_string(),
+                }),
+                Inline::text(" later"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-source".to_string(),
+                    kind: NoteKind::Endnote,
+                    label: "i".to_string(),
+                }),
+            ],
+        })];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let pdf_text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_link_annotation_count(&pdf_text), 2);
+        assert_eq!(pdf_dest_annotation_count(&pdf_text), 2);
+        assert!(!pdf_text.contains("note-source"));
+        assert!(pdf_contains(&pdf, "Claim1 lateri"));
+        assert!(pdf_contains(&pdf, "Footnotes"));
+        assert!(pdf_contains(&pdf, "Source body"));
+    }
+
+    #[test]
+    fn pdf_export_links_later_valid_note_reference_after_mismatched_duplicate() {
+        let mut document = Document::new_untitled();
+        document.notes.insert(
+            "note-source".to_string(),
+            Note {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Source body".to_string(),
+            },
+        );
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: "body".into(),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Bad"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-source".to_string(),
+                    kind: NoteKind::Endnote,
+                    label: "i".to_string(),
+                }),
+                Inline::text(" good"),
+                Inline::note_reference(InlineNoteReference {
+                    id: "note-source".to_string(),
+                    kind: NoteKind::Footnote,
+                    label: "1".to_string(),
+                }),
+            ],
+        })];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let pdf_text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_link_annotation_count(&pdf_text), 2);
+        assert_eq!(pdf_dest_annotation_count(&pdf_text), 2);
+        assert!(!pdf_text.contains("note-source"));
+        assert!(pdf_contains(&pdf, "Badi good1"));
+        assert!(pdf_contains(&pdf, "Footnotes"));
+        assert!(pdf_contains(&pdf, "Source body"));
+    }
+
+    #[test]
+    fn pdf_export_note_destinations_do_not_collide_with_matching_bookmark_ids() {
+        let mut document = Document::new_untitled();
+        document.notes.insert(
+            "note-source".to_string(),
+            Note {
+                id: "note-source".to_string(),
+                kind: NoteKind::Footnote,
+                body: "Source body".to_string(),
+            },
+        );
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![
+                    linked_inline("Jump bookmark", "#note-body-note-source"),
+                    Inline::text(" Claim"),
+                    Inline::note_reference(InlineNoteReference {
+                        id: "note-source".to_string(),
+                        kind: NoteKind::Footnote,
+                        label: "1".to_string(),
+                    }),
+                ],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("note-body-note-source".to_string()),
+                level: 2,
+                inlines: vec![Inline::text("Bookmark target")],
+            }),
+        ];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let pdf_text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_link_annotation_count(&pdf_text), 3);
+        assert_eq!(pdf_dest_annotation_count(&pdf_text), 3);
+        assert!(!pdf_text.contains("note-source"));
+        assert!(pdf_contains(&pdf, "Jump bookmark"));
+        assert!(pdf_contains(&pdf, "Claim1"));
+        assert!(pdf_contains(&pdf, "Bookmark target"));
+        assert!(pdf_contains(&pdf, "Source body"));
     }
 
     #[test]
