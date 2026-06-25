@@ -26,11 +26,10 @@ Add a bounded local-first autocorrect and smart typing MVP for user-typed editor
 - Transforms are bounded to small collapsed input events and skip URL-like tokens for typo and dash behavior.
 - The typo replacement map is intentionally small, local, and allowlisted.
 - List triggers are limited to top-level empty paragraphs that contain only the typed trigger marker.
-- The current settings path follows the existing local settings model and does not introduce a new settings file format.
+- Sprint 043 later adds sanitized persistent app-data storage for this setting while keeping it out of documents and exports.
 
 ## Deferred
 
-- Persistent settings storage across app restarts.
 - Locale-specific smart quote rules and larger dictionaries.
 - Rich autocorrect management UI, custom replacement entries, undo grouping polish, and per-document language behavior.
 - Smart typing while track-changes recording is active.

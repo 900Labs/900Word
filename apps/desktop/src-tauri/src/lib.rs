@@ -23,6 +23,8 @@ const RECOVERY_SNAPSHOTS_PER_DOCUMENT: usize = 3;
 const MAX_RECOVERY_SNAPSHOTS: usize = 20;
 const MAX_RECOVERY_TOKEN_LEN: usize = 96;
 const USER_DICTIONARY_DIR_NAME: &str = "dictionaries";
+const SETTINGS_FILE_NAME: &str = "settings.json";
+const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
 const FALLBACK_LANGUAGE_TAG: &str = "en-US";
 
 #[derive(Debug)]
@@ -70,9 +72,13 @@ struct RecentEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
     pub telemetry_enabled: bool,
+    #[serde(default)]
     pub language_tag: String,
+    #[serde(default)]
     pub ui_locale: String,
+    #[serde(default)]
     pub high_contrast: bool,
     #[serde(default)]
     pub large_toolbar: bool,
@@ -533,12 +539,20 @@ fn list_dictionaries(app: tauri::AppHandle) -> Result<Vec<DictionaryInfo>, Strin
 }
 
 #[tauri::command]
-fn get_settings() -> Settings {
-    Settings::default()
+fn get_settings(app: tauri::AppHandle) -> Settings {
+    let Ok(path) = settings_path(&app) else {
+        return Settings::default();
+    };
+    load_settings_from_path(&path)
 }
 
 #[tauri::command]
-fn update_settings(settings: Settings) -> Settings {
+fn update_settings(settings: Settings, app: tauri::AppHandle) -> Result<Settings, String> {
+    let path = settings_path(&app)?;
+    save_settings_to_path(&path, settings)
+}
+
+fn sanitize_settings(settings: Settings) -> Settings {
     Settings {
         telemetry_enabled: false,
         language_tag: normalize_language_setting(&settings.language_tag),
@@ -548,6 +562,67 @@ fn update_settings(settings: Settings) -> Settings {
         reduced_motion: settings.reduced_motion,
         low_resource: settings.low_resource,
         smart_typing: settings.smart_typing,
+    }
+}
+
+fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join(SETTINGS_FILE_NAME))
+        .map_err(|_| "settings storage is unavailable".to_string())
+}
+
+fn load_settings_from_path(path: &Path) -> Settings {
+    try_load_settings_from_path(path).unwrap_or_default()
+}
+
+fn try_load_settings_from_path(path: &Path) -> Result<Settings, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Settings::default());
+        }
+        Err(error) => return Err(safe_settings_io_error(error)),
+    };
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() || metadata.len() > MAX_SETTINGS_BYTES {
+        return Ok(Settings::default());
+    }
+
+    let bytes = fs::read(path).map_err(safe_settings_io_error)?;
+    serde_json::from_slice::<Settings>(&bytes)
+        .map(sanitize_settings)
+        .map_err(|_| "settings could not be read".to_string())
+}
+
+fn save_settings_to_path(path: &Path, settings: Settings) -> Result<Settings, String> {
+    let settings = sanitize_settings(settings);
+    ensure_private_settings_parent(path)?;
+    let bytes = serde_json::to_vec_pretty(&settings)
+        .map_err(|_| "settings could not be saved".to_string())?;
+    write_bytes_atomically(path, &bytes, true)
+        .map_err(|_| "settings could not be saved".to_string())?;
+    Ok(settings)
+}
+
+fn ensure_private_settings_parent(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .ok_or_else(|| "settings storage is unavailable".to_string())?;
+    fs::create_dir_all(parent).map_err(safe_settings_io_error)?;
+    let metadata = fs::symlink_metadata(parent).map_err(safe_settings_io_error)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err("settings storage is unavailable".to_string());
+    }
+    set_private_directory_permissions(parent)
+        .map_err(|_| "settings storage is unavailable".to_string())
+}
+
+fn safe_settings_io_error(error: std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+        _ => "settings storage is unavailable".to_string(),
     }
 }
 
@@ -597,14 +672,34 @@ fn ensure_user_dictionary_dir(path: &Path) -> Result<(), String> {
 }
 
 fn normalize_language_setting(language_tag: &str) -> String {
-    if language_tag.trim().is_empty() {
-        FALLBACK_LANGUAGE_TAG.to_string()
+    let normalized = language_tag.trim().replace('_', "-");
+    if is_safe_language_tag(&normalized) {
+        normalized
     } else {
-        language_tag.replace('_', "-")
+        FALLBACK_LANGUAGE_TAG.to_string()
     }
 }
 
+fn is_safe_language_tag(language_tag: &str) -> bool {
+    if language_tag.is_empty() || language_tag.len() > 35 {
+        return false;
+    }
+    let mut segments = language_tag.split('-');
+    let Some(primary) = segments.next() else {
+        return false;
+    };
+    if !(2..=3).contains(&primary.len()) || !primary.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return false;
+    }
+    segments.all(|segment| {
+        !segment.is_empty()
+            && segment.len() <= 8
+            && segment.chars().all(|ch| ch.is_ascii_alphanumeric())
+    })
+}
+
 fn normalize_ui_locale(ui_locale: &str) -> String {
+    let ui_locale = ui_locale.trim();
     match ui_locale {
         "en-US" | "es-ES" | "ar" => ui_locale.to_string(),
         _ => "en-US".to_string(),
@@ -2367,7 +2462,7 @@ mod tests {
 
     #[test]
     fn settings_never_enable_telemetry() {
-        let settings = update_settings(Settings {
+        let settings = sanitize_settings(Settings {
             telemetry_enabled: true,
             language_tag: "en".to_string(),
             ui_locale: "unknown".to_string(),
@@ -2396,6 +2491,197 @@ mod tests {
         assert!(settings.smart_typing.smart_dashes);
         assert!(settings.smart_typing.typo_replacements);
         assert!(settings.smart_typing.list_triggers);
+    }
+
+    #[test]
+    fn persisted_settings_keep_telemetry_disabled_after_save_and_load() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("settings.json");
+
+        let saved = save_settings_to_path(
+            &path,
+            Settings {
+                telemetry_enabled: true,
+                language_tag: "en_US".to_string(),
+                ui_locale: "es-ES".to_string(),
+                high_contrast: true,
+                large_toolbar: false,
+                reduced_motion: true,
+                low_resource: false,
+                smart_typing: SmartTypingSettings::default(),
+            },
+        )
+        .expect("settings should save");
+        let loaded = load_settings_from_path(&path);
+
+        assert!(!saved.telemetry_enabled);
+        assert!(!loaded.telemetry_enabled);
+        assert_eq!(loaded.language_tag, "en-US");
+        assert_eq!(loaded.ui_locale, "es-ES");
+        assert!(loaded.high_contrast);
+        assert!(loaded.reduced_motion);
+        let raw = std::fs::read_to_string(&path).expect("settings should be readable");
+        assert!(raw.contains("\"telemetry_enabled\": false"));
+    }
+
+    #[test]
+    fn settings_round_trip_through_temp_settings_path() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("settings.json");
+
+        save_settings_to_path(
+            &path,
+            Settings {
+                telemetry_enabled: false,
+                language_tag: "de-DE".to_string(),
+                ui_locale: "ar".to_string(),
+                high_contrast: true,
+                large_toolbar: true,
+                reduced_motion: true,
+                low_resource: true,
+                smart_typing: SmartTypingSettings {
+                    capitalize_sentences: true,
+                    smart_quotes: true,
+                    smart_dashes: false,
+                    typo_replacements: true,
+                    list_triggers: false,
+                },
+            },
+        )
+        .expect("settings should save");
+
+        let loaded = load_settings_from_path(&path);
+        assert_eq!(loaded.language_tag, "de-DE");
+        assert_eq!(loaded.ui_locale, "ar");
+        assert!(loaded.high_contrast);
+        assert!(loaded.large_toolbar);
+        assert!(loaded.reduced_motion);
+        assert!(loaded.low_resource);
+        assert!(loaded.smart_typing.capitalize_sentences);
+        assert!(loaded.smart_typing.smart_quotes);
+        assert!(!loaded.smart_typing.smart_dashes);
+        assert!(loaded.smart_typing.typo_replacements);
+        assert!(!loaded.smart_typing.list_triggers);
+    }
+
+    #[test]
+    fn malformed_settings_fall_back_to_defaults_without_path_details() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("private-client-settings.json");
+        std::fs::write(&path, "{ not valid settings json")
+            .expect("malformed settings should write");
+
+        let loaded = load_settings_from_path(&path);
+        let err = try_load_settings_from_path(&path).expect_err("malformed settings should error");
+
+        assert!(!loaded.telemetry_enabled);
+        assert_eq!(loaded.language_tag, FALLBACK_LANGUAGE_TAG);
+        assert_eq!(loaded.ui_locale, "en-US");
+        assert_eq!(err, "settings could not be read");
+        assert!(!err.contains(dir.path().to_string_lossy().as_ref()));
+        assert!(!err.contains("private-client-settings"));
+    }
+
+    #[test]
+    fn oversized_settings_file_falls_back_to_defaults() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, vec![b' '; MAX_SETTINGS_BYTES as usize + 1])
+            .expect("oversized settings should write");
+
+        let loaded = load_settings_from_path(&path);
+        let direct =
+            try_load_settings_from_path(&path).expect("oversized settings should load default");
+
+        assert!(!loaded.telemetry_enabled);
+        assert_eq!(loaded.language_tag, FALLBACK_LANGUAGE_TAG);
+        assert_eq!(loaded.ui_locale, "en-US");
+        assert!(!direct.telemetry_enabled);
+        assert_eq!(direct.language_tag, FALLBACK_LANGUAGE_TAG);
+        assert_eq!(direct.ui_locale, "en-US");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_settings_file_falls_back_to_defaults() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let target = dir.path().join("real-settings.json");
+        let symlink_path = dir.path().join("settings.json");
+        save_settings_to_path(
+            &target,
+            Settings {
+                telemetry_enabled: true,
+                language_tag: "de-DE".to_string(),
+                ui_locale: "es-ES".to_string(),
+                high_contrast: true,
+                large_toolbar: true,
+                reduced_motion: true,
+                low_resource: true,
+                smart_typing: SmartTypingSettings {
+                    capitalize_sentences: true,
+                    smart_quotes: true,
+                    smart_dashes: true,
+                    typo_replacements: true,
+                    list_triggers: true,
+                },
+            },
+        )
+        .expect("target settings should save");
+        symlink(&target, &symlink_path).expect("settings symlink should write");
+
+        let loaded = load_settings_from_path(&symlink_path);
+        let direct = try_load_settings_from_path(&symlink_path)
+            .expect("symlinked settings should load default");
+
+        assert_eq!(loaded.language_tag, FALLBACK_LANGUAGE_TAG);
+        assert_eq!(loaded.ui_locale, "en-US");
+        assert!(!loaded.high_contrast);
+        assert_eq!(direct.language_tag, FALLBACK_LANGUAGE_TAG);
+        assert_eq!(direct.ui_locale, "en-US");
+        assert!(!direct.high_contrast);
+    }
+
+    #[test]
+    fn path_like_language_settings_fall_back_before_save() {
+        let settings = sanitize_settings(Settings {
+            telemetry_enabled: false,
+            language_tag: "folder/private-draft.odt".to_string(),
+            ui_locale: "settings/private".to_string(),
+            high_contrast: false,
+            large_toolbar: false,
+            reduced_motion: false,
+            low_resource: false,
+            smart_typing: SmartTypingSettings::default(),
+        });
+
+        assert_eq!(settings.language_tag, FALLBACK_LANGUAGE_TAG);
+        assert_eq!(settings.ui_locale, "en-US");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_save_uses_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("settings.json");
+
+        save_settings_to_path(&path, Settings::default()).expect("settings should save");
+
+        let dir_mode = std::fs::metadata(dir.path())
+            .expect("dir metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&path)
+            .expect("settings metadata should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
     }
 
     #[test]
