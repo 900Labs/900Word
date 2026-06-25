@@ -21,3 +21,4 @@ All notable changes to 900Word are tracked here.
 - Image resize UX with a direct selected-image drag handle that updates durable bounded scale metadata, plus generic oversized-image import guidance that avoids path and filename disclosure.
 - Expanded generated starter template gallery for formal letters, school reports, project reports, resumes, meeting minutes, memos, invoice-style documents, and flyers using only placeholder-safe document model blocks.
 - Editor viewport controls for Draft/Page Layout, Fit Width/100%/custom zoom, and simple show/hide rulers without adding document metadata or deterministic pagination claims.
+- Keyboard shortcut polish with tested command normalization, guarded form-field behavior, visible shortcut hints, replace focus, Cmd/Ctrl+Y redo, and PDF export shortcut routing through the existing export path flow.

@@ -176,3 +176,12 @@ Status: complete.
 - Add lightweight zoom controls for Fit Width, 100%, and bounded custom zoom.
 - Add simple visual ruler guides derived from the current page setup and margins.
 - Keep the controls as editor viewport behavior only; deterministic pagination, page-break preview, and print layout fidelity remain deferred.
+
+## Sprint 021: Keyboard Shortcut Polish
+
+Status: complete.
+
+- Add a tested desktop shortcut helper for platform-neutral labels, command matching, and input-target guards.
+- Preserve existing authoring and file shortcuts while adding replace, redo via Cmd/Ctrl+Y, and Export PDF handling through the existing export path flow.
+- Surface shortcut hints in File menu commands, export controls, and toolbar tooltips.
+- Keep comments, custom shortcut preferences, telemetry, dependencies, file-format changes, and model changes deferred.
