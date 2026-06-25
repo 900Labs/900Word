@@ -32,6 +32,18 @@ describe('i18n', () => {
     expect(translate('es-ES', 'accessibilityAndPerformance')).toBe('Accesibilidad y rendimiento');
   });
 
+  it('labels the offline dictionary manager in supported locales', () => {
+    expect(translate('en-US', 'dictionaryManager')).toBe('Dictionary manager');
+    expect(translate('en-US', 'dictionaryOfflineState')).toContain('Offline/local only');
+    expect(translate('es-ES', 'dictionarySourceUserFolder')).toBe(
+      'Carpeta local de diccionarios del usuario'
+    );
+    expect(translate('ar', 'dictionaryRefresh')).toBe('Refresh');
+    expect(translate('en-US', 'dictionaryUnavailableOption', { languageTag: 'sv-SE' })).toBe(
+      'Unavailable (sv-SE)'
+    );
+  });
+
   it('labels expanded stats estimates clearly', () => {
     expect(translate('en-US', 'estimatedPages')).toBe('Estimated pages');
     expect(translate('en-US', 'statsEstimateNote')).toContain('estimates');

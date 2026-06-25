@@ -15,6 +15,7 @@ export type UiStringKey =
   | 'addRowAbove'
   | 'addRowBelow'
   | 'after'
+  | 'activeDictionary'
   | 'alignCenter'
   | 'alignJustify'
   | 'alignLeft'
@@ -63,6 +64,23 @@ export type UiStringKey =
   | 'deleteRow'
   | 'deleteTable'
   | 'dictionary'
+  | 'dictionaryLanguageTag'
+  | 'dictionaryLicense'
+  | 'dictionaryListRefreshed'
+  | 'dictionaryManager'
+  | 'dictionaryNoneInstalled'
+  | 'dictionaryOfflineState'
+  | 'dictionaryRefresh'
+  | 'dictionarySourceAppBundle'
+  | 'dictionarySourceBundled'
+  | 'dictionarySourceBundledUser'
+  | 'dictionarySourceLabel'
+  | 'dictionarySourceLocal'
+  | 'dictionarySourceType'
+  | 'dictionarySourceUser'
+  | 'dictionarySourceUserFolder'
+  | 'dictionaryUnavailable'
+  | 'dictionaryUnavailableOption'
   | 'differentFirstPage'
   | 'documentActions'
   | 'documentFormat'
@@ -156,6 +174,7 @@ export type UiStringKey =
   | 'insertOrUpdateTableOfContents'
   | 'insertTable'
   | 'insertTableShort'
+  | 'installedDictionaries'
   | 'ignoreAll'
   | 'ignoreOnce'
   | 'italic'
@@ -368,6 +387,7 @@ const english: UiStrings = {
   addRowAbove: 'Add row above',
   addRowBelow: 'Add row below',
   after: 'After',
+  activeDictionary: 'Active dictionary',
   alignCenter: 'Align center',
   alignJustify: 'Justify',
   alignLeft: 'Align left',
@@ -416,6 +436,24 @@ const english: UiStrings = {
   deleteRow: 'Delete row',
   deleteTable: 'Delete table',
   dictionary: 'Dictionary',
+  dictionaryLanguageTag: 'Language tag',
+  dictionaryLicense: 'License',
+  dictionaryListRefreshed: 'Dictionary list refreshed',
+  dictionaryManager: 'Dictionary manager',
+  dictionaryNoneInstalled: 'No installed dictionaries found.',
+  dictionaryOfflineState: 'Offline/local only. Dictionaries are read from the app bundle and local user dictionary folder.',
+  dictionaryRefresh: 'Refresh',
+  dictionarySourceAppBundle: 'App bundle',
+  dictionarySourceBundled: 'Bundled',
+  dictionarySourceBundledUser: 'Bundled + user',
+  dictionarySourceLabel: 'Source',
+  dictionarySourceLocal: 'Local dictionary',
+  dictionarySourceType: 'Source type',
+  dictionarySourceUser: 'User',
+  dictionarySourceUserFolder: 'Local user dictionary folder',
+  dictionaryUnavailable:
+    'The selected dictionary is not installed. Spell checks fall back to the bundled English bootstrap dictionary when needed.',
+  dictionaryUnavailableOption: 'Unavailable ({languageTag})',
   differentFirstPage: 'Different first page',
   documentActions: 'Document actions',
   documentFormat: 'Document format',
@@ -509,6 +547,7 @@ const english: UiStrings = {
   insertOrUpdateTableOfContents: 'Insert/update contents',
   insertTable: 'Insert table',
   insertTableShort: 'Insert',
+  installedDictionaries: 'Installed dictionaries',
   ignoreAll: 'Ignore all',
   ignoreOnce: 'Ignore once',
   italic: 'Italic',
@@ -706,6 +745,7 @@ const spanish: Partial<UiStrings> = {
   autosave: 'Autoguardar',
   autosaveUpdated: 'Borrador de recuperacion actualizado',
   accessibilityAndPerformance: 'Accesibilidad y rendimiento',
+  activeDictionary: 'Diccionario activo',
   blocks: 'Bloques',
   bold: 'Negrita',
   bottom: 'Inferior',
@@ -715,6 +755,24 @@ const spanish: Partial<UiStrings> = {
   checkSpelling: 'Revisar ortografia',
   custom: 'Personalizado',
   dictionary: 'Diccionario',
+  dictionaryLanguageTag: 'Etiqueta de idioma',
+  dictionaryLicense: 'Licencia',
+  dictionaryListRefreshed: 'Lista de diccionarios actualizada',
+  dictionaryManager: 'Administrador de diccionarios',
+  dictionaryNoneInstalled: 'No hay diccionarios instalados.',
+  dictionaryOfflineState: 'Los diccionarios son solo locales; no hay descargas, nube ni red.',
+  dictionaryRefresh: 'Actualizar',
+  dictionarySourceAppBundle: 'Paquete de la app',
+  dictionarySourceBundled: 'Incluido',
+  dictionarySourceBundledUser: 'Incluido y usuario',
+  dictionarySourceLabel: 'Origen',
+  dictionarySourceLocal: 'Diccionario local',
+  dictionarySourceType: 'Tipo de origen',
+  dictionarySourceUser: 'Usuario',
+  dictionarySourceUserFolder: 'Carpeta local de diccionarios del usuario',
+  dictionaryUnavailable:
+    'El diccionario seleccionado no esta instalado. La revision ortografica usara el diccionario ingles incluido cuando sea necesario.',
+  dictionaryUnavailableOption: 'No disponible ({languageTag})',
   documentActions: 'Acciones del documento',
   documentFormat: 'Formato de documento',
   documentOpened: 'Documento abierto',
@@ -751,6 +809,7 @@ const spanish: Partial<UiStrings> = {
   imageScale: 'Escala',
   imageUpdated: 'Imagen actualizada',
   insertImage: 'Insertar imagen',
+  installedDictionaries: 'Diccionarios instalados',
   italic: 'Cursiva',
   language: 'Idioma',
   largeToolbar: 'Barra y controles grandes',
