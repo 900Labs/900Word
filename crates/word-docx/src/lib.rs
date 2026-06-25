@@ -446,6 +446,7 @@ struct ParagraphProperties {
     list_marker: Option<ListMarker>,
     toc_role: Option<TocParagraphRole>,
     bookmark_id: Option<String>,
+    page_break_before: bool,
     format: ParagraphFormat,
 }
 
@@ -3127,6 +3128,11 @@ fn parse_paragraph(
         }
     }
 
+    if properties.page_break_before && !allow_page_break_blocks {
+        warn_unsupported_docx_page_break(state.warnings);
+        properties.page_break_before = false;
+    }
+
     comment_state.finish_paragraph(state.anchored_comment_ids, state.warnings);
     Ok(paragraph_content_to_blocks(content, &properties))
 }
@@ -3163,6 +3169,13 @@ fn parse_paragraph_properties(
             {
                 properties.format.alignment =
                     attr_value(&start, b"val", DOCUMENT_XML)?.and_then(docx_paragraph_alignment);
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"pageBreakBefore" => {
+                properties.page_break_before = truthy_word_bool(&start, DOCUMENT_XML)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"pageBreakBefore" => {
+                properties.page_break_before = truthy_word_bool(&start, DOCUMENT_XML)?;
+                skip_element(reader, b"pageBreakBefore", DOCUMENT_XML)?;
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"spacing" => {
                 apply_docx_paragraph_spacing(&start, &mut properties.format)?;
@@ -3454,10 +3467,7 @@ fn parse_paragraph_run(
                         );
                         content.push(ParagraphContent::PageBreak);
                     } else {
-                        state.warnings.warn(
-                            "docx_page_break_degraded",
-                            "Unsupported DOCX page breaks were imported as visible spacing",
-                        );
+                        warn_unsupported_docx_page_break(state.warnings);
                         text.push('\n');
                     }
                 } else {
@@ -3481,10 +3491,7 @@ fn parse_paragraph_run(
                         );
                         content.push(ParagraphContent::PageBreak);
                     } else {
-                        state.warnings.warn(
-                            "docx_page_break_degraded",
-                            "Unsupported DOCX page breaks were imported as visible spacing",
-                        );
+                        warn_unsupported_docx_page_break(state.warnings);
                         text.push('\n');
                     }
                 } else {
@@ -4442,6 +4449,9 @@ fn paragraph_content_to_blocks(
 ) -> Vec<ParsedBlock> {
     let mut blocks = Vec::new();
     let mut inlines = Vec::new();
+    if properties.page_break_before {
+        blocks.push(parsed_page_break_block());
+    }
     for item in content {
         match item {
             ParagraphContent::Inline(inline) => inlines.push(*inline),
@@ -4457,13 +4467,7 @@ fn paragraph_content_to_blocks(
             }
             ParagraphContent::PageBreak => {
                 flush_paragraph_block(&mut blocks, &mut inlines, properties);
-                blocks.push(ParsedBlock {
-                    block: Block::PageBreak,
-                    list_marker: None,
-                    toc_role: None,
-                    counts_for_cell_alignment: false,
-                    paragraph_alignment: None,
-                });
+                blocks.push(parsed_page_break_block());
             }
         }
     }
@@ -4483,6 +4487,23 @@ fn paragraph_content_to_blocks(
         });
     }
     blocks
+}
+
+fn parsed_page_break_block() -> ParsedBlock {
+    ParsedBlock {
+        block: Block::PageBreak,
+        list_marker: None,
+        toc_role: None,
+        counts_for_cell_alignment: false,
+        paragraph_alignment: None,
+    }
+}
+
+fn warn_unsupported_docx_page_break(warnings: &mut WarningSink) {
+    warnings.warn(
+        "docx_page_break_degraded",
+        "Unsupported DOCX page breaks were ignored or imported as visible spacing",
+    );
 }
 
 fn flush_paragraph_block(
@@ -7627,6 +7648,87 @@ mod tests {
     }
 
     #[test]
+    fn imports_docx_page_break_before_as_block() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p><w:r><w:t>Before</w:t></w:r></w:p>
+  <w:p>
+    <w:pPr><w:pageBreakBefore/></w:pPr>
+    <w:r><w:t>After</w:t></w:r>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("page-break-before should import");
+
+        assert_eq!(document.sections[0].blocks.len(), 3);
+        let Block::Paragraph(before) = &document.sections[0].blocks[0] else {
+            panic!("before paragraph should import");
+        };
+        assert_eq!(before.inlines[0].text, "Before");
+        assert!(matches!(document.sections[0].blocks[1], Block::PageBreak));
+        let Block::Paragraph(after) = &document.sections[0].blocks[2] else {
+            panic!("after paragraph should import");
+        };
+        assert_eq!(after.inlines[0].text, "After");
+    }
+
+    #[test]
+    fn ignores_falsy_docx_page_break_before() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:pPr><w:pageBreakBefore w:val="0"/></w:pPr>
+    <w:r><w:t>No break</w:t></w:r>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("falsy page-break-before should import");
+
+        assert_eq!(document.sections[0].blocks.len(), 1);
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+        assert_eq!(paragraph.inlines[0].text, "No break");
+    }
+
+    #[test]
+    fn skips_nested_content_inside_started_docx_page_break_before() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:pPr>
+      <w:pageBreakBefore>
+        <w:jc w:val="center"/>
+      </w:pageBreakBefore>
+    </w:pPr>
+    <w:r><w:t>After</w:t></w:r>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("started page-break-before should import");
+
+        assert_eq!(document.sections[0].blocks.len(), 2);
+        assert!(matches!(document.sections[0].blocks[0], Block::PageBreak));
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[1] else {
+            panic!("paragraph should import");
+        };
+        assert_eq!(paragraph.inlines[0].text, "After");
+        assert_eq!(paragraph.format.alignment, None);
+    }
+
+    #[test]
     fn degrades_tracked_docx_page_break_runs_to_visible_spacing() {
         let bytes = synthetic_docx(
             r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -7682,6 +7784,42 @@ mod tests {
             panic!("cell paragraph should import");
         };
         assert_eq!(paragraph.inlines[0].text, "Cell before\nCell after");
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_page_break_degraded"));
+    }
+
+    #[test]
+    fn degrades_table_cell_docx_page_break_before() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:tbl>
+    <w:tr>
+      <w:tc>
+        <w:p>
+          <w:pPr><w:pageBreakBefore/></w:pPr>
+          <w:r><w:t>Cell text</w:t></w:r>
+        </w:p>
+      </w:tc>
+    </w:tr>
+  </w:tbl>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("cell page-break-before should degrade");
+
+        let Block::Table(table) = &document.sections[0].blocks[0] else {
+            panic!("table should import");
+        };
+        assert_eq!(table.rows[0].cells[0].blocks.len(), 1);
+        let Block::Paragraph(paragraph) = &table.rows[0].cells[0].blocks[0] else {
+            panic!("cell paragraph should import");
+        };
+        assert_eq!(paragraph.inlines[0].text, "Cell text");
         assert!(document
             .warnings
             .iter()
