@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use thiserror::Error;
 use word_core::{
-    collect_ordered_note_references, Block, Document, Heading, ImageBlock, Inline, InlineMark,
-    NoteKind, PageField, PageRegion, PageRegionBlock, PageSetup, Paragraph, ParagraphFormat,
-    Section, Style, StyleKind, TableOfContents,
+    collect_ordered_note_references, Block, Document, Heading, ImageAlignment, ImageBlock, Inline,
+    InlineMark, NoteKind, PageField, PageRegion, PageRegionBlock, PageSetup, Paragraph,
+    ParagraphFormat, Section, Style, StyleKind, TableOfContents,
 };
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
@@ -13,6 +13,16 @@ const PDF_LEADING: f32 = 14.0;
 const PDF_REGION_LEADING: f32 = 12.0;
 const PDF_MIN_MARGIN_POINTS: f32 = 24.0;
 const PDF_REGION_GAP_POINTS: f32 = 10.0;
+const PDF_TABLE_FONT_SIZE: f32 = 9.5;
+const PDF_TABLE_LEADING: f32 = 11.5;
+const PDF_TABLE_CELL_PADDING: f32 = 3.5;
+const PDF_TABLE_ROW_GAP_POINTS: f32 = 3.0;
+const PDF_FIGURE_FONT_SIZE: f32 = 9.5;
+const PDF_FIGURE_LEADING: f32 = 11.5;
+const PDF_FIGURE_PADDING: f32 = 6.0;
+const PDF_FIGURE_BASE_HEIGHT: f32 = 72.0;
+const PDF_FIGURE_MIN_HEIGHT: f32 = 48.0;
+const PDF_FIGURE_GAP_POINTS: f32 = 4.0;
 const PDF_PAGE_NUMBER_TOKEN: &str = "\u{e000}page-number\u{e001}";
 const PDF_PAGE_COUNT_TOKEN: &str = "\u{e000}page-count\u{e001}";
 const PDF_DATE_TOKEN: &str = "\u{e000}date\u{e001}";
@@ -80,15 +90,79 @@ pub fn export_pdf_with_options(
 }
 
 #[derive(Debug, Clone)]
-struct PdfProjectedLine {
+struct PdfProjectedText {
     section_index: usize,
     text: String,
 }
 
 #[derive(Debug, Clone)]
+struct PdfProjectedTableRow {
+    section_index: usize,
+    cells: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PdfProjectedFigure {
+    section_index: usize,
+    alt_text: Option<String>,
+    caption: Option<String>,
+    alignment: ImageAlignment,
+    scale_percent: u16,
+}
+
+#[derive(Debug, Clone)]
 enum PdfFlowItem {
-    Line(PdfProjectedLine),
+    Text(PdfProjectedText),
+    TableRow(PdfProjectedTableRow),
+    Figure(PdfProjectedFigure),
     PageBreak { section_index: usize },
+}
+
+#[derive(Debug, Clone)]
+enum PdfPageBodyItem {
+    TextLine(String),
+    TableRow(PdfTableRowLayout),
+    Figure(PdfFigureLayout),
+}
+
+impl PdfPageBodyItem {
+    fn height(&self) -> f32 {
+        match self {
+            PdfPageBodyItem::TextLine(_) => PDF_LEADING,
+            PdfPageBodyItem::TableRow(row) => row.block_height,
+            PdfPageBodyItem::Figure(figure) => figure.block_height,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PdfTableRowLayout {
+    cells: Vec<PdfTableCellLayout>,
+    row_height: f32,
+    block_height: f32,
+}
+
+#[derive(Debug, Clone)]
+struct PdfTableCellLayout {
+    lines: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PdfFigureLayout {
+    lines: Vec<String>,
+    alignment: ImageAlignment,
+    width: f32,
+    box_height: f32,
+    block_height: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PdfPageRenderContext<'a> {
+    document: &'a Document,
+    page: &'a PdfPage,
+    total_pages: usize,
+    margin_left: f32,
+    content_width: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +171,7 @@ struct PdfPage {
     section_index: usize,
     section_page_number: usize,
     page_setup: PageSetup,
-    body_lines: Vec<String>,
+    body_items: Vec<PdfPageBodyItem>,
 }
 
 fn paginate_pdf(document: &Document) -> Result<Vec<PdfPage>, ExportError> {
@@ -108,44 +182,73 @@ fn paginate_pdf(document: &Document) -> Result<Vec<PdfPage>, ExportError> {
     let flow = pdf_flow_items(document)?;
     let mut pages: Vec<PdfPage> = Vec::new();
     let mut current_section_index = 0;
-    let mut current_lines = Vec::new();
+    let mut current_body_items = Vec::new();
+    let mut current_body_height = 0.0;
 
     for item in flow {
         match item {
-            PdfFlowItem::Line(line) => {
-                if !current_lines.is_empty() && line.section_index != current_section_index {
-                    push_pdf_page(
+            PdfFlowItem::Text(text) => {
+                flush_pdf_page_if_section_changes(
+                    document,
+                    &mut pages,
+                    &mut current_section_index,
+                    &mut current_body_items,
+                    &mut current_body_height,
+                    text.section_index,
+                );
+                let page_setup = &document.sections[text.section_index].page;
+                let max_chars = pdf_wrap_char_limit(page_setup);
+                for wrapped in wrap_pdf_line(&text.text, max_chars) {
+                    push_pdf_body_item(
                         document,
                         &mut pages,
                         current_section_index,
-                        std::mem::take(&mut current_lines),
+                        &mut current_body_items,
+                        &mut current_body_height,
+                        PdfPageBodyItem::TextLine(wrapped),
                     );
                 }
-                current_section_index = line.section_index;
-                let page_setup = &document.sections[line.section_index].page;
-                let max_chars = pdf_wrap_char_limit(page_setup);
-                for wrapped in wrap_pdf_line(&line.text, max_chars) {
-                    let section_page_number = pages
-                        .iter()
-                        .filter(|page| page.section_index == line.section_index)
-                        .count()
-                        + 1;
-                    let capacity = pdf_body_line_capacity(
-                        document,
-                        line.section_index,
-                        section_page_number,
-                        pages.len() + 1,
-                    );
-                    if current_lines.len() >= capacity {
-                        push_pdf_page(
-                            document,
-                            &mut pages,
-                            current_section_index,
-                            std::mem::take(&mut current_lines),
-                        );
-                    }
-                    current_lines.push(wrapped);
-                }
+            }
+            PdfFlowItem::TableRow(row) => {
+                flush_pdf_page_if_section_changes(
+                    document,
+                    &mut pages,
+                    &mut current_section_index,
+                    &mut current_body_items,
+                    &mut current_body_height,
+                    row.section_index,
+                );
+                let content_width = pdf_content_width(&document.sections[row.section_index].page);
+                let layout = layout_pdf_table_row(&row, content_width);
+                push_pdf_body_item(
+                    document,
+                    &mut pages,
+                    current_section_index,
+                    &mut current_body_items,
+                    &mut current_body_height,
+                    PdfPageBodyItem::TableRow(layout),
+                );
+            }
+            PdfFlowItem::Figure(figure) => {
+                flush_pdf_page_if_section_changes(
+                    document,
+                    &mut pages,
+                    &mut current_section_index,
+                    &mut current_body_items,
+                    &mut current_body_height,
+                    figure.section_index,
+                );
+                let content_width =
+                    pdf_content_width(&document.sections[figure.section_index].page);
+                let layout = layout_pdf_figure(&figure, content_width);
+                push_pdf_body_item(
+                    document,
+                    &mut pages,
+                    current_section_index,
+                    &mut current_body_items,
+                    &mut current_body_height,
+                    PdfPageBodyItem::Figure(layout),
+                );
             }
             PdfFlowItem::PageBreak { section_index } => {
                 current_section_index = section_index;
@@ -153,24 +256,192 @@ fn paginate_pdf(document: &Document) -> Result<Vec<PdfPage>, ExportError> {
                     document,
                     &mut pages,
                     current_section_index,
-                    std::mem::take(&mut current_lines),
+                    std::mem::take(&mut current_body_items),
                 );
+                current_body_height = 0.0;
             }
         }
     }
 
-    if pages.is_empty() || !current_lines.is_empty() {
-        push_pdf_page(document, &mut pages, current_section_index, current_lines);
+    if pages.is_empty() || !current_body_items.is_empty() {
+        push_pdf_page(
+            document,
+            &mut pages,
+            current_section_index,
+            current_body_items,
+        );
     }
 
     Ok(pages)
+}
+
+fn flush_pdf_page_if_section_changes(
+    document: &Document,
+    pages: &mut Vec<PdfPage>,
+    current_section_index: &mut usize,
+    current_body_items: &mut Vec<PdfPageBodyItem>,
+    current_body_height: &mut f32,
+    next_section_index: usize,
+) {
+    if !current_body_items.is_empty() && next_section_index != *current_section_index {
+        push_pdf_page(
+            document,
+            pages,
+            *current_section_index,
+            std::mem::take(current_body_items),
+        );
+        *current_body_height = 0.0;
+    }
+    *current_section_index = next_section_index;
+}
+
+fn push_pdf_body_item(
+    document: &Document,
+    pages: &mut Vec<PdfPage>,
+    section_index: usize,
+    current_body_items: &mut Vec<PdfPageBodyItem>,
+    current_body_height: &mut f32,
+    item: PdfPageBodyItem,
+) {
+    let section_page_number = pages
+        .iter()
+        .filter(|page| page.section_index == section_index)
+        .count()
+        + 1;
+    let body_height = pdf_body_height_points(
+        document,
+        section_index,
+        section_page_number,
+        pages.len() + 1,
+    );
+    if item.height() > body_height {
+        for chunk in split_oversized_pdf_body_item(item, body_height) {
+            push_pdf_body_item(
+                document,
+                pages,
+                section_index,
+                current_body_items,
+                current_body_height,
+                chunk,
+            );
+        }
+        return;
+    }
+    let item_height = item.height();
+    if !current_body_items.is_empty() && *current_body_height + item_height > body_height {
+        push_pdf_page(
+            document,
+            pages,
+            section_index,
+            std::mem::take(current_body_items),
+        );
+        *current_body_height = 0.0;
+    }
+    *current_body_height += item_height;
+    current_body_items.push(item);
+}
+
+fn split_oversized_pdf_body_item(item: PdfPageBodyItem, body_height: f32) -> Vec<PdfPageBodyItem> {
+    match item {
+        PdfPageBodyItem::TableRow(row) => split_oversized_pdf_table_row(row, body_height)
+            .into_iter()
+            .map(PdfPageBodyItem::TableRow)
+            .collect(),
+        PdfPageBodyItem::Figure(figure) => split_oversized_pdf_figure(figure, body_height)
+            .into_iter()
+            .map(PdfPageBodyItem::Figure)
+            .collect(),
+        PdfPageBodyItem::TextLine(line) => vec![PdfPageBodyItem::TextLine(line)],
+    }
+}
+
+fn split_oversized_pdf_table_row(
+    row: PdfTableRowLayout,
+    body_height: f32,
+) -> Vec<PdfTableRowLayout> {
+    let usable_text_height =
+        (body_height - PDF_TABLE_ROW_GAP_POINTS - PDF_TABLE_CELL_PADDING * 2.0)
+            .max(PDF_TABLE_LEADING);
+    let max_lines = (usable_text_height / PDF_TABLE_LEADING).floor().max(1.0) as usize;
+    let total_lines = row
+        .cells
+        .iter()
+        .map(|cell| cell.lines.len())
+        .max()
+        .unwrap_or(1);
+    if total_lines <= max_lines {
+        return vec![row];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < total_lines {
+        let end = (start + max_lines).min(total_lines);
+        let cells = row
+            .cells
+            .iter()
+            .map(|cell| {
+                let lines = if start < cell.lines.len() {
+                    cell.lines[start..end.min(cell.lines.len())].to_vec()
+                } else {
+                    vec![String::new()]
+                };
+                PdfTableCellLayout { lines }
+            })
+            .collect::<Vec<_>>();
+        let max_chunk_lines = cells.iter().map(|cell| cell.lines.len()).max().unwrap_or(1);
+        let row_height = max_chunk_lines as f32 * PDF_TABLE_LEADING + PDF_TABLE_CELL_PADDING * 2.0;
+        chunks.push(PdfTableRowLayout {
+            cells,
+            row_height,
+            block_height: row_height + PDF_TABLE_ROW_GAP_POINTS,
+        });
+        start = end;
+    }
+    chunks
+}
+
+fn split_oversized_pdf_figure(figure: PdfFigureLayout, body_height: f32) -> Vec<PdfFigureLayout> {
+    let max_box_height = (body_height - PDF_FIGURE_GAP_POINTS).max(PDF_FIGURE_MIN_HEIGHT);
+    let usable_text_height = (max_box_height - PDF_FIGURE_PADDING * 2.0).max(PDF_FIGURE_LEADING);
+    let max_lines = (usable_text_height / PDF_FIGURE_LEADING).floor().max(1.0) as usize;
+    if figure.lines.len() <= max_lines && figure.box_height <= max_box_height {
+        return vec![figure];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < figure.lines.len() {
+        let end = (start + max_lines).min(figure.lines.len());
+        let lines = figure.lines[start..end].to_vec();
+        let text_height = lines.len() as f32 * PDF_FIGURE_LEADING + PDF_FIGURE_PADDING * 2.0;
+        let box_height = figure.box_height.min(max_box_height).max(text_height);
+        chunks.push(PdfFigureLayout {
+            lines,
+            alignment: figure.alignment,
+            width: figure.width,
+            box_height,
+            block_height: box_height + PDF_FIGURE_GAP_POINTS,
+        });
+        start = end;
+    }
+    if chunks.is_empty() {
+        chunks.push(PdfFigureLayout {
+            lines: vec![String::new()],
+            alignment: figure.alignment,
+            width: figure.width,
+            box_height: figure.box_height.min(max_box_height),
+            block_height: figure.box_height.min(max_box_height) + PDF_FIGURE_GAP_POINTS,
+        });
+    }
+    chunks
 }
 
 fn push_pdf_page(
     document: &Document,
     pages: &mut Vec<PdfPage>,
     section_index: usize,
-    body_lines: Vec<String>,
+    body_items: Vec<PdfPageBodyItem>,
 ) {
     let section_page_number = pages
         .iter()
@@ -182,7 +453,7 @@ fn push_pdf_page(
         section_index,
         section_page_number,
         page_setup: document.sections[section_index].page.clone(),
-        body_lines,
+        body_items,
     });
 }
 
@@ -215,14 +486,14 @@ fn pdf_flow_items(document: &Document) -> Result<Vec<PdfFlowItem>, ExportError> 
     push_notes_text(document, &mut notes);
     let note_section_index = document.sections.len().saturating_sub(1);
     for line in notes.lines() {
-        items.push(PdfFlowItem::Line(PdfProjectedLine {
+        items.push(PdfFlowItem::Text(PdfProjectedText {
             section_index: note_section_index,
             text: line.to_string(),
         }));
     }
 
     if items.is_empty() {
-        items.push(PdfFlowItem::Line(PdfProjectedLine {
+        items.push(PdfFlowItem::Text(PdfProjectedText {
             section_index: 0,
             text: String::new(),
         }));
@@ -239,16 +510,63 @@ fn push_block_pdf_items(
 ) {
     match block {
         Block::PageBreak => items.push(PdfFlowItem::PageBreak { section_index }),
+        Block::Table(table) => {
+            for row in &table.rows {
+                let cells = row
+                    .cells
+                    .iter()
+                    .map(|cell| {
+                        let mut cell_text = String::new();
+                        for block in &cell.blocks {
+                            push_block_pdf_text(block, document, &mut cell_text);
+                        }
+                        cell_text.trim().to_string()
+                    })
+                    .collect();
+                items.push(PdfFlowItem::TableRow(PdfProjectedTableRow {
+                    section_index,
+                    cells,
+                }));
+            }
+            items.push(PdfFlowItem::Text(PdfProjectedText {
+                section_index,
+                text: String::new(),
+            }));
+        }
+        Block::Image(image) => {
+            items.push(PdfFlowItem::Figure(PdfProjectedFigure {
+                section_index,
+                alt_text: image
+                    .alt_text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                caption: image
+                    .presentation
+                    .caption
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                alignment: image.presentation.alignment,
+                scale_percent: image.presentation.scale_percent,
+            }));
+            items.push(PdfFlowItem::Text(PdfProjectedText {
+                section_index,
+                text: String::new(),
+            }));
+        }
         _ => {
             let mut text = String::new();
             push_block_pdf_text(block, document, &mut text);
             for line in text.lines() {
-                items.push(PdfFlowItem::Line(PdfProjectedLine {
+                items.push(PdfFlowItem::Text(PdfProjectedText {
                     section_index,
                     text: line.to_string(),
                 }));
             }
-            items.push(PdfFlowItem::Line(PdfProjectedLine {
+            items.push(PdfFlowItem::Text(PdfProjectedText {
                 section_index,
                 text: String::new(),
             }));
@@ -344,12 +662,29 @@ fn inline_pdf_text(inline: &Inline, document: &Document) -> String {
     }
 }
 
-fn pdf_body_line_capacity(
+fn pdf_body_height_points(
     document: &Document,
     section_index: usize,
     section_page_number: usize,
     next_global_page_number: usize,
-) -> usize {
+) -> f32 {
+    let (top, bottom) = pdf_body_vertical_bounds(
+        document,
+        section_index,
+        section_page_number,
+        next_global_page_number,
+        1,
+    );
+    (top - bottom).max(PDF_LEADING)
+}
+
+fn pdf_body_vertical_bounds(
+    document: &Document,
+    section_index: usize,
+    section_page_number: usize,
+    page_number: usize,
+    total_pages: usize,
+) -> (f32, f32) {
     let page_setup = &document.sections[section_index].page;
     let page_height = mm_to_points(page_setup.height_mm);
     let margin_top = mm_to_points(page_setup.margin_top_mm).max(PDF_MIN_MARGIN_POINTS);
@@ -358,31 +693,38 @@ fn pdf_body_line_capacity(
         document,
         section_index,
         section_page_number,
-        next_global_page_number,
-        1,
+        page_number,
+        total_pages,
     )
     .len();
     let footer_lines = pdf_footer_lines(
         document,
         section_index,
         section_page_number,
-        next_global_page_number,
-        1,
+        page_number,
+        total_pages,
     )
     .len();
     let header_height = pdf_region_height(header_lines);
     let footer_height = pdf_region_height(footer_lines);
     let top = page_height - margin_top - header_height - pdf_region_gap(header_lines);
     let bottom = margin_bottom + footer_height + pdf_region_gap(footer_lines);
-    ((top - bottom) / PDF_LEADING).floor().max(1.0) as usize
+    (top, bottom)
 }
 
-fn pdf_wrap_char_limit(page_setup: &PageSetup) -> usize {
+fn pdf_content_width(page_setup: &PageSetup) -> f32 {
     let page_width = mm_to_points(page_setup.width_mm);
     let margin_left = mm_to_points(page_setup.margin_left_mm).max(PDF_MIN_MARGIN_POINTS);
     let margin_right = mm_to_points(page_setup.margin_right_mm).max(PDF_MIN_MARGIN_POINTS);
-    let content_width = (page_width - margin_left - margin_right).max(PDF_FONT_SIZE * 20.0);
-    (content_width / (PDF_FONT_SIZE * 0.52)).floor().max(20.0) as usize
+    (page_width - margin_left - margin_right).max(PDF_FONT_SIZE * 20.0)
+}
+
+fn pdf_wrap_char_limit(page_setup: &PageSetup) -> usize {
+    pdf_wrap_char_limit_for_width(pdf_content_width(page_setup), PDF_FONT_SIZE, 20)
+}
+
+fn pdf_wrap_char_limit_for_width(width: f32, font_size: f32, minimum: usize) -> usize {
+    (width / (font_size * 0.52)).floor().max(minimum as f32) as usize
 }
 
 fn pdf_region_height(line_count: usize) -> f32 {
@@ -1229,9 +1571,26 @@ fn wrap_pdf_line(line: &str, limit: usize) -> Vec<String> {
     }
     let mut current = String::new();
     for word in line.split_whitespace() {
-        if current.is_empty() {
+        let word_len = word.chars().count();
+        if word_len > limit {
+            if !current.is_empty() {
+                chunks.push(current);
+                current = String::new();
+            }
+            let mut word_chunk = String::new();
+            for ch in word.chars() {
+                if word_chunk.chars().count() >= limit {
+                    chunks.push(word_chunk);
+                    word_chunk = String::new();
+                }
+                word_chunk.push(ch);
+            }
+            if !word_chunk.is_empty() {
+                current = word_chunk;
+            }
+        } else if current.is_empty() {
             current.push_str(word);
-        } else if current.chars().count() + 1 + word.chars().count() <= limit {
+        } else if current.chars().count() + 1 + word_len <= limit {
             current.push(' ');
             current.push_str(word);
         } else {
@@ -1243,6 +1602,72 @@ fn wrap_pdf_line(line: &str, limit: usize) -> Vec<String> {
         chunks.push(current);
     }
     chunks
+}
+
+fn wrap_pdf_text_lines(text: &str, limit: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        lines.extend(wrap_pdf_line(line, limit));
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn layout_pdf_table_row(row: &PdfProjectedTableRow, content_width: f32) -> PdfTableRowLayout {
+    let cell_count = row.cells.len().max(1);
+    let cell_width = content_width / cell_count as f32;
+    let text_width = (cell_width - PDF_TABLE_CELL_PADDING * 2.0).max(PDF_TABLE_FONT_SIZE * 4.0);
+    let max_chars = pdf_wrap_char_limit_for_width(text_width, PDF_TABLE_FONT_SIZE, 6);
+    let cells = if row.cells.is_empty() {
+        vec![PdfTableCellLayout {
+            lines: vec![String::new()],
+        }]
+    } else {
+        row.cells
+            .iter()
+            .map(|text| PdfTableCellLayout {
+                lines: wrap_pdf_text_lines(text, max_chars),
+            })
+            .collect()
+    };
+    let max_lines = cells.iter().map(|cell| cell.lines.len()).max().unwrap_or(1);
+    let row_height = max_lines as f32 * PDF_TABLE_LEADING + PDF_TABLE_CELL_PADDING * 2.0;
+    PdfTableRowLayout {
+        cells,
+        row_height,
+        block_height: row_height + PDF_TABLE_ROW_GAP_POINTS,
+    }
+}
+
+fn layout_pdf_figure(figure: &PdfProjectedFigure, content_width: f32) -> PdfFigureLayout {
+    let scale = figure.scale_percent.clamp(25, 200);
+    let width_ratio = (scale as f32 / 100.0).min(1.0);
+    let width = (content_width * width_ratio).clamp(content_width * 0.25, content_width);
+    let text_width = (width - PDF_FIGURE_PADDING * 2.0).max(PDF_FIGURE_FONT_SIZE * 6.0);
+    let max_chars = pdf_wrap_char_limit_for_width(text_width, PDF_FIGURE_FONT_SIZE, 8);
+    let mut lines = Vec::new();
+    if let Some(alt_text) = figure.alt_text.as_deref() {
+        lines.extend(wrap_pdf_text_lines(alt_text, max_chars));
+    }
+    if let Some(caption) = figure.caption.as_deref() {
+        lines.extend(wrap_pdf_text_lines(caption, max_chars));
+    }
+    if lines.is_empty() {
+        lines.push("Image".to_string());
+    }
+    let scaled_height =
+        (PDF_FIGURE_BASE_HEIGHT * (scale as f32 / 100.0)).max(PDF_FIGURE_MIN_HEIGHT);
+    let text_height = lines.len() as f32 * PDF_FIGURE_LEADING + PDF_FIGURE_PADDING * 2.0;
+    let box_height = scaled_height.max(text_height);
+    PdfFigureLayout {
+        lines,
+        alignment: figure.alignment,
+        width,
+        box_height,
+        block_height: box_height + PDF_FIGURE_GAP_POINTS,
+    }
 }
 
 fn pdf_header_lines(
@@ -1388,6 +1813,8 @@ fn pdf_page_stream(document: &Document, page: &PdfPage, total_pages: usize) -> S
     let margin_left = mm_to_points(page.page_setup.margin_left_mm).max(PDF_MIN_MARGIN_POINTS);
     let margin_top = mm_to_points(page.page_setup.margin_top_mm).max(PDF_MIN_MARGIN_POINTS);
     let margin_bottom = mm_to_points(page.page_setup.margin_bottom_mm).max(PDF_MIN_MARGIN_POINTS);
+    let margin_right = mm_to_points(page.page_setup.margin_right_mm).max(PDF_MIN_MARGIN_POINTS);
+    let content_width = (page_width - margin_left - margin_right).max(PDF_FONT_SIZE * 20.0);
     let header_lines = pdf_header_lines(
         document,
         page.section_index,
@@ -1402,10 +1829,14 @@ fn pdf_page_stream(document: &Document, page: &PdfPage, total_pages: usize) -> S
         page.page_number,
         total_pages,
     );
-    let header_height = pdf_region_height(header_lines.len());
     let footer_height = pdf_region_height(footer_lines.len());
-    let body_start_y =
-        page_height - margin_top - header_height - pdf_region_gap(header_lines.len());
+    let (body_start_y, body_bottom_y) = pdf_body_vertical_bounds(
+        document,
+        page.section_index,
+        page.section_page_number,
+        page.page_number,
+        total_pages,
+    );
     let footer_start_y =
         (margin_bottom + footer_height - PDF_REGION_LEADING).max(PDF_MIN_MARGIN_POINTS / 2.0);
 
@@ -1421,19 +1852,17 @@ fn pdf_page_stream(document: &Document, page: &PdfPage, total_pages: usize) -> S
         );
     }
 
-    let body_lines = page
-        .body_lines
-        .iter()
-        .map(|line| resolve_pdf_page_fields(line, page.page_number, total_pages, document))
-        .collect::<Vec<_>>();
-    push_pdf_text_block(
-        &mut stream,
-        PDF_FONT_SIZE,
-        PDF_LEADING,
+    let mut cursor_y = body_start_y.max(body_bottom_y + PDF_LEADING);
+    let render_context = PdfPageRenderContext {
+        document,
+        page,
+        total_pages,
         margin_left,
-        body_start_y.max(margin_bottom + footer_height + PDF_LEADING),
-        &body_lines,
-    );
+        content_width,
+    };
+    for item in &page.body_items {
+        push_pdf_body_item_stream(&mut stream, &render_context, &mut cursor_y, item);
+    }
 
     if !footer_lines.is_empty() {
         push_pdf_text_block(
@@ -1450,6 +1879,116 @@ fn pdf_page_stream(document: &Document, page: &PdfPage, total_pages: usize) -> S
         stream
     } else {
         String::new()
+    }
+}
+
+fn push_pdf_body_item_stream(
+    stream: &mut String,
+    context: &PdfPageRenderContext<'_>,
+    cursor_y: &mut f32,
+    item: &PdfPageBodyItem,
+) {
+    match item {
+        PdfPageBodyItem::TextLine(line) => {
+            let resolved = resolve_pdf_page_fields(
+                line,
+                context.page.page_number,
+                context.total_pages,
+                context.document,
+            );
+            push_pdf_text_block(
+                stream,
+                PDF_FONT_SIZE,
+                PDF_LEADING,
+                context.margin_left,
+                *cursor_y,
+                &[resolved],
+            );
+            *cursor_y -= PDF_LEADING;
+        }
+        PdfPageBodyItem::TableRow(row) => {
+            let top_y = *cursor_y + PDF_TABLE_CELL_PADDING;
+            let bottom_y = top_y - row.row_height;
+            let cell_count = row.cells.len().max(1);
+            let cell_width = context.content_width / cell_count as f32;
+            stream.push_str("q 0.6 w 0.45 G\n");
+            for cell_index in 0..cell_count {
+                let x = context.margin_left + cell_index as f32 * cell_width;
+                stream.push_str(&format!(
+                    "{x:.1} {bottom_y:.1} {cell_width:.1} {:.1} re S\n",
+                    row.row_height
+                ));
+            }
+            stream.push_str("Q\n");
+            for (cell_index, cell) in row.cells.iter().enumerate() {
+                let x =
+                    context.margin_left + cell_index as f32 * cell_width + PDF_TABLE_CELL_PADDING;
+                let y = top_y - PDF_TABLE_CELL_PADDING - PDF_TABLE_FONT_SIZE;
+                let lines = resolve_pdf_text_lines(
+                    &cell.lines,
+                    context.page.page_number,
+                    context.total_pages,
+                    context.document,
+                );
+                push_pdf_text_block(stream, PDF_TABLE_FONT_SIZE, PDF_TABLE_LEADING, x, y, &lines);
+            }
+            *cursor_y -= row.block_height;
+        }
+        PdfPageBodyItem::Figure(figure) => {
+            let top_y = *cursor_y + PDF_FIGURE_PADDING / 2.0;
+            let bottom_y = top_y - figure.box_height;
+            let x = pdf_aligned_x(
+                context.margin_left,
+                context.content_width,
+                figure.width,
+                figure.alignment,
+            );
+            stream.push_str(&format!(
+                "q 0.7 w 0.35 G {x:.1} {bottom_y:.1} {:.1} {:.1} re S Q\n",
+                figure.width, figure.box_height
+            ));
+            let y = top_y - PDF_FIGURE_PADDING - PDF_FIGURE_FONT_SIZE;
+            let lines = resolve_pdf_text_lines(
+                &figure.lines,
+                context.page.page_number,
+                context.total_pages,
+                context.document,
+            );
+            push_pdf_text_block(
+                stream,
+                PDF_FIGURE_FONT_SIZE,
+                PDF_FIGURE_LEADING,
+                x + PDF_FIGURE_PADDING,
+                y,
+                &lines,
+            );
+            *cursor_y -= figure.block_height;
+        }
+    }
+}
+
+fn resolve_pdf_text_lines(
+    lines: &[String],
+    page_number: usize,
+    total_pages: usize,
+    document: &Document,
+) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| resolve_pdf_page_fields(line, page_number, total_pages, document))
+        .collect()
+}
+
+fn pdf_aligned_x(
+    margin_left: f32,
+    content_width: f32,
+    item_width: f32,
+    alignment: ImageAlignment,
+) -> f32 {
+    match alignment {
+        ImageAlignment::Center => margin_left + (content_width - item_width).max(0.0) / 2.0,
+        ImageAlignment::Right => margin_left + (content_width - item_width).max(0.0),
+        ImageAlignment::Inline | ImageAlignment::Left => margin_left,
     }
 }
 
@@ -1969,6 +2508,142 @@ mod tests {
     }
 
     #[test]
+    fn pdf_export_renders_table_borders_and_cell_text() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Table(Table {
+            rows: vec![
+                TableRow {
+                    cells: vec![
+                        TableCell {
+                            blocks: vec![paragraph_block("Header cell")],
+                        },
+                        TableCell {
+                            blocks: vec![paragraph_block("Wrapped table cell text")],
+                        },
+                    ],
+                },
+                TableRow {
+                    cells: vec![
+                        TableCell {
+                            blocks: vec![paragraph_block("First value")],
+                        },
+                        TableCell {
+                            blocks: vec![paragraph_block("Second value")],
+                        },
+                    ],
+                },
+            ],
+        })];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_page_object_count(&text), 1);
+        assert!(text.contains("/Type /Pages"));
+        assert!(text.contains(" re S"));
+        assert!(text.contains("0.6 w"));
+        assert!(pdf_contains(&pdf, "Header cell"));
+        assert!(pdf_contains(&pdf, "Wrapped table cell text"));
+        assert!(pdf_contains(&pdf, "Second value"));
+    }
+
+    #[test]
+    fn pdf_export_paginates_structured_table_and_figure_blocks() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page = compact_test_page();
+        let mut rows = Vec::new();
+        for index in 0..12 {
+            rows.push(TableRow {
+                cells: vec![TableCell {
+                    blocks: vec![paragraph_block(format!("Structured row {index}"))],
+                }],
+            });
+        }
+        document.sections[0].blocks = vec![
+            Block::Table(Table { rows }),
+            Block::Image(ImageBlock {
+                asset_id: "structured-figure-asset".to_string(),
+                presentation: ImagePresentation {
+                    alignment: ImageAlignment::Center,
+                    scale_percent: 75,
+                    caption: Some("Structured figure caption".to_string()),
+                },
+                alt_text: Some("Structured figure alt".to_string()),
+            }),
+        ];
+
+        let pages = paginate_pdf(&document).expect("pdf pagination should succeed");
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert!(pages.len() > 1);
+        assert_eq!(pdf_page_object_count(&text), pages.len());
+        assert!(pdf_contains(&pdf, "Structured row 0"));
+        assert!(pdf_contains(&pdf, "Structured row 11"));
+        assert!(pdf_contains(&pdf, "Structured figure alt"));
+        assert!(pdf_contains(&pdf, "Structured figure caption"));
+    }
+
+    #[test]
+    fn pdf_export_splits_oversized_table_rows_across_pages() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page = compact_test_page();
+        let long_cell_text = (0..120)
+            .map(|index| format!("cell{index:03}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        document.sections[0].blocks = vec![Block::Table(Table {
+            rows: vec![TableRow {
+                cells: vec![TableCell {
+                    blocks: vec![paragraph_block(long_cell_text)],
+                }],
+            }],
+        })];
+
+        let pages = paginate_pdf(&document).expect("pdf pagination should succeed");
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert!(pages.len() > 1);
+        assert_eq!(pdf_page_object_count(&text), pages.len());
+        assert!(text.contains(" re S"));
+        assert!(pdf_contains(&pdf, "cell000"));
+        assert!(pdf_contains(&pdf, "cell119"));
+    }
+
+    #[test]
+    fn pdf_export_splits_oversized_figure_placeholders_across_pages() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page = compact_test_page();
+        let long_alt_text = (0..120)
+            .map(|index| format!("figure{index:03}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "private-source/figure.png".to_string(),
+            presentation: ImagePresentation {
+                alignment: ImageAlignment::Right,
+                scale_percent: 100,
+                caption: Some("Public caption".to_string()),
+            },
+            alt_text: Some(long_alt_text),
+        })];
+
+        let pages = paginate_pdf(&document).expect("pdf pagination should succeed");
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert!(pages.len() > 1);
+        assert_eq!(pdf_page_object_count(&text), pages.len());
+        assert!(text.contains(" re S"));
+        assert!(pdf_contains(&pdf, "figure000"));
+        assert!(pdf_contains(&pdf, "figure119"));
+        assert!(pdf_contains(&pdf, "Public caption"));
+        assert!(!text.contains("private-source"));
+        assert!(!text.contains("figure.png"));
+    }
+
+    #[test]
     fn pdf_export_honors_explicit_page_breaks() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![
@@ -2157,19 +2832,23 @@ mod tests {
     #[test]
     fn pdf_export_omits_private_metadata_and_local_paths() {
         let mut document = Document::new_untitled();
-        document.meta.title = "private-client-name".to_string();
+        let private_asset_id = ["file://", "local-source/", "figure.png"].concat();
+        let private_original_name = "private-source-name.png";
+        let private_user = "operator-name";
+        let private_host = "workstation-name";
+        document.meta.title = format!("{private_user} {private_host}");
         document.assets.insert(
-            "image-1.png".to_string(),
+            private_asset_id.clone(),
             word_core::AssetRef {
-                id: "image-1.png".to_string(),
+                id: private_asset_id.clone(),
                 media_type: "image/png".to_string(),
                 byte_len: 8,
                 bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
-                original_name: Some("private-client-name.png".to_string()),
+                original_name: Some(private_original_name.to_string()),
             },
         );
         document.sections[0].blocks = vec![Block::Image(ImageBlock {
-            asset_id: "image-1.png".to_string(),
+            asset_id: private_asset_id.clone(),
             presentation: ImagePresentation {
                 alignment: ImageAlignment::Center,
                 scale_percent: 100,
@@ -2181,10 +2860,15 @@ mod tests {
         let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
         let text = String::from_utf8_lossy(&pdf);
 
-        assert!(!text.contains("private-client-name"));
+        assert!(!text.contains(&private_asset_id));
+        assert!(!text.contains(private_original_name));
+        assert!(!text.contains(private_user));
+        assert!(!text.contains(private_host));
+        assert!(!text.contains("local-source"));
         assert!(!text.contains("file://"));
         assert!(!text.contains("CreationDate"));
         assert!(!text.contains("Producer"));
+        assert!(text.contains(" re S"));
         assert!(pdf_contains(&pdf, "Generic image"));
         assert!(pdf_contains(&pdf, "Generic caption"));
     }
@@ -2212,6 +2896,15 @@ mod tests {
             margin_bottom_mm: 10,
             margin_left_mm: 10,
         }
+    }
+
+    fn paragraph_block(text: impl Into<String>) -> Block {
+        Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: "body".into(),
+            format: Default::default(),
+            inlines: vec![Inline::text(text)],
+        })
     }
 
     fn pdf_page_object_count(pdf: &str) -> usize {
