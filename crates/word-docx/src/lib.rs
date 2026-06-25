@@ -11,9 +11,9 @@ use word_core::{
     validate_tracked_change_id, AssetRef, Block, CommentThread, Document, DocumentWarning, Heading,
     ImageBlock, ImagePresentation, Inline, InlineMark, InlineNoteReference, InlineStyle, ListBlock,
     ListItem, Note, NoteKind, PageField, PageRegion, PageRegionBlock, PageRegionParagraph,
-    PageRegions, Paragraph, ParagraphAlignment, ParagraphFormat, StyleId, Table, TableCell,
-    TableCellBorder, TableCellPresentation, TableOfContents, TableOfContentsEntry, TableRow,
-    TrackedChange, TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES,
+    PageRegions, PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat, StyleId, Table,
+    TableCell, TableCellBorder, TableCellPresentation, TableOfContents, TableOfContentsEntry,
+    TableRow, TrackedChange, TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES,
     MAX_TABLE_WIDTH_COLUMNS,
 };
 use zip::write::SimpleFileOptions;
@@ -389,9 +389,16 @@ enum PageRegionReferenceKind {
 #[derive(Debug, Clone, Default)]
 struct ParsedDocument {
     blocks: Vec<Block>,
+    page_setup: Option<PageSetup>,
     page_regions: PageRegions,
     anchored_comment_ids: BTreeSet<String>,
     notes: BTreeMap<String, Note>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SectionProperties {
+    page_setup: Option<PageSetup>,
+    page_regions: PageRegionReferences,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -881,6 +888,9 @@ pub fn read_docx_bytes_with_limits(
         } else {
             parsed_document.blocks
         };
+        if let Some(page_setup) = parsed_document.page_setup {
+            section.page = page_setup;
+        }
         section.page_regions = parsed_document.page_regions;
     }
     document.warnings = warnings.warnings;
@@ -1963,6 +1973,7 @@ fn parse_document_xml(
     reader.config_mut().trim_text(false);
     let mut parsed = Vec::new();
     let mut page_regions = PageRegions::default();
+    let mut page_setup = None;
     let mut anchored_comment_ids = BTreeSet::new();
     let mut revision_state = RevisionImportState::default();
     let mut note_state = NoteImportState::default();
@@ -2007,9 +2018,10 @@ fn parse_document_xml(
                 Event::Start(start)
                     if in_body && local_name(start.name().as_ref()) == b"sectPr" =>
                 {
-                    let references = parse_section_properties(&mut reader, state.warnings)?;
+                    let properties = parse_section_properties(&mut reader, state.warnings)?;
+                    page_setup = properties.page_setup;
                     page_regions = build_page_regions(
-                        &references,
+                        &properties.page_regions,
                         context.rels,
                         page_region_part_xml,
                         state.warnings,
@@ -2047,6 +2059,7 @@ fn parse_document_xml(
 
     Ok(ParsedDocument {
         blocks: parsed.into_iter().map(|item| item.block).collect(),
+        page_setup,
         page_regions,
         anchored_comment_ids,
         notes: note_state.notes,
@@ -2056,8 +2069,12 @@ fn parse_document_xml(
 fn parse_section_properties(
     reader: &mut Reader<&[u8]>,
     warnings: &mut WarningSink,
-) -> Result<PageRegionReferences, DocxError> {
-    let mut references = PageRegionReferences::default();
+) -> Result<SectionProperties, DocxError> {
+    let mut properties = SectionProperties::default();
+    let mut page_setup = PageSetup::default();
+    let mut saw_page_setup_tag = false;
+    let mut saw_page_size = false;
+    let mut saw_page_margins = false;
     loop {
         match reader
             .read_event()
@@ -2067,7 +2084,7 @@ fn parse_section_properties(
                 if local_name(start.name().as_ref()) == b"headerReference" =>
             {
                 apply_page_region_reference(
-                    &mut references,
+                    &mut properties.page_regions,
                     PageRegionPartKind::Header,
                     &start,
                     warnings,
@@ -2077,7 +2094,7 @@ fn parse_section_properties(
                 if local_name(start.name().as_ref()) == b"footerReference" =>
             {
                 apply_page_region_reference(
-                    &mut references,
+                    &mut properties.page_regions,
                     PageRegionPartKind::Footer,
                     &start,
                     warnings,
@@ -2086,7 +2103,24 @@ fn parse_section_properties(
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"titlePg" =>
             {
-                references.different_first_page = truthy_word_bool(&start, DOCUMENT_XML)?;
+                properties.page_regions.different_first_page =
+                    truthy_word_bool(&start, DOCUMENT_XML)?;
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"pgSz" =>
+            {
+                saw_page_setup_tag = true;
+                if apply_docx_page_size(&start, &mut page_setup)? {
+                    saw_page_size = true;
+                }
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"pgMar" =>
+            {
+                saw_page_setup_tag = true;
+                if apply_docx_page_margins(&start, &mut page_setup)? {
+                    saw_page_margins = true;
+                }
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"sectPr" => break,
             Event::Start(start) => {
@@ -2097,7 +2131,84 @@ fn parse_section_properties(
             _ => {}
         }
     }
-    Ok(references)
+    if saw_page_size && saw_page_margins && page_setup.validate().is_ok() {
+        properties.page_setup = Some(page_setup);
+    } else if saw_page_setup_tag {
+        warnings.warn(
+            "docx_page_setup_ignored",
+            "Unsupported DOCX page setup was ignored during import",
+        );
+    }
+    Ok(properties)
+}
+
+fn apply_docx_page_size(
+    start: &BytesStart<'_>,
+    page_setup: &mut PageSetup,
+) -> Result<bool, DocxError> {
+    let Some(width_twips) = parse_docx_i32_attr(start, b"w")? else {
+        return Ok(false);
+    };
+    let Some(height_twips) = parse_docx_i32_attr(start, b"h")? else {
+        return Ok(false);
+    };
+    let Some(width_mm) = docx_twips_to_page_dimension_mm(width_twips) else {
+        return Ok(false);
+    };
+    let Some(height_mm) = docx_twips_to_page_dimension_mm(height_twips) else {
+        return Ok(false);
+    };
+    page_setup.width_mm = width_mm;
+    page_setup.height_mm = height_mm;
+    Ok(true)
+}
+
+fn apply_docx_page_margins(
+    start: &BytesStart<'_>,
+    page_setup: &mut PageSetup,
+) -> Result<bool, DocxError> {
+    let Some(top_twips) = parse_docx_i32_attr(start, b"top")? else {
+        return Ok(false);
+    };
+    let Some(right_twips) = parse_docx_i32_attr(start, b"right")? else {
+        return Ok(false);
+    };
+    let Some(bottom_twips) = parse_docx_i32_attr(start, b"bottom")? else {
+        return Ok(false);
+    };
+    let Some(left_twips) = parse_docx_i32_attr(start, b"left")? else {
+        return Ok(false);
+    };
+    let Some(top_mm) = docx_twips_to_page_margin_mm(top_twips) else {
+        return Ok(false);
+    };
+    let Some(right_mm) = docx_twips_to_page_margin_mm(right_twips) else {
+        return Ok(false);
+    };
+    let Some(bottom_mm) = docx_twips_to_page_margin_mm(bottom_twips) else {
+        return Ok(false);
+    };
+    let Some(left_mm) = docx_twips_to_page_margin_mm(left_twips) else {
+        return Ok(false);
+    };
+    page_setup.margin_top_mm = top_mm;
+    page_setup.margin_right_mm = right_mm;
+    page_setup.margin_bottom_mm = bottom_mm;
+    page_setup.margin_left_mm = left_mm;
+    Ok(true)
+}
+
+fn docx_twips_to_page_dimension_mm(twips: i32) -> Option<u16> {
+    let millimeters = docx_twips_to_bounded_u16_mm(twips, 500)?;
+    if millimeters >= 50 {
+        Some(millimeters)
+    } else {
+        None
+    }
+}
+
+fn docx_twips_to_page_margin_mm(twips: i32) -> Option<u16> {
+    docx_twips_to_bounded_u16_mm(twips, 100)
 }
 
 fn apply_page_region_reference(
@@ -5015,11 +5126,34 @@ fn render_document_xml(
 
     output.push_str(r#"<w:sectPr>"#);
     render_section_page_region_refs(page_regions, &mut output);
-    output.push_str(
-        r#"<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>"#,
+    render_section_page_setup_xml(
+        document.sections.first().map(|section| &section.page),
+        &mut output,
     );
+    output.push_str("</w:sectPr>");
     output.push_str("</w:body></w:document>");
     output
+}
+
+fn render_section_page_setup_xml(page_setup: Option<&PageSetup>, output: &mut String) {
+    let default_page_setup = PageSetup::default();
+    let page_setup = match page_setup {
+        Some(page_setup) if page_setup.validate().is_ok() => page_setup,
+        _ => &default_page_setup,
+    };
+    output.push_str("<w:pgSz w:w=\"");
+    output.push_str(&mm_to_docx_twips(page_setup.width_mm).to_string());
+    output.push_str("\" w:h=\"");
+    output.push_str(&mm_to_docx_twips(page_setup.height_mm).to_string());
+    output.push_str("\"/><w:pgMar w:top=\"");
+    output.push_str(&mm_to_docx_twips(page_setup.margin_top_mm).to_string());
+    output.push_str("\" w:right=\"");
+    output.push_str(&mm_to_docx_twips(page_setup.margin_right_mm).to_string());
+    output.push_str("\" w:bottom=\"");
+    output.push_str(&mm_to_docx_twips(page_setup.margin_bottom_mm).to_string());
+    output.push_str("\" w:left=\"");
+    output.push_str(&mm_to_docx_twips(page_setup.margin_left_mm).to_string());
+    output.push_str(r#"" w:header="720" w:footer="720" w:gutter="0"/>"#);
 }
 
 fn render_section_page_region_refs(page_regions: &DocxPageRegionExports, output: &mut String) {
@@ -7227,6 +7361,125 @@ mod tests {
     }
 
     #[test]
+    fn imports_docx_page_setup_from_safe_section_properties() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p><w:r><w:t>Page setup</w:t></w:r></w:p>
+  <w:sectPr>
+    <w:pgSz w:w="12240" w:h="15840"/>
+    <w:pgMar w:top="1134" w:right="850" w:bottom="1417" w:left="1020" w:header="720" w:footer="720" w:gutter="0"/>
+  </w:sectPr>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("page setup should import");
+
+        assert_eq!(
+            document.sections[0].page,
+            PageSetup {
+                width_mm: 216,
+                height_mm: 279,
+                margin_top_mm: 20,
+                margin_right_mm: 15,
+                margin_bottom_mm: 25,
+                margin_left_mm: 18,
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_unsupported_docx_page_setup_values() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p><w:r><w:t>Bad page setup</w:t></w:r></w:p>
+  <w:sectPr>
+    <w:pgSz w:w="100" w:h="999999"/>
+    <w:pgMar w:top="-1" w:right="999999" w:bottom="999999" w:left="-1"/>
+  </w:sectPr>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("invalid page setup should import safely");
+
+        assert_eq!(document.sections[0].page, PageSetup::default());
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_page_setup_ignored"));
+    }
+
+    #[test]
+    fn ignores_partial_docx_page_setup_values() {
+        for sect_pr in [
+            r#"<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>"#,
+            r#"<w:sectPr><w:pgMar w:top="1134" w:right="850" w:bottom="1417" w:left="1020"/></w:sectPr>"#,
+            r#"<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1134" w:right="850" w:bottom="1417"/></w:sectPr>"#,
+            r#"<w:sectPr><w:pgSz w:w="100" w:h="15840"/><w:pgMar w:top="1134" w:right="850" w:bottom="1417" w:left="1020"/></w:sectPr>"#,
+        ] {
+            let document_xml = format!(
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p><w:r><w:t>Partial page setup</w:t></w:r></w:p>
+  {sect_pr}
+</w:body></w:document>"#
+            );
+            let bytes = synthetic_docx(&document_xml, None, None);
+            let document =
+                read_docx_bytes(&bytes).expect("partial page setup should import safely");
+
+            assert_eq!(document.sections[0].page, PageSetup::default());
+            assert!(document
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "docx_page_setup_ignored"));
+        }
+    }
+
+    #[test]
+    fn imports_body_level_docx_page_setup_as_single_section_page() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:pPr>
+      <w:sectPr>
+        <w:pgSz w:w="11906" w:h="16838"/>
+        <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>
+      </w:sectPr>
+    </w:pPr>
+    <w:r><w:t>Intermediate section</w:t></w:r>
+  </w:p>
+  <w:sectPr>
+    <w:pgSz w:w="12240" w:h="15840"/>
+    <w:pgMar w:top="1134" w:right="850" w:bottom="1417" w:left="1020"/>
+  </w:sectPr>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("body-level page setup should import");
+
+        assert_eq!(
+            document.sections[0].page,
+            PageSetup {
+                width_mm: 216,
+                height_mm: 279,
+                margin_top_mm: 20,
+                margin_right_mm: 15,
+                margin_bottom_mm: 25,
+                margin_left_mm: 18,
+            }
+        );
+    }
+
+    #[test]
     fn imports_unsafe_hyperlinks_as_plain_text_with_warning() {
         let bytes = synthetic_docx(
             r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -8705,6 +8958,46 @@ mod tests {
             panic!("formatted paragraph should round-trip through docx converter");
         };
         assert_eq!(paragraph.format, expected_format);
+    }
+
+    #[test]
+    fn exports_and_imports_docx_page_setup() {
+        let mut document = Document::new_untitled();
+        let expected_page = PageSetup {
+            width_mm: 216,
+            height_mm: 279,
+            margin_top_mm: 20,
+            margin_right_mm: 15,
+            margin_bottom_mm: 25,
+            margin_left_mm: 18,
+        };
+        document.sections[0].page = expected_page.clone();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: ParagraphFormat::default(),
+            inlines: vec![Inline::text("Page setup export")],
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write page setup");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+
+        assert!(document_xml.contains(&format!(
+            r#"<w:pgSz w:w="{}" w:h="{}"/>"#,
+            mm_to_docx_twips(expected_page.width_mm),
+            mm_to_docx_twips(expected_page.height_mm)
+        )));
+        assert!(document_xml.contains(&format!(
+            r#"<w:pgMar w:top="{}" w:right="{}" w:bottom="{}" w:left="{}" w:header="720" w:footer="720" w:gutter="0"/>"#,
+            mm_to_docx_twips(expected_page.margin_top_mm),
+            mm_to_docx_twips(expected_page.margin_right_mm),
+            mm_to_docx_twips(expected_page.margin_bottom_mm),
+            mm_to_docx_twips(expected_page.margin_left_mm)
+        )));
+
+        let parsed = read_docx_bytes(&bytes).expect("written page setup should import");
+        assert_eq!(parsed.sections[0].page, expected_page);
     }
 
     #[test]
