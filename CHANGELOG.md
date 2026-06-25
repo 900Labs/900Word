@@ -41,3 +41,7 @@ All notable changes to 900Word are tracked here.
 - PDF table and image placeholder rendering MVP with lightweight vector table cell boxes, wrapped cell text, and aligned/scaled figure placeholder boxes for image alt/caption metadata without raster embedding or asset metadata emission.
 - PDF link annotation MVP with bounded active URI annotations for safe external `http`, `https`, and `mailto` text links in generated PDFs, while keeping internal PDF destinations and exact glyph-level geometry deferred.
 - PDF JPEG image embedding MVP with bounded safe in-document baseline JPEG image XObjects, APP/COM metadata marker stripping, visible placeholder fallback for unsupported or over-limit image payloads, preserved alt/caption text, page-range-aware image resources, and no new heavy image-processing dependency.
+
+### Fixed
+
+- Editor toolbar selection handling now preserves selected text/current blocks for core inline mark and paragraph/heading buttons during mouse or pointer activation.

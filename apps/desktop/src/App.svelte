@@ -111,6 +111,12 @@
     type EditorViewMode,
     type EditorZoomChoice
   } from './lib/editorViewport';
+  import {
+    handleToolbarClickActivation,
+    handleToolbarMouseActivation,
+    handleToolbarPointerActivation,
+    type ToolbarActivationState
+  } from './lib/toolbarActivation';
 
   interface SpellIssue {
     word: string;
@@ -388,6 +394,7 @@
   let fileMenuRoot = $state<HTMLDivElement | undefined>();
   let linkToolsRoot = $state<HTMLDivElement | undefined>();
   let view: ReturnType<typeof createEditor> | undefined;
+  const toolbarActivationState: ToolbarActivationState = { pointerCommandHandled: false };
 
   async function newDocument() {
     await waitForEditorSync();
@@ -860,20 +867,24 @@
   }
 
   function runToolbarPointerCommand(event: PointerEvent, command: () => void) {
-    if (event.button !== 0) {
-      return;
+    if (handleToolbarPointerActivation(event, toolbarActivationState, (callback) => window.setTimeout(callback, 0))) {
+      runToolbarCommand(command);
     }
-    captureToolbarSelection(true);
-    event.preventDefault();
-    restoreEditorSelection(view, lastEditorSelection);
-    command();
+  }
+
+  function runToolbarMouseCommand(event: MouseEvent, command: () => void) {
+    if (handleToolbarMouseActivation(event, toolbarActivationState)) {
+      runToolbarCommand(command);
+    }
   }
 
   function runToolbarKeyboardCommand(event: MouseEvent, command: () => void) {
-    event.preventDefault();
-    if (event.detail !== 0) {
-      return;
+    if (handleToolbarClickActivation(event)) {
+      runToolbarCommand(command);
     }
+  }
+
+  function runToolbarCommand(command: () => void) {
     captureToolbarSelection(true);
     restoreEditorSelection(view, lastEditorSelection);
     command();
@@ -2362,6 +2373,7 @@
         class="format-button strong"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('bold', tr('bold')))}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('bold', tr('bold')))}
         title={shortcutTitle(tr('bold'), 'bold')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('bold', tr('bold')))}
@@ -2375,6 +2387,7 @@
         class="format-button italic"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('italic', tr('italic')))}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('italic', tr('italic')))}
         title={shortcutTitle(tr('italic'), 'italic')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('italic', tr('italic')))}
@@ -2388,6 +2401,7 @@
         class="format-button underline"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('underline', tr('underline')))}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('underline', tr('underline')))}
         title={shortcutTitle(tr('underline'), 'underline')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('underline', tr('underline')))}
@@ -2401,6 +2415,7 @@
         class="format-button strike"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
         title={tr('strikethrough')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
@@ -2414,6 +2429,7 @@
         class="format-button script"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
         title={tr('superscript')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
@@ -2427,6 +2443,7 @@
         class="format-button script"
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
         title={tr('subscript')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
@@ -2628,6 +2645,7 @@
       <button
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, applyParagraph)}
+        onmousedown={(event) => runToolbarMouseCommand(event, applyParagraph)}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, applyParagraph)}
       >
@@ -2636,6 +2654,7 @@
       <button
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyHeading(1))}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyHeading(1))}
         title={shortcutTitle(tr('heading1'), 'heading1')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(1))}
@@ -2645,6 +2664,7 @@
       <button
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyHeading(2))}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyHeading(2))}
         title={shortcutTitle(tr('heading2'), 'heading2')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(2))}
@@ -2654,6 +2674,7 @@
       <button
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, () => applyHeading(3))}
+        onmousedown={(event) => runToolbarMouseCommand(event, () => applyHeading(3))}
         title={shortcutTitle(tr('heading3'), 'heading3')}
         type="button"
         onclick={(event) => runToolbarKeyboardCommand(event, () => applyHeading(3))}
