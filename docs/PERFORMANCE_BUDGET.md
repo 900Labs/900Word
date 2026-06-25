@@ -18,3 +18,5 @@ Sprint 008 adds automated bootstrap budgets:
 - `scripts/performance-smoke.sh` records desktop build-output bytes and smoke timing for `word-export` and the generated ODT round-trip test.
 
 These are early guardrails, not full product performance claims. The first public release may publish only measured values. Hard pass/fail thresholds for startup time, idle memory, typing latency, ODT open/save time, PDF export time, and installer size must be introduced after baseline measurements exist on supported hardware.
+
+Sprint 028 adds a disabled-by-default low-resource mode as a user-facing UI control. It avoids nonessential automatic sidebar content and reduces decorative visual effects where practical, but it is not a replacement for measured startup, memory, typing-latency, or file-operation budgets. Safety-critical surfaces such as recovery and warnings remain visible.

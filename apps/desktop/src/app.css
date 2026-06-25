@@ -81,6 +81,14 @@ select:focus-visible {
   outline-offset: 2px;
 }
 
+.app-shell[data-reduced-motion="true"] *,
+.app-shell[data-reduced-motion="true"] *::before,
+.app-shell[data-reduced-motion="true"] *::after {
+  animation: none !important;
+  scroll-behavior: auto !important;
+  transition: none !important;
+}
+
 .ProseMirror-focused {
   outline: none;
 }
@@ -565,6 +573,65 @@ select:focus-visible {
   padding: 0 0.45rem;
   font-size: 0.78rem;
   font-weight: 750;
+}
+
+.app-shell[data-large-toolbar="true"] .command-bar {
+  gap: 0.68rem;
+  padding-block: 0.72rem;
+}
+
+.app-shell[data-large-toolbar="true"] .tool-group {
+  gap: 0.32rem;
+  min-height: 2.75rem;
+  padding: 0.25rem;
+}
+
+.app-shell[data-large-toolbar="true"] .command-bar button {
+  min-height: 42px;
+  padding: 0.52rem 0.8rem;
+}
+
+.app-shell[data-large-toolbar="true"] .command-bar select,
+.app-shell[data-large-toolbar="true"] .command-bar input:not([type="checkbox"]):not([type="range"]):not([type="color"]) {
+  min-height: 42px;
+  padding-block: 0.5rem;
+}
+
+.app-shell[data-large-toolbar="true"] .compact-number,
+.app-shell[data-large-toolbar="true"] .image-text-field,
+.app-shell[data-large-toolbar="true"] .ruler-toggle,
+.app-shell[data-large-toolbar="true"] .review-toggle,
+.app-shell[data-large-toolbar="true"] .table-size-field {
+  min-height: 42px;
+  padding-inline: 0.55rem;
+}
+
+.app-shell[data-large-toolbar="true"] .color-input {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+}
+
+.app-shell[data-large-toolbar="true"] .format-button,
+.app-shell[data-large-toolbar="true"] .list-tools button,
+.app-shell[data-large-toolbar="true"] .paragraph-tools button,
+.app-shell[data-large-toolbar="true"] .search-toggle,
+.app-shell[data-large-toolbar="true"] .table-tools button {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  padding: 0;
+}
+
+.app-shell[data-large-toolbar="true"] .table-tools .table-insert-button {
+  width: auto;
+  min-width: 4.8rem;
+  padding-inline: 0.6rem;
+}
+
+.app-shell[data-large-toolbar="true"] .command-bar .check-row input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
 }
 
 .table-size-field {
@@ -1880,6 +1947,36 @@ select:focus-visible {
   border: 0;
   opacity: 0;
   pointer-events: none;
+}
+
+.app-shell[data-low-resource="true"] .menu-strip,
+.app-shell[data-low-resource="true"] .menu-field,
+.app-shell[data-low-resource="true"] .file-submenu-panel,
+.app-shell[data-low-resource="true"] .editor-panel {
+  background: #f3f5f4;
+  box-shadow: none;
+}
+
+.app-shell[data-low-resource="true"] .editor-panel {
+  background-image: none;
+}
+
+.app-shell[data-low-resource="true"] button:hover:not(:disabled),
+.app-shell[data-low-resource="true"] .file-menu-popover,
+.app-shell[data-low-resource="true"] .link-popover,
+.app-shell[data-low-resource="true"] .find-popover,
+.app-shell[data-low-resource="true"] .spell-popover,
+.app-shell[data-low-resource="true"] .form-surface,
+.app-shell[data-low-resource="true"] .status-panel,
+.app-shell[data-low-resource="true"] .editor-host,
+.app-shell[data-low-resource="true"] .comments-list li.active-comment,
+.app-shell[data-low-resource="true"] .ProseMirror figure[data-asset-id] .image-resize-handle {
+  box-shadow: none;
+}
+
+.app-shell[data-low-resource="true"] .ruler-top,
+.app-shell[data-low-resource="true"] .ruler-left {
+  background-image: none;
 }
 
 .high-contrast {

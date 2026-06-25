@@ -27,4 +27,6 @@ Sprint 026 adds Smart typing settings as native checkboxes in the Settings view.
 
 Sprint 027 expands the bottom-toolbar Stats button into a keyboard-focusable document information panel with `aria-expanded` state and a dialog label. The always-visible bottom toolbar stays compact, while the expanded panel uses text labels and values rather than hover-only status. Estimated page and reading-time values are explicitly labelled in the panel copy.
 
+Sprint 028 adds Settings checkboxes for larger toolbar controls, reduced motion, and low-resource mode. The controls default off, use native checkbox inputs, and remain independent of high contrast. Larger toolbar mode increases desktop toolbar click targets while preserving wrapping behavior. Reduced motion removes app-controlled transitions and animations. Low-resource mode suppresses nonessential automatic sidebar content and reduces decorative visual effects while preserving recovery, warnings, and panels opened by the user.
+
 Accessibility smoke checks are part of the release hardening roadmap.

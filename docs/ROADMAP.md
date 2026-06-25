@@ -251,3 +251,13 @@ Status: complete.
 - Keep page count and reading time clearly labelled as estimates and avoid deterministic pagination claims.
 - Surface lightweight local-first document indicators already available in the model: comments, unresolved comments, track changes status/count, images, embedded assets, footnotes, endnotes, and page size.
 - Keep the feature UI-only with no cloud, accounts, telemetry, network behavior, new document metadata, import/export format changes, private paths, filenames, usernames, or hostnames.
+
+## Sprint 028: Accessibility And Low-Resource Mode MVP
+
+Status: complete.
+
+- Add disabled-by-default local settings for larger toolbar controls, reduced motion, and low-resource mode.
+- Surface the controls as keyboard-focusable native checkboxes in Settings.
+- Apply the controls through desktop UI classes and data attributes while keeping high contrast independent.
+- Make low-resource mode suppress nonessential automatic sidebar content and reduce decorative visual weight while preserving recovery, warnings, and explicit user-opened panels.
+- Keep the feature UI-only with no cloud, accounts, telemetry, network behavior, new document metadata, import/export format changes, private paths, filenames, usernames, or hostnames.
