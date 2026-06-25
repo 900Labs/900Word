@@ -25,4 +25,6 @@ Sprint 025 adds footnote and endnote insert buttons to the existing review/comme
 
 Sprint 026 adds Smart typing settings as native checkboxes in the Settings view. The toggles have stable labels, are keyboard-focusable, default off, and do not rely on hover-only behavior. Typed-input transforms use the existing editor surface and do not add modal interruptions or hidden background services.
 
+Sprint 027 expands the bottom-toolbar Stats button into a keyboard-focusable document information panel with `aria-expanded` state and a dialog label. The always-visible bottom toolbar stays compact, while the expanded panel uses text labels and values rather than hover-only status. Estimated page and reading-time values are explicitly labelled in the panel copy.
+
 Accessibility smoke checks are part of the release hardening roadmap.

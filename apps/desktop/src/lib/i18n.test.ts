@@ -25,6 +25,11 @@ describe('i18n', () => {
     expect(translate('es-ES', 'smartQuotes')).toBe('Usar comillas tipograficas');
   });
 
+  it('labels expanded stats estimates clearly', () => {
+    expect(translate('en-US', 'estimatedPages')).toBe('Estimated pages');
+    expect(translate('en-US', 'statsEstimateNote')).toContain('estimates');
+  });
+
   it('provides an RTL smoke locale', () => {
     expect(localeDirection('ar')).toBe('rtl');
   });

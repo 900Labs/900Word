@@ -1838,6 +1838,17 @@ select:focus-visible {
   box-shadow: 0 14px 32px rgba(22, 27, 34, 0.18);
 }
 
+.stats-panel {
+  width: min(30rem, calc(100vw - 1rem));
+}
+
+.status-panel-note {
+  margin: 0 0 0.55rem;
+  color: #59636e;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .status-panel dl {
   margin: 0;
   display: grid;

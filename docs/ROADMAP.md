@@ -241,3 +241,13 @@ Status: complete.
 - Add simple `- ` and `1. ` list triggers at the start of an otherwise empty top-level paragraph.
 - Keep transforms deterministic, bounded to collapsed typed input, and avoid URL-like tokens.
 - Keep imported-document cleanup, rich autocorrect dictionaries, locale-specific quote styles, persistent settings storage, and smart typing while track-changes recording deferred.
+
+## Sprint 027: Expanded Stats Panel MVP
+
+Status: complete.
+
+- Expand the bottom-toolbar Stats toggle into a compact document information panel.
+- Show words, selection words, characters with and without spaces, paragraphs, model blocks, estimated pages, and estimated reading time.
+- Keep page count and reading time clearly labelled as estimates and avoid deterministic pagination claims.
+- Surface lightweight local-first document indicators already available in the model: comments, unresolved comments, track changes status/count, images, embedded assets, footnotes, endnotes, and page size.
+- Keep the feature UI-only with no cloud, accounts, telemetry, network behavior, new document metadata, import/export format changes, private paths, filenames, usernames, or hostnames.

@@ -36,6 +36,7 @@ export type UiStringKey =
   | 'capitalizeSentences'
   | 'case'
   | 'characters'
+  | 'charactersWithSpaces'
   | 'charactersNoSpaces'
   | 'checkSpelling'
   | 'clear'
@@ -99,6 +100,7 @@ export type UiStringKey =
   | 'fontSize'
   | 'footer'
   | 'footerFields'
+  | 'footnotes'
   | 'formattingCleared'
   | 'addToDictionary'
   | 'firstFooter'
@@ -128,6 +130,7 @@ export type UiStringKey =
   | 'imageTooLarge'
   | 'imageScale'
   | 'imageUpdated'
+  | 'images'
   | 'insertion'
   | 'insertImage'
   | 'insertFootnote'
@@ -167,6 +170,7 @@ export type UiStringKey =
   | 'no'
   | 'noComments'
   | 'noTrackedChanges'
+  | 'notRecording'
   | 'notes'
   | 'noNotes'
   | 'noteBodyRequired'
@@ -176,6 +180,10 @@ export type UiStringKey =
   | 'footnotePrompt'
   | 'endnoteInserted'
   | 'endnotePrompt'
+  | 'embeddedAssets'
+  | 'endnotes'
+  | 'estimatedPages'
+  | 'estimatedReadingTime'
   | 'numberedList'
   | 'numberedListApplied'
   | 'off'
@@ -214,6 +222,7 @@ export type UiStringKey =
   | 'replace'
   | 'replaceAll'
   | 'recordChanges'
+  | 'recording'
   | 'reject'
   | 'rejectAll'
   | 'resolve'
@@ -247,6 +256,7 @@ export type UiStringKey =
   | 'startWriting'
   | 'statusNoSpellingIssues'
   | 'stats'
+  | 'statsEstimateNote'
   | 'styleApplied'
   | 'styleUpdated'
   | 'styleUpdateNeedsParagraph'
@@ -261,6 +271,8 @@ export type UiStringKey =
   | 'trackChangesPrivacyWarning'
   | 'trackChangesRecordingOff'
   | 'trackChangesRecordingOn'
+  | 'trackChangesStatus'
+  | 'trackedChanges'
   | 'trackedChangeAccepted'
   | 'trackedChangeRejected'
   | 'trackedChangeSelected'
@@ -282,6 +294,7 @@ export type UiStringKey =
   | 'uiLocale'
   | 'underline'
   | 'unlink'
+  | 'unresolvedComments'
   | 'undo'
   | 'undoApplied'
   | 'updateStyle'
@@ -343,6 +356,7 @@ const english: UiStrings = {
   capitalizeSentences: 'Capitalize sentences',
   case: 'Case',
   characters: 'Characters',
+  charactersWithSpaces: 'Characters with spaces',
   charactersNoSpaces: 'Characters without spaces',
   checkSpelling: 'Check Spelling',
   clear: 'Clear',
@@ -406,6 +420,7 @@ const english: UiStrings = {
   fontSize: 'Font size',
   footer: 'Footer',
   footerFields: 'Footer fields',
+  footnotes: 'Footnotes',
   formattingCleared: 'Formatting cleared',
   addToDictionary: 'Add',
   firstFooter: 'First-page footer',
@@ -435,6 +450,7 @@ const english: UiStrings = {
   imageTooLarge: 'Image is too large. Compress or resize it before inserting.',
   imageScale: 'Scale',
   imageUpdated: 'Image updated',
+  images: 'Images',
   insertion: 'Insertion',
   insertFootnote: 'Footnote',
   insertEndnote: 'Endnote',
@@ -471,6 +487,7 @@ const english: UiStrings = {
   no: 'No',
   noComments: 'No comments',
   noTrackedChanges: 'No tracked changes',
+  notRecording: 'Not recording',
   notes: 'Notes',
   noNotes: 'No footnotes or endnotes',
   noteBodyRequired: 'Enter note text before inserting it.',
@@ -480,6 +497,10 @@ const english: UiStrings = {
   footnotePrompt: 'Footnote text',
   endnoteInserted: 'Endnote inserted',
   endnotePrompt: 'Endnote text',
+  embeddedAssets: 'Embedded assets',
+  endnotes: 'Endnotes',
+  estimatedPages: 'Estimated pages',
+  estimatedReadingTime: 'Estimated reading time',
   noIssues: 'No issues.',
   noMatches: 'No matches',
   noSuggestions: 'No suggestions',
@@ -521,6 +542,7 @@ const english: UiStrings = {
   replace: 'Replace',
   replaceAll: 'All',
   recordChanges: 'Record changes',
+  recording: 'Recording',
   reject: 'Reject',
   rejectAll: 'Reject all',
   resolve: 'Resolve',
@@ -554,6 +576,7 @@ const english: UiStrings = {
   startWriting: 'Start writing...',
   statusNoSpellingIssues: 'No spelling issues found',
   stats: 'Stats',
+  statsEstimateNote: 'Page count and reading time are estimates, not deterministic pagination.',
   styleApplied: '{style} applied',
   styleUpdated: '{style} updated from selection',
   styleUpdateNeedsParagraph: 'Select a paragraph style to update',
@@ -568,6 +591,8 @@ const english: UiStrings = {
   trackChangesPrivacyWarning: 'Tracked changes can reveal edit history and deleted text in saved files.',
   trackChangesRecordingOff: 'Track changes recording off',
   trackChangesRecordingOn: 'Track changes recording on',
+  trackChangesStatus: 'Track changes status',
+  trackedChanges: 'Tracked changes',
   trackedChangeAccepted: 'Tracked change accepted',
   trackedChangeRejected: 'Tracked change rejected',
   trackedChangeSelected: 'Tracked change selected',
@@ -589,6 +614,7 @@ const english: UiStrings = {
   uiLocale: 'UI language',
   underline: 'Underline',
   unlink: 'Unlink',
+  unresolvedComments: 'Unresolved comments',
   undo: 'Undo',
   undoApplied: 'Undo applied',
   updateStyle: 'Update',
