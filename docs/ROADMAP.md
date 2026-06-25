@@ -138,7 +138,7 @@ Status: complete.
 - Add compact controls to create/remove a bookmark on the selected paragraph or heading and link selected text to an existing bookmark/heading target.
 - Preserve 900Word-authored bookmarks and internal links through ODT using `text:bookmark` anchors and `#fragment` text links.
 - Emit sanitized HTML element IDs and internal fragment hrefs.
-- Keep richer bookmark management, automatic heading ID assignment, cross-document links, active internal PDF destinations, and exact glyph-level PDF link geometry deferred.
+- Keep richer bookmark management, automatic heading ID assignment, cross-document links, and exact glyph-level PDF link geometry deferred. Sprint 054 later adds bounded active internal PDF destinations for safe exported targets.
 
 ## Sprint 017: Table Structure Editing MVP
 
@@ -217,8 +217,8 @@ Status: complete.
 - Generate safe document-local bookmark IDs for headings that need TOC targets.
 - Add a local desktop File-menu command to insert or update contents from headings.
 - Preserve 900Word-authored TOCs through ODT save/reopen with `word900` metadata while rendering visible text and safe internal links.
-- Export TOCs as ordinary text in TXT/basic PDF and as safe fragment links in HTML/print HTML.
-- Keep deterministic page numbers, live pagination, automatic external ODT TOC interoperability, DOCX TOCs, and active internal PDF TOC destinations deferred.
+- Export TOCs as ordinary text in TXT/basic PDF and as safe fragment links in HTML/print HTML. Sprint 054 later adds bounded active internal PDF destinations for generated TOC entries whose safe targets are exported.
+- Keep deterministic page numbers, live pagination, automatic external ODT TOC interoperability, and DOCX TOCs deferred.
 
 ## Sprint 025: Footnotes And Endnotes MVP
 
@@ -304,7 +304,7 @@ Status: complete.
 - Repeat simple header/footer text on generated pages and render page-number, page-count, and date fields deterministically.
 - Carry existing text projections for paragraphs, headings, lists, tables, TOCs, notes, and image alt/caption text into the PDF pagination path.
 - Add PDF page-range export settings in the desktop File > Export flow with backend validation and generic range errors.
-- Keep raster image embedding, embedded/subset fonts, internal PDF destinations, exact glyph-level PDF link geometry, complex script shaping, page-bottom note layout, and editor-preview layout fidelity deferred.
+- Keep raster image embedding, embedded/subset fonts, exact glyph-level PDF link geometry, complex script shaping, page-bottom note layout, and editor-preview layout fidelity deferred. Sprint 054 later adds bounded internal PDF destinations without a layout engine.
 
 ## Sprint 033: DOCX Page Regions
 
@@ -342,7 +342,7 @@ Status: complete.
 - Extend the lightweight PDF export body projection with text lines, simple table rows/cells, and image figure placeholders.
 - Render simple PDF tables as vector cell boxes with wrapped cell text while preserving generated page objects and page ranges.
 - Render image blocks as bounded visible figure placeholders using alt text, captions, alignment, and scale metadata without embedding raster image bytes or emitting asset IDs, source names, local paths, usernames, or hostnames as image metadata.
-- Keep ODT canonical. Sprint 038 later adds bounded JPEG embedding; PNG/GIF/WebP PDF embedding, merged cells, table resizing, rich table styling, formulas, complex nested table layout, embedded/subset fonts, internal PDF destinations, exact glyph-level PDF link geometry, complex script shaping, and full layout fidelity remain deferred.
+- Keep ODT canonical. Sprint 038 later adds bounded JPEG embedding and Sprint 054 later adds bounded internal destinations; PNG/GIF/WebP PDF embedding, merged cells, table resizing, rich table styling, formulas, complex nested table layout, embedded/subset fonts, exact glyph-level PDF link geometry, complex script shaping, and full layout fidelity remain deferred.
 
 ## Sprint 037: PDF Link Annotations
 
@@ -352,7 +352,7 @@ Status: complete.
 - Emit bounded active PDF `/Link` annotations using `/A << /S /URI /URI (...) >>` for safe `http`, `https`, and `mailto` links only.
 - Place annotations over approximate text-run rectangles from the existing lightweight line layout without creating page-wide clickable areas.
 - Degrade over-budget links to visible rendered text without annotation objects using per-page and per-export caps.
-- Keep ODT canonical and keep active internal PDF destinations, exact glyph-level link geometry, PDF comment/note annotations, remote fetching, telemetry, accounts, cloud behavior, and full layout fidelity deferred.
+- Keep ODT canonical and keep exact glyph-level link geometry, PDF comment/note annotations, remote fetching, telemetry, accounts, cloud behavior, and full layout fidelity deferred. Sprint 054 later adds bounded active internal PDF destinations for safe exported bookmark targets.
 
 ## Sprint 038: PDF JPEG Image Embedding
 
@@ -506,3 +506,13 @@ Status: complete.
 - Export valid 900Word-authored `Table.column_widths` as generated DOCX table grid hints.
 - Ignore invalid, mismatched, duplicate, zero, overflowed, missing, merged-cell, nested-table, or unsupported DOCX width metadata without preserving path-like or source-identifying values.
 - Keep ODT canonical and keep full table layout fidelity, drag resizing, merged cells, formulas, arbitrary CSS, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
+
+## Sprint 054: PDF Internal Destinations
+
+Status: complete.
+
+- Extend the existing lightweight PDF linked-text projection to retain safe internal `#bookmark` targets alongside safe external URI targets.
+- Collect unique safe paragraph/heading bookmark destinations from generated PDF page positions and omit duplicate, missing, unsafe, or page-range-excluded targets.
+- Emit bounded PDF `/Link` annotations with `/Dest` arrays for safe internal text links and generated TOC entries whose target exists in exported PDF content.
+- Preserve existing per-page and per-document annotation caps and approximate text-run rectangles without creating page-wide clickable areas.
+- Keep ODT canonical and keep full PDF outline/bookmark trees, exact glyph-level geometry, remote fetching, telemetry, accounts, cloud behavior, heavy PDF dependencies, and full layout fidelity deferred.
