@@ -138,6 +138,9 @@
     language_tag: string;
     ui_locale: string;
     high_contrast: boolean;
+    large_toolbar: boolean;
+    reduced_motion: boolean;
+    low_resource: boolean;
     smart_typing: SmartTypingSettings;
   }
 
@@ -297,6 +300,9 @@
     language_tag: 'en-US',
     ui_locale: 'en-US',
     high_contrast: false,
+    large_toolbar: false,
+    reduced_motion: false,
+    low_resource: false,
     smart_typing: defaultSmartTypingSettings()
   });
   let uiDirection = $derived(localeDirection(settings.ui_locale));
@@ -324,12 +330,14 @@
   );
   let effectiveZoomPercent = $derived(zoomChoice === 'fit-width' ? fitWidthZoom : customZoomPercent);
   let editorSurfaceStyle = $derived(editorViewportStyle(pageSetup, effectiveZoomPercent));
+  let showAutomaticSidebarContent = $derived(
+    !settings.low_resource && (navigatorHeadings.length > 0 || fileState.recent_documents.length > 0)
+  );
   let showWorkspaceSidebar = $derived(
     commentsPanelOpen ||
     notesPanelOpen ||
     reviewPanelOpen ||
-    navigatorHeadings.length > 0 ||
-    fileState.recent_documents.length > 0 ||
+      showAutomaticSidebarContent ||
       fileState.recovery_documents.length > 0 ||
       projectionWarnings.length > 0
   );
@@ -373,13 +381,13 @@
     if (activeCommentId && !document.comments?.[activeCommentId]) {
       activeCommentId = null;
     }
-    if (Object.keys(document.comments ?? {}).length > 0) {
+    if (!settings.low_resource && Object.keys(document.comments ?? {}).length > 0) {
       commentsPanelOpen = true;
     }
-    if (noteSummariesInDocument(document).length > 0) {
+    if (!settings.low_resource && noteSummariesInDocument(document).length > 0) {
       notesPanelOpen = true;
     }
-    if (trackedChangesInDocument(document).length > 0 || document.track_changes?.recording) {
+    if (!settings.low_resource && (trackedChangesInDocument(document).length > 0 || document.track_changes?.recording)) {
       reviewPanelOpen = true;
     }
     title = document.meta.title;
@@ -1897,7 +1905,15 @@
   }
 </script>
 
-<main class:high-contrast={settings.high_contrast} class="app-shell" dir={uiDirection} lang={settings.ui_locale}>
+<main
+  class:high-contrast={settings.high_contrast}
+  class="app-shell"
+  data-large-toolbar={settings.large_toolbar ? 'true' : 'false'}
+  data-low-resource={settings.low_resource ? 'true' : 'false'}
+  data-reduced-motion={settings.reduced_motion ? 'true' : 'false'}
+  dir={uiDirection}
+  lang={settings.ui_locale}
+>
   <header class="topbar">
     <div>
       <h1>{title}</h1>
@@ -2833,7 +2849,7 @@
   >
     {#if showWorkspaceSidebar}
       <aside class="sidebar" aria-label={tr('documentStatistics')}>
-        {#if navigatorHeadings.length > 0}
+        {#if !settings.low_resource && navigatorHeadings.length > 0}
           <h2>{tr('navigator')}</h2>
           <ul class="navigator-list">
             {#each navigatorHeadings as heading}
@@ -2962,7 +2978,7 @@
           </section>
         {/if}
 
-        {#if fileState.recent_documents.length > 0}
+        {#if !settings.low_resource && fileState.recent_documents.length > 0}
           <h2>{tr('recent')}</h2>
           <ul class="action-list">
             {#each fileState.recent_documents as recent}
@@ -3237,6 +3253,22 @@
           <input bind:checked={settings.high_contrast} type="checkbox" />
           {tr('highContrast')}
         </label>
+
+        <section class="settings-group" aria-labelledby="accessibility-performance-settings-heading">
+          <h3 id="accessibility-performance-settings-heading">{tr('accessibilityAndPerformance')}</h3>
+          <label class="check-row">
+            <input bind:checked={settings.large_toolbar} type="checkbox" />
+            {tr('largeToolbar')}
+          </label>
+          <label class="check-row">
+            <input bind:checked={settings.reduced_motion} type="checkbox" />
+            {tr('reducedMotion')}
+          </label>
+          <label class="check-row">
+            <input bind:checked={settings.low_resource} type="checkbox" />
+            {tr('lowResourceMode')}
+          </label>
+        </section>
 
         <section class="settings-group" aria-labelledby="smart-typing-settings-heading">
           <h3 id="smart-typing-settings-heading">{tr('smartTyping')}</h3>

@@ -70,6 +70,12 @@ pub struct Settings {
     pub ui_locale: String,
     pub high_contrast: bool,
     #[serde(default)]
+    pub large_toolbar: bool,
+    #[serde(default)]
+    pub reduced_motion: bool,
+    #[serde(default)]
+    pub low_resource: bool,
+    #[serde(default)]
     pub smart_typing: SmartTypingSettings,
 }
 
@@ -138,6 +144,9 @@ impl Default for Settings {
             language_tag: FALLBACK_LANGUAGE_TAG.to_string(),
             ui_locale: "en-US".to_string(),
             high_contrast: false,
+            large_toolbar: false,
+            reduced_motion: false,
+            low_resource: false,
             smart_typing: SmartTypingSettings::default(),
         }
     }
@@ -475,6 +484,9 @@ fn update_settings(settings: Settings) -> Settings {
         language_tag: normalize_language_setting(&settings.language_tag),
         ui_locale: normalize_ui_locale(&settings.ui_locale),
         high_contrast: settings.high_contrast,
+        large_toolbar: settings.large_toolbar,
+        reduced_motion: settings.reduced_motion,
+        low_resource: settings.low_resource,
         smart_typing: settings.smart_typing,
     }
 }
@@ -1733,6 +1745,9 @@ mod tests {
             language_tag: "en".to_string(),
             ui_locale: "unknown".to_string(),
             high_contrast: true,
+            large_toolbar: true,
+            reduced_motion: true,
+            low_resource: true,
             smart_typing: SmartTypingSettings {
                 capitalize_sentences: true,
                 smart_quotes: true,
@@ -1746,6 +1761,9 @@ mod tests {
         assert_eq!(settings.language_tag, "en");
         assert_eq!(settings.ui_locale, "en-US");
         assert!(settings.high_contrast);
+        assert!(settings.large_toolbar);
+        assert!(settings.reduced_motion);
+        assert!(settings.low_resource);
         assert!(settings.smart_typing.capitalize_sentences);
         assert!(settings.smart_typing.smart_quotes);
         assert!(settings.smart_typing.smart_dashes);

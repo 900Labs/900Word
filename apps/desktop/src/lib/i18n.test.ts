@@ -25,6 +25,13 @@ describe('i18n', () => {
     expect(translate('es-ES', 'smartQuotes')).toBe('Usar comillas tipograficas');
   });
 
+  it('labels accessibility and low-resource settings', () => {
+    expect(translate('en-US', 'largeToolbar')).toBe('Large toolbar and controls');
+    expect(translate('en-US', 'reducedMotion')).toBe('Reduced motion');
+    expect(translate('en-US', 'lowResourceMode')).toBe('Low-resource mode');
+    expect(translate('es-ES', 'accessibilityAndPerformance')).toBe('Accesibilidad y rendimiento');
+  });
+
   it('labels expanded stats estimates clearly', () => {
     expect(translate('en-US', 'estimatedPages')).toBe('Estimated pages');
     expect(translate('en-US', 'statsEstimateNote')).toContain('estimates');

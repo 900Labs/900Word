@@ -5,6 +5,7 @@ export type UiStringKey =
   | 'about900Word'
   | 'accept'
   | 'acceptAll'
+  | 'accessibilityAndPerformance'
   | 'all'
   | 'allTrackedChangesAccepted'
   | 'allTrackedChangesRejected'
@@ -142,6 +143,7 @@ export type UiStringKey =
   | 'ignoreOnce'
   | 'italic'
   | 'language'
+  | 'largeToolbar'
   | 'left'
   | 'license'
   | 'lineSpacing'
@@ -155,6 +157,7 @@ export type UiStringKey =
   | 'linkUnchanged'
   | 'listLevelChanged'
   | 'lists'
+  | 'lowResourceMode'
   | 'matchCount'
   | 'matchReplaced'
   | 'matchesReplaced'
@@ -225,6 +228,7 @@ export type UiStringKey =
   | 'recording'
   | 'reject'
   | 'rejectAll'
+  | 'reducedMotion'
   | 'resolve'
   | 'reviewChanges'
   | 'removeBookmark'
@@ -325,6 +329,7 @@ const english: UiStrings = {
   about900Word: 'About 900Word',
   accept: 'Accept',
   acceptAll: 'Accept all',
+  accessibilityAndPerformance: 'Accessibility and performance',
   all: 'All',
   allTrackedChangesAccepted: 'All tracked changes accepted',
   allTrackedChangesRejected: 'All tracked changes rejected',
@@ -462,6 +467,7 @@ const english: UiStrings = {
   ignoreOnce: 'Ignore once',
   italic: 'Italic',
   language: 'Language',
+  largeToolbar: 'Large toolbar and controls',
   left: 'Left',
   license: 'License',
   lineSpacing: 'Line spacing',
@@ -475,6 +481,7 @@ const english: UiStrings = {
   linkUnchanged: 'Link unchanged',
   listLevelChanged: 'List level changed',
   lists: 'Lists',
+  lowResourceMode: 'Low-resource mode',
   matchCount: '{current}/{total}',
   matchReplaced: 'Match replaced',
   matchesReplaced: '{count} match(es) replaced',
@@ -545,6 +552,7 @@ const english: UiStrings = {
   recording: 'Recording',
   reject: 'Reject',
   rejectAll: 'Reject all',
+  reducedMotion: 'Reduced motion',
   resolve: 'Resolve',
   reviewChanges: 'Review changes',
   removeBookmark: 'Remove bookmark',
@@ -639,6 +647,7 @@ const spanish: Partial<UiStrings> = {
   applyPage: 'Aplicar pagina',
   autosave: 'Autoguardar',
   autosaveUpdated: 'Borrador de recuperacion actualizado',
+  accessibilityAndPerformance: 'Accesibilidad y rendimiento',
   blocks: 'Bloques',
   bold: 'Negrita',
   bottom: 'Inferior',
@@ -685,8 +694,10 @@ const spanish: Partial<UiStrings> = {
   insertImage: 'Insertar imagen',
   italic: 'Cursiva',
   language: 'Idioma',
+  largeToolbar: 'Barra y controles grandes',
   left: 'Izquierda',
   license: 'Licencia',
+  lowResourceMode: 'Modo de bajo consumo',
   mainMenu: 'Menu principal',
   new: 'Nuevo',
   next: 'Siguiente',
@@ -706,6 +717,7 @@ const spanish: Partial<UiStrings> = {
   recoveryDiscarded: 'Borrador de recuperacion descartado',
   recoveryOpened: 'Borrador de recuperacion abierto',
   redo: 'Rehacer',
+  reducedMotion: 'Movimiento reducido',
   replace: 'Reemplazar',
   right: 'Derecha',
   save: 'Guardar',
