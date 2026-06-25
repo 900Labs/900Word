@@ -131,6 +131,11 @@
     byte_len: number;
   }
 
+  interface PdfExportOptions {
+    pageStart?: number | null;
+    pageEnd?: number | null;
+  }
+
   interface DictionaryInfo {
     language_tag: string;
     display_name: string;
@@ -250,6 +255,9 @@
   let spellIssues = $state<SpellIssue[]>([]);
   let projectionWarnings = $state<string[]>([]);
   let exportPathInput = $state('');
+  let pdfPageRangeMode = $state<'all' | 'range'>('all');
+  let pdfPageStartInput = $state('1');
+  let pdfPageEndInput = $state('1');
   let fileState = $state<DocumentFileState>({
     has_current_path: false,
     dirty: false,
@@ -656,13 +664,39 @@
   async function exportPdf() {
     try {
       await waitForEditorSync();
+      const options = pdfExportOptions();
+      if (!options) {
+        status = tr('exportPdfInvalidRange');
+        return;
+      }
       const result = await invoke<ExportFileResult>('export_pdf_to_path', {
-        path: exportPathInput
+        path: exportPathInput,
+        options
       });
       status = tr('exportPdfSaved', { bytes: result.byte_len });
     } catch (error) {
       setStatusFromError(error);
     }
+  }
+
+  function pdfExportOptions(): PdfExportOptions | null {
+    if (pdfPageRangeMode === 'all') {
+      return {};
+    }
+    const pageStart = parsePositiveIntegerInput(pdfPageStartInput);
+    const pageEnd = parsePositiveIntegerInput(pdfPageEndInput);
+    if (pageStart === null || pageEnd === null || pageEnd < pageStart) {
+      return null;
+    }
+    return { pageStart, pageEnd };
+  }
+
+  function parsePositiveIntegerInput(value: string): number | null {
+    const trimmed = value.trim();
+    if (!/^[1-9]\d*$/.test(trimmed)) {
+      return null;
+    }
+    return Number.parseInt(trimmed, 10);
   }
 
   async function exportDocx() {
@@ -2120,6 +2154,49 @@
                 placeholder={tr('exportPathPlaceholder')}
                 type="text"
               />
+              <fieldset class="menu-field" aria-label={tr('pdfPageRange')}>
+                <legend>{tr('pdfPageRange')}</legend>
+                <label>
+                  <input
+                    checked={pdfPageRangeMode === 'all'}
+                    name="pdf-page-range-mode"
+                    type="radio"
+                    value="all"
+                    onchange={() => (pdfPageRangeMode = 'all')}
+                  />
+                  {tr('pdfAllPages')}
+                </label>
+                <div class="menu-input-row">
+                  <label>
+                    <input
+                      checked={pdfPageRangeMode === 'range'}
+                      name="pdf-page-range-mode"
+                      type="radio"
+                      value="range"
+                      onchange={() => (pdfPageRangeMode = 'range')}
+                    />
+                    {tr('pdfPageRangeFrom')}
+                  </label>
+                  <input
+                    aria-label={tr('pdfPageRangeFrom')}
+                    bind:value={pdfPageStartInput}
+                    disabled={pdfPageRangeMode !== 'range'}
+                    inputmode="numeric"
+                    min="1"
+                    type="number"
+                  />
+                </div>
+                <label for="file-menu-pdf-page-end">{tr('pdfPageRangeTo')}</label>
+                <input
+                  id="file-menu-pdf-page-end"
+                  aria-label={tr('pdfPageRangeTo')}
+                  bind:value={pdfPageEndInput}
+                  disabled={pdfPageRangeMode !== 'range'}
+                  inputmode="numeric"
+                  min="1"
+                  type="number"
+                />
+              </fieldset>
               <div class="export-format-grid">
                 <button class="format-option" type="button" onclick={() => runFileMenuAction(exportText)}>
                   <span>{tr('txt')}</span>

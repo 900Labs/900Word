@@ -11,6 +11,7 @@ use word_core::{
     ImagePresentation, Inline, ListBlock, ListItem, Paragraph, StyleId, Table, TableCell, TableRow,
     UndoStack,
 };
+use word_export::{PdfExportOptions, PdfPageRange};
 use word_spell::{DictionaryInfo, SpellIssue};
 
 const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
@@ -154,6 +155,15 @@ pub struct SpellCheckResult {
 pub struct ExportFileResult {
     pub format: String,
     pub byte_len: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfExportRequest {
+    #[serde(default)]
+    pub page_start: Option<usize>,
+    #[serde(default)]
+    pub page_end: Option<usize>,
 }
 
 impl Default for Settings {
@@ -431,9 +441,13 @@ fn export_html(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn export_pdf(state: State<'_, AppState>) -> Result<Vec<u8>, String> {
+fn export_pdf(
+    options: Option<PdfExportRequest>,
+    state: State<'_, AppState>,
+) -> Result<Vec<u8>, String> {
     let session = lock_session(&state)?;
-    word_export::export_basic_pdf(&session.document).map_err(|err| err.to_string())
+    let options = pdf_export_options_from_request(options)?;
+    word_export::export_pdf_with_options(&session.document, options).map_err(safe_pdf_export_error)
 }
 
 #[tauri::command]
@@ -461,11 +475,14 @@ fn export_html_to_path(
 #[tauri::command]
 fn export_pdf_to_path(
     path: String,
+    options: Option<PdfExportRequest>,
     state: State<'_, AppState>,
 ) -> Result<ExportFileResult, String> {
     let path = validate_path(&path, "pdf")?;
     let session = lock_session(&state)?;
-    let pdf = word_export::export_basic_pdf(&session.document).map_err(|err| err.to_string())?;
+    let options = pdf_export_options_from_request(options)?;
+    let pdf = word_export::export_pdf_with_options(&session.document, options)
+        .map_err(safe_pdf_export_error)?;
     write_export_bytes_to_path("pdf", &path, &pdf)
 }
 
@@ -1096,6 +1113,27 @@ fn safe_docx_export_error(_error: word_docx::DocxError) -> String {
     "DOCX export could not be prepared".to_string()
 }
 
+fn pdf_export_options_from_request(
+    request: Option<PdfExportRequest>,
+) -> Result<PdfExportOptions, String> {
+    let Some(request) = request else {
+        return Ok(PdfExportOptions::default());
+    };
+    let page_range = match (request.page_start, request.page_end) {
+        (None, None) => None,
+        (Some(start), Some(end)) if start > 0 && end >= start => Some(PdfPageRange { start, end }),
+        _ => return Err("PDF page range is invalid".to_string()),
+    };
+    Ok(PdfExportOptions { page_range })
+}
+
+fn safe_pdf_export_error(error: word_export::ExportError) -> String {
+    match error {
+        word_export::ExportError::EmptyDocument => "document has no sections".to_string(),
+        word_export::ExportError::InvalidPdfPageRange => "PDF page range is invalid".to_string(),
+    }
+}
+
 fn write_export_bytes_to_path(
     format: &str,
     path: &Path,
@@ -1609,6 +1647,47 @@ mod tests {
         let err = validate_path("document.txt", "odt").expect_err("txt path should fail");
 
         assert_eq!(err, "expected .odt document path");
+    }
+
+    #[test]
+    fn pdf_export_request_maps_valid_page_range() {
+        let options = pdf_export_options_from_request(Some(PdfExportRequest {
+            page_start: Some(2),
+            page_end: Some(4),
+        }))
+        .expect("valid range should map");
+
+        assert_eq!(options.page_range, Some(PdfPageRange { start: 2, end: 4 }));
+    }
+
+    #[test]
+    fn pdf_export_request_rejects_invalid_page_ranges_generically() {
+        let invalid = [
+            PdfExportRequest {
+                page_start: Some(0),
+                page_end: Some(1),
+            },
+            PdfExportRequest {
+                page_start: Some(3),
+                page_end: Some(2),
+            },
+            PdfExportRequest {
+                page_start: Some(1),
+                page_end: None,
+            },
+            PdfExportRequest {
+                page_start: None,
+                page_end: Some(1),
+            },
+        ];
+
+        for request in invalid {
+            let err = pdf_export_options_from_request(Some(request))
+                .expect_err("invalid range should fail");
+            assert_eq!(err, "PDF page range is invalid");
+            assert!(!err.contains('/'));
+            assert!(!err.contains("private"));
+        }
     }
 
     #[test]

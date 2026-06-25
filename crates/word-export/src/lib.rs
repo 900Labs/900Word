@@ -8,13 +8,32 @@ use word_core::{
 
 const POINTS_PER_MM: f32 = 72.0 / 25.4;
 const PDF_FONT_SIZE: f32 = 11.0;
+const PDF_REGION_FONT_SIZE: f32 = 9.0;
 const PDF_LEADING: f32 = 14.0;
+const PDF_REGION_LEADING: f32 = 12.0;
 const PDF_MIN_MARGIN_POINTS: f32 = 24.0;
+const PDF_REGION_GAP_POINTS: f32 = 10.0;
+const PDF_PAGE_NUMBER_TOKEN: &str = "\u{e000}page-number\u{e001}";
+const PDF_PAGE_COUNT_TOKEN: &str = "\u{e000}page-count\u{e001}";
+const PDF_DATE_TOKEN: &str = "\u{e000}date\u{e001}";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExportError {
     #[error("document has no sections")]
     EmptyDocument,
+    #[error("PDF page range is invalid")]
+    InvalidPdfPageRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PdfExportOptions {
+    pub page_range: Option<PdfPageRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PdfPageRange {
+    pub start: usize,
+    pub end: usize,
 }
 
 pub fn export_txt(document: &Document) -> Result<String, ExportError> {
@@ -44,34 +63,342 @@ pub fn export_print_html(document: &Document) -> Result<String, ExportError> {
 }
 
 pub fn export_basic_pdf(document: &Document) -> Result<Vec<u8>, ExportError> {
+    export_pdf_with_options(document, PdfExportOptions::default())
+}
+
+pub fn export_pdf_with_options(
+    document: &Document,
+    options: PdfExportOptions,
+) -> Result<Vec<u8>, ExportError> {
     if document.sections.is_empty() {
         return Err(ExportError::EmptyDocument);
     }
 
-    let default_page = PageSetup::default();
-    let page = document
-        .sections
-        .first()
-        .map(|section| &section.page)
-        .unwrap_or(&default_page);
-    let page_width = mm_to_points(page.width_mm);
-    let page_height = mm_to_points(page.height_mm);
-    let margin_left = mm_to_points(page.margin_left_mm).max(PDF_MIN_MARGIN_POINTS);
-    let margin_top = mm_to_points(page.margin_top_mm).max(PDF_MIN_MARGIN_POINTS);
-    let start_y = (page_height - margin_top).max(PDF_MIN_MARGIN_POINTS);
-    let lines = pdf_lines(document)?;
+    let pages = paginate_pdf(document)?;
+    let selected_pages = select_pdf_pages(&pages, options.page_range)?;
+    Ok(build_pdf(document, selected_pages, pages.len()))
+}
 
-    let mut stream = format!(
-        "BT /F1 {PDF_FONT_SIZE:.1} Tf {margin_left:.1} {start_y:.1} Td {PDF_LEADING:.1} TL\n"
-    );
-    for line in lines {
-        stream.push('(');
-        stream.push_str(&escape_pdf_text(&line));
-        stream.push_str(") Tj T*\n");
+#[derive(Debug, Clone)]
+struct PdfProjectedLine {
+    section_index: usize,
+    text: String,
+}
+
+#[derive(Debug, Clone)]
+enum PdfFlowItem {
+    Line(PdfProjectedLine),
+    PageBreak { section_index: usize },
+}
+
+#[derive(Debug, Clone)]
+struct PdfPage {
+    page_number: usize,
+    section_index: usize,
+    section_page_number: usize,
+    page_setup: PageSetup,
+    body_lines: Vec<String>,
+}
+
+fn paginate_pdf(document: &Document) -> Result<Vec<PdfPage>, ExportError> {
+    if document.sections.is_empty() {
+        return Err(ExportError::EmptyDocument);
     }
-    stream.push_str("ET");
 
-    Ok(build_pdf(page_width, page_height, &stream))
+    let flow = pdf_flow_items(document)?;
+    let mut pages: Vec<PdfPage> = Vec::new();
+    let mut current_section_index = 0;
+    let mut current_lines = Vec::new();
+
+    for item in flow {
+        match item {
+            PdfFlowItem::Line(line) => {
+                if !current_lines.is_empty() && line.section_index != current_section_index {
+                    push_pdf_page(
+                        document,
+                        &mut pages,
+                        current_section_index,
+                        std::mem::take(&mut current_lines),
+                    );
+                }
+                current_section_index = line.section_index;
+                let page_setup = &document.sections[line.section_index].page;
+                let max_chars = pdf_wrap_char_limit(page_setup);
+                for wrapped in wrap_pdf_line(&line.text, max_chars) {
+                    let section_page_number = pages
+                        .iter()
+                        .filter(|page| page.section_index == line.section_index)
+                        .count()
+                        + 1;
+                    let capacity = pdf_body_line_capacity(
+                        document,
+                        line.section_index,
+                        section_page_number,
+                        pages.len() + 1,
+                    );
+                    if current_lines.len() >= capacity {
+                        push_pdf_page(
+                            document,
+                            &mut pages,
+                            current_section_index,
+                            std::mem::take(&mut current_lines),
+                        );
+                    }
+                    current_lines.push(wrapped);
+                }
+            }
+            PdfFlowItem::PageBreak { section_index } => {
+                current_section_index = section_index;
+                push_pdf_page(
+                    document,
+                    &mut pages,
+                    current_section_index,
+                    std::mem::take(&mut current_lines),
+                );
+            }
+        }
+    }
+
+    if pages.is_empty() || !current_lines.is_empty() {
+        push_pdf_page(document, &mut pages, current_section_index, current_lines);
+    }
+
+    Ok(pages)
+}
+
+fn push_pdf_page(
+    document: &Document,
+    pages: &mut Vec<PdfPage>,
+    section_index: usize,
+    body_lines: Vec<String>,
+) {
+    let section_page_number = pages
+        .iter()
+        .filter(|page| page.section_index == section_index)
+        .count()
+        + 1;
+    pages.push(PdfPage {
+        page_number: pages.len() + 1,
+        section_index,
+        section_page_number,
+        page_setup: document.sections[section_index].page.clone(),
+        body_lines,
+    });
+}
+
+fn select_pdf_pages(
+    pages: &[PdfPage],
+    range: Option<PdfPageRange>,
+) -> Result<&[PdfPage], ExportError> {
+    let Some(range) = range else {
+        return Ok(pages);
+    };
+    if range.start == 0 || range.end < range.start || range.end > pages.len() {
+        return Err(ExportError::InvalidPdfPageRange);
+    }
+    Ok(&pages[(range.start - 1)..range.end])
+}
+
+fn pdf_flow_items(document: &Document) -> Result<Vec<PdfFlowItem>, ExportError> {
+    if document.sections.is_empty() {
+        return Err(ExportError::EmptyDocument);
+    }
+
+    let mut items = Vec::new();
+    for (section_index, section) in document.sections.iter().enumerate() {
+        for block in &section.blocks {
+            push_block_pdf_items(block, document, section_index, &mut items);
+        }
+    }
+
+    let mut notes = String::new();
+    push_notes_text(document, &mut notes);
+    let note_section_index = document.sections.len().saturating_sub(1);
+    for line in notes.lines() {
+        items.push(PdfFlowItem::Line(PdfProjectedLine {
+            section_index: note_section_index,
+            text: line.to_string(),
+        }));
+    }
+
+    if items.is_empty() {
+        items.push(PdfFlowItem::Line(PdfProjectedLine {
+            section_index: 0,
+            text: String::new(),
+        }));
+    }
+
+    Ok(items)
+}
+
+fn push_block_pdf_items(
+    block: &Block,
+    document: &Document,
+    section_index: usize,
+    items: &mut Vec<PdfFlowItem>,
+) {
+    match block {
+        Block::PageBreak => items.push(PdfFlowItem::PageBreak { section_index }),
+        _ => {
+            let mut text = String::new();
+            push_block_pdf_text(block, document, &mut text);
+            for line in text.lines() {
+                items.push(PdfFlowItem::Line(PdfProjectedLine {
+                    section_index,
+                    text: line.to_string(),
+                }));
+            }
+            items.push(PdfFlowItem::Line(PdfProjectedLine {
+                section_index,
+                text: String::new(),
+            }));
+        }
+    }
+}
+
+fn push_block_pdf_text(block: &Block, document: &Document, output: &mut String) {
+    match block {
+        Block::Paragraph(paragraph) => push_inlines_pdf_text(&paragraph.inlines, document, output),
+        Block::Heading(heading) => push_inlines_pdf_text(&heading.inlines, document, output),
+        Block::TableOfContents(table_of_contents) => {
+            push_table_of_contents_text(table_of_contents, output)
+        }
+        Block::List(list) => {
+            let ordered = document
+                .lists
+                .get(&list.definition_id)
+                .map(|definition| definition.ordered)
+                .unwrap_or(false);
+            for (index, item) in list.items.iter().enumerate() {
+                for _ in 0..item.level {
+                    output.push_str("  ");
+                }
+                if ordered {
+                    output.push_str(&(index + 1).to_string());
+                    output.push_str(". ");
+                } else {
+                    output.push_str("- ");
+                }
+                for block in &item.blocks {
+                    push_block_pdf_text(block, document, output);
+                    output.push('\n');
+                }
+            }
+        }
+        Block::Table(table) => {
+            for row in &table.rows {
+                let mut first_cell = true;
+                for cell in &row.cells {
+                    if !first_cell {
+                        output.push_str("    ");
+                    }
+                    first_cell = false;
+                    let mut cell_text = String::new();
+                    for block in &cell.blocks {
+                        push_block_pdf_text(block, document, &mut cell_text);
+                    }
+                    output.push_str(cell_text.trim());
+                }
+                output.push('\n');
+            }
+        }
+        Block::Image(image) => {
+            if let Some(alt_text) = image
+                .alt_text
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                output.push_str(alt_text);
+            }
+            if let Some(caption) = image
+                .presentation
+                .caption
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                output.push_str(caption);
+            }
+        }
+        Block::PageBreak => {}
+    }
+}
+
+fn push_inlines_pdf_text(inlines: &[Inline], document: &Document, output: &mut String) {
+    for inline in inlines {
+        output.push_str(&inline_pdf_text(inline, document));
+    }
+}
+
+fn inline_pdf_text(inline: &Inline, document: &Document) -> String {
+    if let Some(reference) = inline.note_reference.as_ref() {
+        return reference.label.clone();
+    }
+    match inline.field {
+        Some(PageField::PageNumber) => PDF_PAGE_NUMBER_TOKEN.to_string(),
+        Some(PageField::PageCount) => PDF_PAGE_COUNT_TOKEN.to_string(),
+        Some(PageField::Date) => document.meta.modified_at.format("%Y-%m-%d").to_string(),
+        None => inline.text.clone(),
+    }
+}
+
+fn pdf_body_line_capacity(
+    document: &Document,
+    section_index: usize,
+    section_page_number: usize,
+    next_global_page_number: usize,
+) -> usize {
+    let page_setup = &document.sections[section_index].page;
+    let page_height = mm_to_points(page_setup.height_mm);
+    let margin_top = mm_to_points(page_setup.margin_top_mm).max(PDF_MIN_MARGIN_POINTS);
+    let margin_bottom = mm_to_points(page_setup.margin_bottom_mm).max(PDF_MIN_MARGIN_POINTS);
+    let header_lines = pdf_header_lines(
+        document,
+        section_index,
+        section_page_number,
+        next_global_page_number,
+        1,
+    )
+    .len();
+    let footer_lines = pdf_footer_lines(
+        document,
+        section_index,
+        section_page_number,
+        next_global_page_number,
+        1,
+    )
+    .len();
+    let header_height = pdf_region_height(header_lines);
+    let footer_height = pdf_region_height(footer_lines);
+    let top = page_height - margin_top - header_height - pdf_region_gap(header_lines);
+    let bottom = margin_bottom + footer_height + pdf_region_gap(footer_lines);
+    ((top - bottom) / PDF_LEADING).floor().max(1.0) as usize
+}
+
+fn pdf_wrap_char_limit(page_setup: &PageSetup) -> usize {
+    let page_width = mm_to_points(page_setup.width_mm);
+    let margin_left = mm_to_points(page_setup.margin_left_mm).max(PDF_MIN_MARGIN_POINTS);
+    let margin_right = mm_to_points(page_setup.margin_right_mm).max(PDF_MIN_MARGIN_POINTS);
+    let content_width = (page_width - margin_left - margin_right).max(PDF_FONT_SIZE * 20.0);
+    (content_width / (PDF_FONT_SIZE * 0.52)).floor().max(20.0) as usize
+}
+
+fn pdf_region_height(line_count: usize) -> f32 {
+    if line_count == 0 {
+        0.0
+    } else {
+        line_count as f32 * PDF_REGION_LEADING
+    }
+}
+
+fn pdf_region_gap(line_count: usize) -> f32 {
+    if line_count == 0 {
+        0.0
+    } else {
+        PDF_REGION_GAP_POINTS
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -894,26 +1221,12 @@ fn push_export_css(document: &Document, options: HtmlExportOptions, output: &mut
     output.push_str("</style>");
 }
 
-fn pdf_lines(document: &Document) -> Result<Vec<String>, ExportError> {
-    let text = export_txt(document)?;
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            lines.push(String::new());
-            continue;
-        }
-        for chunk in wrap_pdf_line(line, 92) {
-            lines.push(chunk);
-        }
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    Ok(lines)
-}
-
 fn wrap_pdf_line(line: &str, limit: usize) -> Vec<String> {
     let mut chunks = Vec::new();
+    if line.trim().is_empty() {
+        chunks.push(String::new());
+        return chunks;
+    }
     let mut current = String::new();
     for word in line.split_whitespace() {
         if current.is_empty() {
@@ -932,6 +1245,76 @@ fn wrap_pdf_line(line: &str, limit: usize) -> Vec<String> {
     chunks
 }
 
+fn pdf_header_lines(
+    document: &Document,
+    section_index: usize,
+    section_page_number: usize,
+    field_page_number: usize,
+    total_pages: usize,
+) -> Vec<String> {
+    let section = &document.sections[section_index];
+    let region = if section.page_regions.different_first_page && section_page_number == 1 {
+        &section.page_regions.first_header
+    } else {
+        &section.page_regions.header
+    };
+    pdf_region_lines(region, document, field_page_number, total_pages)
+}
+
+fn pdf_footer_lines(
+    document: &Document,
+    section_index: usize,
+    section_page_number: usize,
+    field_page_number: usize,
+    total_pages: usize,
+) -> Vec<String> {
+    let section = &document.sections[section_index];
+    let region = if section.page_regions.different_first_page && section_page_number == 1 {
+        &section.page_regions.first_footer
+    } else {
+        &section.page_regions.footer
+    };
+    pdf_region_lines(region, document, field_page_number, total_pages)
+}
+
+fn pdf_region_lines(
+    region: &PageRegion,
+    document: &Document,
+    page_number: usize,
+    total_pages: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for block in &region.blocks {
+        match block {
+            PageRegionBlock::Paragraph(paragraph) => {
+                let mut line = String::new();
+                push_inlines_pdf_text(&paragraph.inlines, document, &mut line);
+                lines.push(resolve_pdf_page_fields(
+                    &line,
+                    page_number,
+                    total_pages,
+                    document,
+                ));
+            }
+        }
+    }
+    lines
+}
+
+fn resolve_pdf_page_fields(
+    text: &str,
+    page_number: usize,
+    total_pages: usize,
+    document: &Document,
+) -> String {
+    text.replace(PDF_PAGE_NUMBER_TOKEN, &page_number.to_string())
+        .replace(PDF_PAGE_COUNT_TOKEN, &total_pages.to_string())
+        .replace(
+            PDF_DATE_TOKEN,
+            &document.meta.modified_at.format("%Y-%m-%d").to_string(),
+        )
+}
+
 fn escape_pdf_text(input: &str) -> String {
     let mut output = String::new();
     for ch in input.chars() {
@@ -947,16 +1330,37 @@ fn escape_pdf_text(input: &str) -> String {
     output
 }
 
-fn build_pdf(page_width: f32, page_height: f32, stream: &str) -> Vec<u8> {
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-        format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.1} {page_height:.1}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
-        ),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
-        format!("<< /Length {} >>\nstream\n{}\nendstream", stream.len(), stream),
-    ];
+fn build_pdf(document: &Document, pages: &[PdfPage], total_pages: usize) -> Vec<u8> {
+    let mut objects = Vec::new();
+    let font_object_number = 3;
+    let mut kids = Vec::new();
+
+    objects.push("<< /Type /Catalog /Pages 2 0 R >>".to_string());
+    objects.push(String::new());
+    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string());
+
+    for page in pages {
+        let page_object_number = objects.len() + 1;
+        let content_object_number = page_object_number + 1;
+        kids.push(format!("{page_object_number} 0 R"));
+        let page_width = mm_to_points(page.page_setup.width_mm);
+        let page_height = mm_to_points(page.page_setup.height_mm);
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_width:.1} {page_height:.1}] /Resources << /Font << /F1 {font_object_number} 0 R >> >> /Contents {content_object_number} 0 R >>"
+        ));
+        let stream = pdf_page_stream(document, page, total_pages);
+        objects.push(format!(
+            "<< /Length {} >>\nstream\n{}\nendstream",
+            stream.len(),
+            stream
+        ));
+    }
+
+    objects[1] = format!(
+        "<< /Type /Pages /Kids [{}] /Count {} >>",
+        kids.join(" "),
+        pages.len()
+    );
 
     let mut pdf = String::from("%PDF-1.4\n");
     let mut offsets = Vec::with_capacity(objects.len() + 1);
@@ -976,6 +1380,96 @@ fn build_pdf(page_width: f32, page_height: f32, stream: &str) -> Vec<u8> {
         objects.len() + 1
     ));
     pdf.into_bytes()
+}
+
+fn pdf_page_stream(document: &Document, page: &PdfPage, total_pages: usize) -> String {
+    let page_width = mm_to_points(page.page_setup.width_mm);
+    let page_height = mm_to_points(page.page_setup.height_mm);
+    let margin_left = mm_to_points(page.page_setup.margin_left_mm).max(PDF_MIN_MARGIN_POINTS);
+    let margin_top = mm_to_points(page.page_setup.margin_top_mm).max(PDF_MIN_MARGIN_POINTS);
+    let margin_bottom = mm_to_points(page.page_setup.margin_bottom_mm).max(PDF_MIN_MARGIN_POINTS);
+    let header_lines = pdf_header_lines(
+        document,
+        page.section_index,
+        page.section_page_number,
+        page.page_number,
+        total_pages,
+    );
+    let footer_lines = pdf_footer_lines(
+        document,
+        page.section_index,
+        page.section_page_number,
+        page.page_number,
+        total_pages,
+    );
+    let header_height = pdf_region_height(header_lines.len());
+    let footer_height = pdf_region_height(footer_lines.len());
+    let body_start_y =
+        page_height - margin_top - header_height - pdf_region_gap(header_lines.len());
+    let footer_start_y =
+        (margin_bottom + footer_height - PDF_REGION_LEADING).max(PDF_MIN_MARGIN_POINTS / 2.0);
+
+    let mut stream = String::new();
+    if !header_lines.is_empty() {
+        push_pdf_text_block(
+            &mut stream,
+            PDF_REGION_FONT_SIZE,
+            PDF_REGION_LEADING,
+            margin_left,
+            page_height - margin_top,
+            &header_lines,
+        );
+    }
+
+    let body_lines = page
+        .body_lines
+        .iter()
+        .map(|line| resolve_pdf_page_fields(line, page.page_number, total_pages, document))
+        .collect::<Vec<_>>();
+    push_pdf_text_block(
+        &mut stream,
+        PDF_FONT_SIZE,
+        PDF_LEADING,
+        margin_left,
+        body_start_y.max(margin_bottom + footer_height + PDF_LEADING),
+        &body_lines,
+    );
+
+    if !footer_lines.is_empty() {
+        push_pdf_text_block(
+            &mut stream,
+            PDF_REGION_FONT_SIZE,
+            PDF_REGION_LEADING,
+            margin_left,
+            footer_start_y,
+            &footer_lines,
+        );
+    }
+
+    if page_width > 0.0 {
+        stream
+    } else {
+        String::new()
+    }
+}
+
+fn push_pdf_text_block(
+    stream: &mut String,
+    font_size: f32,
+    leading: f32,
+    x: f32,
+    y: f32,
+    lines: &[String],
+) {
+    stream.push_str(&format!(
+        "BT /F1 {font_size:.1} Tf {x:.1} {y:.1} Td {leading:.1} TL\n"
+    ));
+    for line in lines {
+        stream.push('(');
+        stream.push_str(&escape_pdf_text(line));
+        stream.push_str(") Tj T*\n");
+    }
+    stream.push_str("ET\n");
 }
 
 fn mm_to_points(value: u16) -> f32 {
@@ -1451,6 +1945,251 @@ mod tests {
     }
 
     #[test]
+    fn pdf_export_paginates_into_multiple_page_objects() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page = compact_test_page();
+        document.sections[0].blocks = (0..36)
+            .map(|index| {
+                Block::Paragraph(Paragraph {
+                    bookmark_id: None,
+                    style: "body".into(),
+                    format: Default::default(),
+                    inlines: vec![Inline::text(format!("Line {index}"))],
+                })
+            })
+            .collect();
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert!(pdf_page_object_count(&text) > 1);
+        assert!(text.contains("/Type /Pages"));
+        assert!(text.contains("/Kids ["));
+        assert!(text.contains(&format!("/Count {}", pdf_page_object_count(&text))));
+    }
+
+    #[test]
+    fn pdf_export_honors_explicit_page_breaks() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![Inline::text("Before break")],
+            }),
+            Block::PageBreak,
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![Inline::text("After break")],
+            }),
+        ];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_page_object_count(&text), 2);
+        assert!(pdf_contains(&pdf, "Before break"));
+        assert!(pdf_contains(&pdf, "After break"));
+    }
+
+    #[test]
+    fn pdf_export_keeps_section_page_setup_boundaries() {
+        let mut document = Document::new_untitled();
+        let mut first_section = Section {
+            page: PageSetup {
+                width_mm: 80,
+                height_mm: 80,
+                margin_top_mm: 10,
+                margin_right_mm: 10,
+                margin_bottom_mm: 10,
+                margin_left_mm: 10,
+            },
+            ..Section::default()
+        };
+        first_section.blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: "body".into(),
+            format: Default::default(),
+            inlines: vec![Inline::text("First section")],
+        })];
+        let mut second_section = Section {
+            page: PageSetup {
+                width_mm: 120,
+                height_mm: 100,
+                margin_top_mm: 10,
+                margin_right_mm: 10,
+                margin_bottom_mm: 10,
+                margin_left_mm: 10,
+            },
+            ..Section::default()
+        };
+        second_section.blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: "body".into(),
+            format: Default::default(),
+            inlines: vec![Inline::text("Second section")],
+        })];
+        document.sections = vec![first_section, second_section];
+
+        let pages = paginate_pdf(&document).expect("pdf pagination should succeed");
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].section_index, 0);
+        assert_eq!(pages[0].page_setup.width_mm, 80);
+        assert_eq!(pages[1].section_index, 1);
+        assert_eq!(pages[1].page_setup.width_mm, 120);
+        assert!(text.contains("/MediaBox [0 0 226.8 226.8]"));
+        assert!(text.contains("/MediaBox [0 0 340.2 283.5]"));
+        assert!(pdf_contains(&pdf, "First section"));
+        assert!(pdf_contains(&pdf, "Second section"));
+    }
+
+    #[test]
+    fn pdf_export_renders_header_footer_fields_deterministically() {
+        let mut document = Document::new_untitled();
+        document.sections[0].page = compact_test_page();
+        document.sections[0].page_regions.header.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![
+                    Inline::text("Page "),
+                    Inline::field(PageField::PageNumber),
+                    Inline::text(" of "),
+                    Inline::field(PageField::PageCount),
+                ],
+            })];
+        document.sections[0].page_regions.footer.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![Inline::text("Updated "), Inline::field(PageField::Date)],
+            })];
+        document.sections[0].blocks = (0..24)
+            .map(|index| {
+                Block::Paragraph(Paragraph {
+                    bookmark_id: None,
+                    style: "body".into(),
+                    format: Default::default(),
+                    inlines: vec![Inline::text(format!("Body {index}"))],
+                })
+            })
+            .collect();
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+        let page_count = pdf_page_object_count(&text);
+        let expected_date = document.meta.modified_at.format("%Y-%m-%d").to_string();
+
+        assert!(page_count > 1);
+        assert!(pdf_contains(&pdf, &format!("Page 1 of {page_count}")));
+        assert!(pdf_contains(
+            &pdf,
+            &format!("Page {page_count} of {page_count}")
+        ));
+        assert!(pdf_contains(&pdf, &format!("Updated {expected_date}")));
+    }
+
+    #[test]
+    fn pdf_export_validates_page_ranges() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![Inline::text("Page one")],
+            }),
+            Block::PageBreak,
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: "body".into(),
+                format: Default::default(),
+                inlines: vec![Inline::text("Page two")],
+            }),
+        ];
+
+        let one_page = export_pdf_with_options(
+            &document,
+            PdfExportOptions {
+                page_range: Some(PdfPageRange { start: 2, end: 2 }),
+            },
+        )
+        .expect("valid range should export");
+        let text = String::from_utf8_lossy(&one_page);
+        assert_eq!(pdf_page_object_count(&text), 1);
+        assert!(!pdf_contains(&one_page, "Page one"));
+        assert!(pdf_contains(&one_page, "Page two"));
+
+        assert_eq!(
+            export_pdf_with_options(
+                &document,
+                PdfExportOptions {
+                    page_range: Some(PdfPageRange { start: 0, end: 1 }),
+                },
+            )
+            .expect_err("zero range should fail"),
+            ExportError::InvalidPdfPageRange
+        );
+        assert_eq!(
+            export_pdf_with_options(
+                &document,
+                PdfExportOptions {
+                    page_range: Some(PdfPageRange { start: 3, end: 3 }),
+                },
+            )
+            .expect_err("empty range should fail"),
+            ExportError::InvalidPdfPageRange
+        );
+        assert_eq!(
+            export_pdf_with_options(
+                &document,
+                PdfExportOptions {
+                    page_range: Some(PdfPageRange { start: 2, end: 1 }),
+                },
+            )
+            .expect_err("inverted range should fail"),
+            ExportError::InvalidPdfPageRange
+        );
+    }
+
+    #[test]
+    fn pdf_export_omits_private_metadata_and_local_paths() {
+        let mut document = Document::new_untitled();
+        document.meta.title = "private-client-name".to_string();
+        document.assets.insert(
+            "image-1.png".to_string(),
+            word_core::AssetRef {
+                id: "image-1.png".to_string(),
+                media_type: "image/png".to_string(),
+                byte_len: 8,
+                bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+                original_name: Some("private-client-name.png".to_string()),
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "image-1.png".to_string(),
+            presentation: ImagePresentation {
+                alignment: ImageAlignment::Center,
+                scale_percent: 100,
+                caption: Some("Generic caption".to_string()),
+            },
+            alt_text: Some("Generic image".to_string()),
+        })];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert!(!text.contains("private-client-name"));
+        assert!(!text.contains("file://"));
+        assert!(!text.contains("CreationDate"));
+        assert!(!text.contains("Producer"));
+        assert!(pdf_contains(&pdf, "Generic image"));
+        assert!(pdf_contains(&pdf, "Generic caption"));
+    }
+
+    #[test]
     fn pdf_export_returns_pdf_header() {
         let document = Document::new_untitled();
 
@@ -1462,5 +2201,25 @@ mod tests {
         assert!(!pdf
             .windows("Start writing...".len())
             .any(|window| window == b"Start writing..."));
+    }
+
+    fn compact_test_page() -> PageSetup {
+        PageSetup {
+            width_mm: 80,
+            height_mm: 80,
+            margin_top_mm: 10,
+            margin_right_mm: 10,
+            margin_bottom_mm: 10,
+            margin_left_mm: 10,
+        }
+    }
+
+    fn pdf_page_object_count(pdf: &str) -> usize {
+        pdf.matches("/Type /Page ").count()
+    }
+
+    fn pdf_contains(pdf: &[u8], needle: &str) -> bool {
+        pdf.windows(needle.len())
+            .any(|window| window == needle.as_bytes())
     }
 }
