@@ -43,10 +43,18 @@ describe('i18n', () => {
   it('labels the offline dictionary manager in supported locales', () => {
     expect(translate('en-US', 'dictionaryManager')).toBe('Dictionary manager');
     expect(translate('en-US', 'dictionaryOfflineState')).toContain('Offline/local only');
+    expect(translate('en-US', 'dictionaryInstallLocal')).toBe('Install local Hunspell dictionary');
+    expect(translate('en-US', 'dictionaryAffSelected')).toBe('AFF selected');
+    expect(translate('en-US', 'dictionaryDicNotSelected')).toBe('No DIC selected');
+    expect(translate('en-US', 'dictionaryInstallUnsupportedFile')).toBe(
+      'Dictionary files are unsupported'
+    );
     expect(translate('es-ES', 'dictionarySourceUserFolder')).toBe(
       'Carpeta local de diccionarios del usuario'
     );
+    expect(translate('es-ES', 'dictionaryInstallSuccess')).toBe('Diccionario instalado');
     expect(translate('ar', 'dictionaryRefresh')).toBe('Refresh');
+    expect(translate('ar', 'dictionaryChooseAff')).toBe('Choose AFF');
     expect(translate('en-US', 'dictionaryUnavailableOption', { languageTag: 'sv-SE' })).toBe(
       'Unavailable (sv-SE)'
     );
