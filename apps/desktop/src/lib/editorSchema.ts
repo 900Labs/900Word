@@ -97,6 +97,61 @@ const nodes: Record<string, NodeSpec> = {
       return [`h${node.attrs.level}`, blockBookmarkDomAttrs(node.attrs), 0];
     }
   },
+  table_of_contents: {
+    attrs: {
+      title: {
+        default: 'Contents',
+        validate(value: unknown) {
+          if (typeof value !== 'string' || !safeTocTitle(value)) {
+            throw new RangeError('unsupported table of contents title');
+          }
+        }
+      },
+      entries: {
+        default: [],
+        validate(value: unknown) {
+          if (!Array.isArray(value) || !value.every(safeTocEntry)) {
+            throw new RangeError('unsupported table of contents entries');
+          }
+        }
+      }
+    },
+    atom: true,
+    selectable: true,
+    group: 'block',
+    parseDOM: [
+      {
+        tag: 'nav[data-900word-block="table-of-contents"]',
+        getAttrs(node) {
+          const title = node.getAttribute('data-toc-title') ?? '';
+          return {
+            title: safeTocTitle(title) ? title : 'Contents',
+            entries: tocEntriesFromDom(node)
+          };
+        }
+      }
+    ],
+    toDOM(node) {
+      const entries = normalizeTocEntries(node.attrs.entries);
+      return [
+        'nav',
+        tocDomAttrs(node.attrs, entries),
+        ['div', { class: 'toc-title' }, safeTocTitle(String(node.attrs.title)) ? String(node.attrs.title).trim() : 'Contents'],
+        [
+          'ol',
+          { class: 'toc-list' },
+          ...entries.map((entry) => [
+            'li',
+            { class: `toc-level-${entry.level}`, 'data-toc-level': String(entry.level) },
+            ['a', { href: `#${entry.target_bookmark_id}` }, entry.text]
+          ])
+        ]
+      ];
+    },
+    leafText(node) {
+      return tocPlainText(String(node.attrs.title ?? 'Contents'), normalizeTocEntries(node.attrs.entries));
+    }
+  },
   bullet_list: {
     attrs: {
       definitionId: { default: '900w-unordered' }
@@ -621,6 +676,84 @@ function headingAttrsFromDom(node: Element, level: number): Record<string, strin
     level,
     bookmarkId: sanitizeBookmarkId(node.getAttribute('data-bookmark-id') ?? node.getAttribute('id') ?? '') ?? null
   };
+}
+
+interface TocDomEntry {
+  level: number;
+  text: string;
+  target_bookmark_id: string;
+}
+
+function tocEntriesFromDom(node: Element): TocDomEntry[] {
+  const raw = node.getAttribute('data-toc-entries');
+  if (!raw) {
+    return [];
+  }
+  try {
+    return normalizeTocEntries(JSON.parse(raw));
+  } catch {
+    return [];
+  }
+}
+
+function tocDomAttrs(attrs: Record<string, unknown>, entries: TocDomEntry[]): Record<string, string> {
+  const title = safeTocTitle(String(attrs.title ?? '')) ? String(attrs.title).trim() : 'Contents';
+  return {
+    class: 'toc-block',
+    'data-900word-block': 'table-of-contents',
+    'data-toc-title': title,
+    'data-toc-entries': JSON.stringify(entries),
+    contenteditable: 'false',
+    'aria-label': title
+  };
+}
+
+function tocPlainText(title: string, entries: TocDomEntry[]): string {
+  const lines = [safeTocTitle(title) ? title.trim() : 'Contents'];
+  for (const entry of entries) {
+    lines.push(`${'  '.repeat(entry.level - 1)}${entry.text}`);
+  }
+  return lines.filter(Boolean).join('\n');
+}
+
+function normalizeTocEntries(value: unknown): TocDomEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry): TocDomEntry | undefined => {
+      if (!safeTocEntry(entry)) {
+        return undefined;
+      }
+      return {
+        level: Math.trunc(Number(entry.level)),
+        text: safeTocText(String(entry.text)),
+        target_bookmark_id: sanitizeBookmarkId(String(entry.target_bookmark_id)) ?? ''
+      };
+    })
+    .filter((entry): entry is TocDomEntry => entry !== undefined);
+}
+
+function safeTocTitle(value: string): boolean {
+  const trimmed = value.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return trimmed.length > 0 && Array.from(trimmed).length <= 120;
+}
+
+function safeTocText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+}
+
+function safeTocEntry(value: unknown): value is TocDomEntry {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const entry = value as Partial<TocDomEntry>;
+  const level = Math.trunc(Number(entry.level));
+  const text = typeof entry.text === 'string' ? safeTocText(entry.text) : '';
+  const target = typeof entry.target_bookmark_id === 'string'
+    ? sanitizeBookmarkId(entry.target_bookmark_id)
+    : null;
+  return level >= 1 && level <= 3 && text.length > 0 && Boolean(target);
 }
 
 function blockBookmarkDomAttrs(attrs: Record<string, unknown>): Record<string, string> {

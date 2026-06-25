@@ -129,6 +129,7 @@ export type UiStringKey =
   | 'imageUpdated'
   | 'insertion'
   | 'insertImage'
+  | 'insertOrUpdateTableOfContents'
   | 'insertTable'
   | 'insertTableShort'
   | 'ignoreAll'
@@ -250,6 +251,8 @@ export type UiStringKey =
   | 'tableColumns'
   | 'tableDeleted'
   | 'tableInserted'
+  | 'tableOfContents'
+  | 'tableOfContentsUpdated'
   | 'tableRows'
   | 'tableUpdated'
   | 'tables'
@@ -416,6 +419,7 @@ const english: UiStrings = {
   imageUpdated: 'Image updated',
   insertion: 'Insertion',
   insertImage: 'Insert image',
+  insertOrUpdateTableOfContents: 'Insert/update contents',
   insertTable: 'Insert table',
   insertTableShort: 'Insert',
   ignoreAll: 'Ignore all',
@@ -537,6 +541,8 @@ const english: UiStrings = {
   tableColumns: 'Table columns',
   tableDeleted: 'Table deleted',
   tableInserted: 'Table inserted',
+  tableOfContents: 'Table of contents',
+  tableOfContentsUpdated: 'Contents updated from Heading 1-3',
   tableRows: 'Table rows',
   tableUpdated: 'Table updated',
   tables: 'Tables',

@@ -130,6 +130,43 @@ impl Document {
                 self.touch();
                 Ok(())
             }
+            DocumentCommand::InsertOrUpdateTableOfContents {
+                section_index,
+                block_index,
+            } => {
+                let used_bookmark_ids = collect_safe_bookmark_id_counts(&self.sections);
+                let section = self
+                    .sections
+                    .get_mut(section_index)
+                    .ok_or(DocumentError::SectionOutOfBounds { section_index })?;
+                if block_index > section.blocks.len() {
+                    return Err(DocumentError::BlockOutOfBounds { block_index });
+                }
+                let existing_index = section
+                    .blocks
+                    .iter()
+                    .position(|block| matches!(block, Block::TableOfContents(_)));
+                let existing_title =
+                    existing_index.and_then(|index| match &section.blocks[index] {
+                        Block::TableOfContents(table_of_contents) => {
+                            sanitized_table_of_contents_title(&table_of_contents.title)
+                        }
+                        _ => None,
+                    });
+                let mut toc = build_table_of_contents(section, &used_bookmark_ids);
+                if let Some(title) = existing_title {
+                    toc.title = title;
+                }
+                if let Some(existing_index) = existing_index {
+                    section.blocks[existing_index] = Block::TableOfContents(toc);
+                } else {
+                    section
+                        .blocks
+                        .insert(block_index, Block::TableOfContents(toc));
+                }
+                self.touch();
+                Ok(())
+            }
             DocumentCommand::UpdatePageSetup {
                 section_index,
                 page,
@@ -334,6 +371,9 @@ pub const MAX_COMMENT_ID_LEN: usize = 64;
 pub const MAX_COMMENT_BODY_CHARS: usize = 2_000;
 pub const MAX_COMMENT_AUTHOR_CHARS: usize = 80;
 pub const MAX_TRACKED_CHANGE_ID_LEN: usize = 64;
+pub const MAX_TABLE_OF_CONTENTS_TITLE_CHARS: usize = 120;
+pub const MAX_TABLE_OF_CONTENTS_ENTRY_TEXT_CHARS: usize = 240;
+pub const MAX_TABLE_OF_CONTENTS_ENTRIES: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentThread {
@@ -573,6 +613,7 @@ pub struct PageRegionParagraph {
 pub enum Block {
     Paragraph(Paragraph),
     Heading(Heading),
+    TableOfContents(TableOfContents),
     List(ListBlock),
     Table(Table),
     Image(ImageBlock),
@@ -584,6 +625,7 @@ impl Block {
         match self {
             Block::Paragraph(paragraph) => paragraph.push_text(output),
             Block::Heading(heading) => heading.push_text(output),
+            Block::TableOfContents(table_of_contents) => table_of_contents.push_text(output),
             Block::List(list) => {
                 for item in &list.items {
                     for block in &item.blocks {
@@ -657,6 +699,49 @@ impl Heading {
             inline.push_text(output);
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableOfContents {
+    #[serde(default = "default_table_of_contents_title")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<TableOfContentsEntry>,
+}
+
+impl TableOfContents {
+    pub fn new(entries: Vec<TableOfContentsEntry>) -> Self {
+        Self {
+            title: default_table_of_contents_title(),
+            entries,
+        }
+    }
+
+    fn push_text(&self, output: &mut String) {
+        if !self.title.trim().is_empty() {
+            output.push_str(self.title.trim());
+        }
+        for entry in &self.entries {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            for _ in 1..entry.level.clamp(1, 3) {
+                output.push_str("  ");
+            }
+            output.push_str(&entry.text);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableOfContentsEntry {
+    pub level: u8,
+    pub text: String,
+    pub target_bookmark_id: String,
+}
+
+fn default_table_of_contents_title() -> String {
+    "Contents".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -947,6 +1032,10 @@ pub enum DocumentCommand {
         section_index: usize,
         block_index: usize,
     },
+    InsertOrUpdateTableOfContents {
+        section_index: usize,
+        block_index: usize,
+    },
     UpdatePageSetup {
         section_index: usize,
         page: PageSetup,
@@ -1100,6 +1189,205 @@ fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DocumentEr
     }
 }
 
+pub fn sanitize_bookmark_id(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let mut chars = trimmed.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic() || trimmed.len() > 64 {
+        return None;
+    }
+    if chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn build_table_of_contents(
+    section: &mut Section,
+    safe_bookmark_counts: &BTreeMap<String, usize>,
+) -> TableOfContents {
+    let mut reserved_ids = safe_bookmark_counts
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut assigned_ids = BTreeSet::new();
+    let mut entries = Vec::new();
+
+    for block in &mut section.blocks {
+        let Block::Heading(heading) = block else {
+            continue;
+        };
+        let level = heading.level;
+        if !(1..=3).contains(&level) {
+            continue;
+        }
+        let text = heading_plain_text(heading);
+        if text.is_empty() {
+            continue;
+        }
+
+        let current = heading
+            .bookmark_id
+            .as_deref()
+            .and_then(sanitize_bookmark_id);
+        let target_bookmark_id = match current {
+            Some(id)
+                if safe_bookmark_counts.get(&id).copied() == Some(1)
+                    && assigned_ids.insert(id.clone()) =>
+            {
+                if heading.bookmark_id.as_deref() != Some(id.as_str()) {
+                    heading.bookmark_id = Some(id.clone());
+                }
+                id
+            }
+            _ => {
+                let id = unique_toc_bookmark_id(&text, &mut reserved_ids);
+                heading.bookmark_id = Some(id.clone());
+                assigned_ids.insert(id.clone());
+                id
+            }
+        };
+
+        entries.push(TableOfContentsEntry {
+            level,
+            text,
+            target_bookmark_id,
+        });
+    }
+
+    TableOfContents::new(entries)
+}
+
+fn heading_plain_text(heading: &Heading) -> String {
+    let mut text = String::new();
+    for inline in &heading.inlines {
+        inline.push_text(&mut text);
+    }
+    text.trim().to_string()
+}
+
+fn sanitized_table_of_contents_title(value: &str) -> Option<String> {
+    let title = value
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(MAX_TABLE_OF_CONTENTS_TITLE_CHARS)
+        .collect::<String>();
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn unique_toc_bookmark_id(text: &str, reserved_ids: &mut BTreeSet<String>) -> String {
+    let slug = bookmark_slug(text);
+    let mut base = format!("toc-{slug}");
+    if base.len() > 56 {
+        base.truncate(56);
+        while base.ends_with('-') {
+            base.pop();
+        }
+    }
+    if base == "toc" || sanitize_bookmark_id(&base).is_none() {
+        base = "toc-heading".to_string();
+    }
+
+    let mut counter = 1_usize;
+    loop {
+        let candidate = if counter == 1 {
+            base.clone()
+        } else {
+            let suffix = format!("-{counter}");
+            let max_base_len = 64_usize.saturating_sub(suffix.len());
+            let mut trimmed = base.clone();
+            if trimmed.len() > max_base_len {
+                trimmed.truncate(max_base_len);
+                while trimmed.ends_with('-') {
+                    trimmed.pop();
+                }
+            }
+            format!("{trimmed}{suffix}")
+        };
+        if sanitize_bookmark_id(&candidate).is_some() && reserved_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+fn bookmark_slug(text: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_dash = false;
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            previous_dash = false;
+        } else if !previous_dash && !slug.is_empty() {
+            slug.push('-');
+            previous_dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "heading".to_string()
+    } else {
+        slug
+    }
+}
+
+fn collect_safe_bookmark_id_counts(sections: &[Section]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for section in sections {
+        collect_safe_bookmark_id_counts_from_blocks(&section.blocks, &mut counts);
+    }
+    counts
+}
+
+fn collect_safe_bookmark_id_counts_from_blocks(
+    blocks: &[Block],
+    counts: &mut BTreeMap<String, usize>,
+) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                if let Some(id) = paragraph
+                    .bookmark_id
+                    .as_deref()
+                    .and_then(sanitize_bookmark_id)
+                {
+                    *counts.entry(id).or_insert(0) += 1;
+                }
+            }
+            Block::Heading(heading) => {
+                if let Some(id) = heading
+                    .bookmark_id
+                    .as_deref()
+                    .and_then(sanitize_bookmark_id)
+                {
+                    *counts.entry(id).or_insert(0) += 1;
+                }
+            }
+            Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_safe_bookmark_id_counts_from_blocks(&item.blocks, counts);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_safe_bookmark_id_counts_from_blocks(&cell.blocks, counts);
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn validate_comment_id(value: &str) -> Result<String, DocumentError> {
     let trimmed = value.trim();
     let Some(suffix) = trimmed.strip_prefix("cmt-") else {
@@ -1173,6 +1461,7 @@ fn normalize_comment_anchors_in_block(block: &mut Block) {
     match block {
         Block::Paragraph(paragraph) => normalize_inline_metadata(&mut paragraph.inlines),
         Block::Heading(heading) => normalize_inline_metadata(&mut heading.inlines),
+        Block::TableOfContents(_) => {}
         Block::List(list) => {
             for item in &mut list.items {
                 for block in &mut item.blocks {
@@ -1229,6 +1518,7 @@ fn resolve_tracked_change_in_blocks(
                 changed |=
                     resolve_tracked_change_in_inlines(&mut heading.inlines, change_id, resolution);
             }
+            Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &mut list.items {
                     changed |=
@@ -1266,6 +1556,7 @@ fn resolve_all_tracked_changes_in_blocks(
             Block::Heading(heading) => {
                 changed |= resolve_all_tracked_changes_in_inlines(&mut heading.inlines, resolution);
             }
+            Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &mut list.items {
                     changed |= resolve_all_tracked_changes_in_blocks(&mut item.blocks, resolution);
@@ -1347,6 +1638,7 @@ fn remove_comment_anchors_from_blocks(blocks: &mut [Block], comment_id: &str) {
             Block::Heading(heading) => {
                 remove_comment_anchors_from_inlines(&mut heading.inlines, comment_id)
             }
+            Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &mut list.items {
                     remove_comment_anchors_from_blocks(&mut item.blocks, comment_id);
@@ -1387,6 +1679,7 @@ fn collect_comment_anchor_ids_from_blocks(blocks: &[Block], ids: &mut BTreeSet<S
             Block::Heading(heading) => {
                 collect_comment_anchor_ids_from_inlines(&heading.inlines, ids)
             }
+            Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &list.items {
                     collect_comment_anchor_ids_from_blocks(&item.blocks, ids);
@@ -1499,6 +1792,165 @@ mod tests {
         };
 
         assert_eq!(paragraph.bookmark_id, None);
+    }
+
+    #[test]
+    fn table_of_contents_command_generates_safe_unique_heading_targets() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                bookmark_id: Some("toc-overview".to_string()),
+                style: StyleId::from("body"),
+                format: Default::default(),
+                inlines: vec![Inline::text("Existing bookmark")],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: None,
+                level: 1,
+                inlines: vec![Inline::text("Overview")],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("../bad".to_string()),
+                level: 2,
+                inlines: vec![Inline::text("Details")],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-duplicate".to_string()),
+                level: 3,
+                inlines: vec![Inline::text("First duplicate")],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-duplicate".to_string()),
+                level: 3,
+                inlines: vec![Inline::text("Second duplicate")],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: None,
+                level: 4,
+                inlines: vec![Inline::text("Ignored deep heading")],
+            }),
+        ];
+
+        document
+            .apply_command(DocumentCommand::InsertOrUpdateTableOfContents {
+                section_index: 0,
+                block_index: 1,
+            })
+            .expect("toc command should apply");
+
+        let Block::TableOfContents(table_of_contents) = &document.sections[0].blocks[1] else {
+            panic!("toc should be inserted at requested block index");
+        };
+        assert_eq!(table_of_contents.title, "Contents");
+        assert_eq!(
+            table_of_contents
+                .entries
+                .iter()
+                .map(|entry| (entry.level, entry.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, "Overview"),
+                (2, "Details"),
+                (3, "First duplicate"),
+                (3, "Second duplicate")
+            ]
+        );
+
+        let targets = table_of_contents
+            .entries
+            .iter()
+            .map(|entry| entry.target_bookmark_id.clone())
+            .collect::<Vec<_>>();
+        let unique_targets = targets.iter().cloned().collect::<BTreeSet<_>>();
+        assert_eq!(unique_targets.len(), targets.len());
+        assert!(!targets.contains(&"toc-overview".to_string()));
+        assert!(targets
+            .iter()
+            .all(|target| sanitize_bookmark_id(target).as_deref() == Some(target.as_str())));
+
+        let heading_bookmarks = document.sections[0]
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Heading(heading) if (1..=3).contains(&heading.level) => {
+                    heading.bookmark_id.clone()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(heading_bookmarks, targets);
+
+        let Block::Heading(heading) = &mut document.sections[0].blocks[2] else {
+            panic!("first heading should remain after toc");
+        };
+        heading.inlines = vec![Inline::text("Overview revised")];
+        document
+            .apply_command(DocumentCommand::InsertOrUpdateTableOfContents {
+                section_index: 0,
+                block_index: 1,
+            })
+            .expect("toc update should apply");
+        assert_eq!(
+            document.sections[0]
+                .blocks
+                .iter()
+                .filter(|block| matches!(block, Block::TableOfContents(_)))
+                .count(),
+            1
+        );
+        let Block::TableOfContents(table_of_contents) = &document.sections[0].blocks[1] else {
+            panic!("toc should remain in place");
+        };
+        assert_eq!(table_of_contents.entries[0].text, "Overview revised");
+    }
+
+    #[test]
+    fn table_of_contents_update_preserves_title_and_undo_redo_restores_state() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::TableOfContents(TableOfContents {
+                title: "Contenido".to_string(),
+                entries: vec![TableOfContentsEntry {
+                    level: 1,
+                    text: "Intro".to_string(),
+                    target_bookmark_id: "bm-intro".to_string(),
+                }],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-intro".to_string()),
+                level: 1,
+                inlines: vec![Inline::text("Intro revised")],
+            }),
+        ];
+        let before_update = document.clone();
+        let mut undo = UndoStack::default();
+
+        undo.apply(
+            &mut document,
+            DocumentCommand::InsertOrUpdateTableOfContents {
+                section_index: 0,
+                block_index: 0,
+            },
+        )
+        .expect("toc update should apply");
+
+        let Block::TableOfContents(table_of_contents) = &document.sections[0].blocks[0] else {
+            panic!("first block should remain a toc");
+        };
+        assert_eq!(table_of_contents.title, "Contenido");
+        assert_eq!(table_of_contents.entries[0].text, "Intro revised");
+
+        undo.undo(&mut document)
+            .expect("undo should restore previous toc");
+        assert_eq!(document, before_update);
+
+        undo.redo(&mut document)
+            .expect("redo should restore updated toc");
+        let Block::TableOfContents(table_of_contents) = &document.sections[0].blocks[0] else {
+            panic!("first block should remain a toc after redo");
+        };
+        assert_eq!(table_of_contents.title, "Contenido");
+        assert_eq!(table_of_contents.entries[0].text, "Intro revised");
     }
 
     #[test]

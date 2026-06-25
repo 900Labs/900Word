@@ -1695,7 +1695,29 @@ export function replaceAllEditorText(
 }
 
 export function editorDocPlainText(doc: ProseMirrorNode): string {
-  return doc.textBetween(0, doc.content.size, '\n', ' ');
+  const blocks: string[] = [];
+  doc.forEach((node) => {
+    if (node.type.name === 'table_of_contents') {
+      blocks.push(tableOfContentsNodePlainText(node));
+    } else {
+      blocks.push(node.textBetween(0, node.content.size, '\n', ' '));
+    }
+  });
+  return blocks.join('\n');
+}
+
+function tableOfContentsNodePlainText(node: ProseMirrorNode): string {
+  const entries = Array.isArray(node.attrs.entries) ? node.attrs.entries : [];
+  return [
+    typeof node.attrs.title === 'string' && node.attrs.title.trim().length > 0
+      ? node.attrs.title.trim()
+      : 'Contents',
+    ...entries
+      .filter((entry) => typeof entry?.text === 'string' && Number.isInteger(entry.level))
+      .map((entry) => `${'  '.repeat(Math.max(0, Math.min(2, Number(entry.level) - 1)))}${entry.text.trim()}`)
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function transactionWithFallbackSelection(

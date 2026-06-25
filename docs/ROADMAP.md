@@ -207,3 +207,15 @@ Status: complete.
 - Store privacy-safe local author metadata as `Local User` plus timestamps without reading OS usernames, hostnames, accounts, paths, contacts, or cloud identity.
 - Preserve 900Word-authored text-only tracked changes through ODT save/reopen with `word900` metadata.
 - Keep formatting-only changes, table structure changes, image changes, comments-as-changes, DOCX track changes, compare/merge, and multi-author collaboration deferred.
+
+## Sprint 024: Table Of Contents MVP
+
+Status: complete.
+
+- Add a durable generated table-of-contents block to `word-core`.
+- Derive entries from supported top-level Heading 1-3 blocks in the editable first-section projection.
+- Generate safe document-local bookmark IDs for headings that need TOC targets.
+- Add a local desktop File-menu command to insert or update contents from headings.
+- Preserve 900Word-authored TOCs through ODT save/reopen with `word900` metadata while rendering visible text and safe internal links.
+- Export TOCs as ordinary text in TXT/basic PDF and as safe fragment links in HTML/print HTML.
+- Keep deterministic page numbers, live pagination, automatic external ODT TOC interoperability, DOCX TOCs, and PDF link annotations deferred.

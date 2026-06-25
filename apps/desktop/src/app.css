@@ -290,6 +290,10 @@ select:focus-visible {
   content: "I";
 }
 
+.glyph-toc::before {
+  content: "T";
+}
+
 .glyph-export::before {
   content: "E";
 }
@@ -1445,6 +1449,48 @@ select:focus-visible {
 .ProseMirror li[data-level="7"],
 .ProseMirror li[data-level="8"] {
   margin-left: 3rem;
+}
+
+.ProseMirror .toc-block {
+  margin: 0.65rem 0 1rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #b8ccc7;
+  border-left: 4px solid #0f6b5f;
+  border-radius: 6px;
+  background: #f4f8f6;
+}
+
+.ProseMirror .toc-title {
+  margin-bottom: 0.4rem;
+  color: #1f2a31;
+  font-weight: 760;
+}
+
+.ProseMirror .toc-list {
+  margin: 0;
+  padding-left: 1.3rem;
+}
+
+.ProseMirror .toc-list li {
+  margin: 0.12rem 0;
+}
+
+.ProseMirror .toc-list .toc-level-2 {
+  margin-left: 1rem;
+}
+
+.ProseMirror .toc-list .toc-level-3 {
+  margin-left: 2rem;
+}
+
+.ProseMirror .toc-block a {
+  color: #0b5f99;
+  text-decoration: underline;
+}
+
+.ProseMirror .toc-block a:focus-visible {
+  outline: 3px solid #1d7c6f;
+  outline-offset: 2px;
 }
 
 .ProseMirror table {
