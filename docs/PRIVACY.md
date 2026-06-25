@@ -41,6 +41,8 @@ Sprint 014 adds local image insertion. Image files selected through the native d
 
 Sprint 015 adds local editing for image alt text, captions, alignment, and scale. These values are stored as document content/presentation metadata only. They do not include source local paths or private source filenames, and editing them does not add telemetry, cloud sync, remote image fetching, or document-content logging.
 
+Sprint 038 adds PDF embedding for safe JPEG assets already stored inside the local document model. PDF export does not read external image paths, fetch remote image URLs, preserve source filenames, emit asset IDs, or add PDF creation/producer metadata. APP/COM JPEG metadata marker segments are stripped before embedding. Unsupported, malformed, metadata-after-scan, or over-limit images remain visible placeholders with document-authored alt/caption text. EXIF interpretation and selective metadata preservation remain deferred.
+
 Sprint 016 adds local bookmarks and internal links. Bookmark IDs are generated compact document identifiers stored on supported paragraph/heading blocks. Internal link target lists are derived from the in-memory document model and do not contact link targets, resolve local paths, store accounts, store source filenames, or add telemetry/cloud sync.
 
 Sprint 018 adds direct selected-image resizing by updating existing bounded image scale metadata. Oversized image imports surface generic compress-or-resize guidance and do not expose source paths, source filenames, usernames, or filesystem details. Image bytes remain embedded document assets; no remote loading, telemetry, accounts, cloud sync, or document-content logging is added.
