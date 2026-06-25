@@ -292,7 +292,7 @@ Status: complete.
 - Support simple DOCX paragraphs, Heading 1-3, bold/italic/underline, safe hyperlinks, basic list fallback, and simple tables.
 - Emit generic warnings for degraded or ignored DOCX import content.
 - Export minimal valid `.docx` packages with paragraphs, headings, basic inline marks, safe hyperlinks, simple lists, and simple tables.
-- Keep cloud, accounts, telemetry, network behavior, external converters, heavy dependencies, macros, media import, comments, tracked changes, notes, headers/footers, and full DOCX fidelity deferred.
+- Keep cloud, accounts, telemetry, network behavior, external converters, heavy dependencies, macros, media import, comments, tracked changes, headers/footers, rich note fidelity, and full DOCX fidelity deferred.
 
 ## Sprint 032: PDF Pagination And Export Settings MVP
 
@@ -314,7 +314,7 @@ Status: complete.
 - Read only safe relationship-resolved `word/header*.xml` and `word/footer*.xml` package parts that pass existing preflight, and keep warnings generic.
 - Map simple paragraph runs and supported page-number, page-count, and date fields through the existing `PageRegions` model.
 - Export 900Word-authored page regions as minimal DOCX header/footer parts with document relationships and section references.
-- Keep ODT canonical, with DOCX images/media, comments, tracked changes, notes, even-page regions, complex fields, complex section layouts, cloud, telemetry, accounts, network behavior, and full layout fidelity deferred.
+- Keep ODT canonical, with DOCX images/media, comments, tracked changes, rich note fidelity, even-page regions, complex fields, complex section layouts, cloud, telemetry, accounts, network behavior, and full layout fidelity deferred.
 
 ## Sprint 034: DOCX Image Media
 
@@ -324,7 +324,7 @@ Status: complete.
 - Validate supported PNG, JPEG/JPG, GIF, and WebP image payloads by relationship target, extension/media type, package preflight, and magic bytes before storing bytes.
 - Preserve adjacent visible paragraph text around simple DOCX drawings by splitting mixed text/image paragraphs into adjacent text and image blocks when needed.
 - Export valid 900Word-authored image assets as generated embedded `word/media/` parts with document relationships, content type defaults, minimal DrawingML references, and alt text.
-- Keep ODT canonical, with linked/remote images, image sizing/cropping/layout fidelity, compression/downsampling, comments, tracked changes, notes, cloud, telemetry, accounts, network behavior, external converters, heavyweight dependencies, and full DOCX media fidelity deferred.
+- Keep ODT canonical, with linked/remote images, image sizing/cropping/layout fidelity, compression/downsampling, comments, tracked changes, rich note fidelity, cloud, telemetry, accounts, network behavior, external converters, heavyweight dependencies, and full DOCX media fidelity deferred.
 
 ## Sprint 035: DOCX Comments MVP
 
@@ -333,7 +333,7 @@ Status: complete.
 - Extend the conversion-only DOCX boundary to import simple anchored legacy comments into existing `word-core` `CommentThread`s and `Inline.comment_ids`.
 - Read only safe relationship-resolved `word/comments.xml` or `word/comments*.xml` package parts that pass existing preflight, and keep warnings generic.
 - Export valid 900Word-authored anchored comments as generated `word/comments.xml`, a generated document relationship, a content-type override, and simple range/reference markers around supported inline text.
-- Keep ODT canonical, with DOCX replies, threaded comments, resolved-state fidelity, tracked changes, notes, full review fidelity, cloud, telemetry, accounts, network behavior, external converters, heavyweight dependencies, and full DOCX comments fidelity deferred.
+- Keep ODT canonical, with DOCX replies, threaded comments, resolved-state fidelity, tracked changes, rich note fidelity, full review fidelity, cloud, telemetry, accounts, network behavior, external converters, heavyweight dependencies, and full DOCX comments fidelity deferred.
 
 ## Sprint 036: PDF Table And Image Rendering
 
@@ -372,3 +372,12 @@ Status: complete.
 - Generate safe local tracked-change IDs on import, sanitize bounded author metadata, and use safe deterministic fallback metadata when DOCX revision authors or dates are unsafe.
 - Export 900Word-authored text-only insertions/deletions as simple generated `w:ins` and `w:del` / `w:delText` markup with numeric DOCX revision IDs.
 - Keep ODT canonical and keep formatting-only changes, table/image changes, move changes, resolved state, compare/merge, full Word review fidelity, telemetry, accounts, cloud behavior, external converters, heavyweight dependencies, and full DOCX fidelity deferred.
+
+## Sprint 040: DOCX Footnotes/Endnotes MVP
+
+Status: complete.
+
+- Extend the conversion-only DOCX boundary to import simple relationship-resolved `word/footnotes.xml` and `word/endnotes.xml` note parts into existing `word-core` notes.
+- Generate safe local note IDs on import, use bounded visible numeric labels, and keep unsupported or hidden DOCX note metadata on generic warning/fallback paths.
+- Export supported 900Word-authored local footnotes/endnotes as generated DOCX note parts with generated relationship IDs, content type overrides, numeric note IDs, and simple body paragraphs.
+- Keep ODT canonical and keep page-bottom placement, continuation separator fidelity, note cross references, rich note formatting/layout, comments/tracked changes inside note bodies, full Word note fidelity, telemetry, accounts, cloud behavior, external converters, heavyweight dependencies, and full DOCX fidelity deferred.
