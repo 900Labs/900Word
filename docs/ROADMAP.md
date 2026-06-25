@@ -526,3 +526,13 @@ Status: complete.
 - Preserve existing per-page and per-document annotation caps and omit links when either endpoint is outside the selected PDF pages.
 - Avoid writing note IDs, raw internal target strings, paths, filenames, usernames, hostnames, telemetry identifiers, account/cloud identifiers, or network state to PDF bytes or logs.
 - Keep ODT canonical and keep page-bottom footnote layout, note continuation fidelity, rich note formatting/layout, exact glyph-level geometry, remote fetching, telemetry, accounts, cloud behavior, heavy PDF dependencies, and full layout fidelity deferred.
+
+## Sprint 056: DOCX Table Of Contents Interoperability
+
+Status: complete.
+
+- Export 900Word-authored generated TOCs to DOCX as visible styled paragraphs with safe internal bookmark hyperlinks when targets are unique and exported.
+- Import the generated `Word900Toc*` style plus safe internal-link shape back into `word-core` `TableOfContents` blocks.
+- Preserve unique safe paragraph/heading bookmark IDs through minimal DOCX `bookmarkStart`/`bookmarkEnd` markers.
+- Degrade generated-style TOC rows without safe internal links back to visible paragraphs instead of hidden or lossy structured content.
+- Keep ODT canonical and keep Word TOC field codes, page-number fidelity, automatic refresh, complex cross references, telemetry, network behavior, accounts, cloud sync, and full DOCX layout fidelity deferred.

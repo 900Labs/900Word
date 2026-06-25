@@ -11,8 +11,8 @@ use word_core::{
     CommentThread, Document, DocumentWarning, Heading, ImageBlock, ImagePresentation, Inline,
     InlineMark, InlineNoteReference, ListBlock, ListItem, Note, NoteKind, PageField, PageRegion,
     PageRegionBlock, PageRegionParagraph, PageRegions, Paragraph, StyleId, Table, TableCell,
-    TableRow, TrackedChange, TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES,
-    MAX_TABLE_WIDTH_COLUMNS,
+    TableOfContents, TableOfContentsEntry, TableRow, TrackedChange, TrackedChangeKind,
+    DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES, MAX_TABLE_WIDTH_COLUMNS,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -43,6 +43,8 @@ const REL_TYPE_IMAGE: &str =
 const PAGE_REGION_XML: &str = "DOCX page region";
 const DOCX_COMMENTS_XML: &str = "DOCX comments";
 const DOCX_NOTES_XML: &str = "DOCX notes";
+const DOCX_TOC_TITLE_STYLE_ID: &str = "Word900TocTitle";
+const DOCX_TOC_ENTRY_STYLE_PREFIX: &str = "Word900TocEntry";
 const MAX_DOCX_IMAGE_PARTS: usize = 64;
 const MAX_DOCX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_DOCX_COMMENT_PARTS: usize = 4;
@@ -135,6 +137,7 @@ struct ListMarker {
 struct ParsedBlock {
     block: Block,
     list_marker: Option<ListMarker>,
+    toc_role: Option<TocParagraphRole>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -423,6 +426,14 @@ impl NumberingMap {
 struct ParagraphProperties {
     heading_level: Option<u8>,
     list_marker: Option<ListMarker>,
+    toc_role: Option<TocParagraphRole>,
+    bookmark_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TocParagraphRole {
+    Title,
+    Entry(u8),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -741,6 +752,27 @@ struct HyperlinkIds {
     external: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct DocxBookmarkExports {
+    ids: BTreeMap<String, u32>,
+}
+
+impl DocxBookmarkExports {
+    fn numeric_id(&self, bookmark_id: Option<&str>) -> Option<u32> {
+        let bookmark_id = bookmark_id.and_then(sanitize_bookmark_id)?;
+        self.ids.get(&bookmark_id).copied()
+    }
+}
+
+struct DocxRenderContext<'a> {
+    hyperlinks: &'a HyperlinkIds,
+    bookmarks: &'a DocxBookmarkExports,
+    images: &'a DocxImageExports,
+    comments: &'a DocxCommentExports,
+    notes: &'a DocxNoteExports,
+    revisions: &'a DocxRevisionExports,
+}
+
 #[derive(Debug, Clone)]
 enum ParagraphContent {
     Inline(Box<Inline>),
@@ -857,6 +889,7 @@ pub fn read_docx_bytes_with_limits(
 pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     let hyperlinks = collect_external_hyperlinks(document);
     let hyperlink_ids = assign_hyperlink_ids(&hyperlinks);
+    let bookmark_exports = collect_docx_bookmark_exports(document);
     let (image_exports, next_rel_id) = collect_docx_image_exports(document, hyperlinks.len() + 3);
     let page_region_exports = collect_page_region_exports(document, next_rel_id);
     let next_rel_id = next_rel_id + page_region_exports.parts.len();
@@ -883,17 +916,16 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     writer.write_all(render_root_rels_xml().as_bytes())?;
 
     writer.start_file(DOCUMENT_XML, compressed)?;
+    let render_context = DocxRenderContext {
+        hyperlinks: &hyperlink_ids,
+        bookmarks: &bookmark_exports,
+        images: &image_exports,
+        comments: &comment_exports,
+        notes: &note_exports,
+        revisions: &revision_exports,
+    };
     writer.write_all(
-        render_document_xml(
-            document,
-            &hyperlink_ids,
-            &page_region_exports,
-            &image_exports,
-            &comment_exports,
-            &note_exports,
-            &revision_exports,
-        )
-        .as_bytes(),
+        render_document_xml(document, &render_context, &page_region_exports).as_bytes(),
     )?;
 
     writer.start_file(DOCUMENT_RELS, compressed)?;
@@ -1941,6 +1973,7 @@ fn parse_document_xml(
                         ParsedBlock {
                             block: Block::Table(table),
                             list_marker: None,
+                            toc_role: None,
                         },
                     );
                 }
@@ -2377,6 +2410,7 @@ fn parse_table_cell(
                     ParsedBlock {
                         block: table_to_paragraph_block(&table),
                         list_marker: None,
+                        toc_role: None,
                     },
                 );
             }
@@ -2531,6 +2565,30 @@ fn parse_paragraph(
             Event::Start(start) if local_name(start.name().as_ref()) == b"pPr" => {
                 properties = parse_paragraph_properties(reader, numbering, state.warnings)?;
             }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"bookmarkStart" => {
+                apply_paragraph_bookmark(&mut properties, &start, state.warnings)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"bookmarkStart" => {
+                apply_paragraph_bookmark(&mut properties, &start, state.warnings)?;
+                skip_element(reader, b"bookmarkStart", DOCUMENT_XML)?;
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"bookmarkEnd" => {
+                if attr_value(&start, b"id", DOCUMENT_XML)?.is_none() {
+                    state.warnings.warn(
+                        "docx_bookmark_ignored",
+                        "Unsupported DOCX bookmarks were ignored during import",
+                    );
+                }
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"bookmarkEnd" => {
+                if attr_value(&start, b"id", DOCUMENT_XML)?.is_none() {
+                    state.warnings.warn(
+                        "docx_bookmark_ignored",
+                        "Unsupported DOCX bookmarks were ignored during import",
+                    );
+                }
+                skip_element(reader, b"bookmarkEnd", DOCUMENT_XML)?;
+            }
             Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
                 let run = parse_paragraph_run(
                     reader,
@@ -2681,7 +2739,11 @@ fn parse_paragraph_properties(
                 if local_name(start.name().as_ref()) == b"pStyle" =>
             {
                 if let Some(style) = attr_value(&start, b"val", DOCUMENT_XML)? {
-                    properties.heading_level = heading_level_from_style(&style);
+                    if let Some(role) = toc_role_from_style(&style) {
+                        properties.toc_role = Some(role);
+                    } else {
+                        properties.heading_level = heading_level_from_style(&style);
+                    }
                 }
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"numPr" => {
@@ -2717,6 +2779,31 @@ fn parse_paragraph_properties(
     }
 
     Ok(properties)
+}
+
+fn apply_paragraph_bookmark(
+    properties: &mut ParagraphProperties,
+    start: &BytesStart<'_>,
+    warnings: &mut WarningSink,
+) -> Result<(), DocxError> {
+    let Some(name) = attr_value(start, b"name", DOCUMENT_XML)? else {
+        warnings.warn(
+            "docx_bookmark_ignored",
+            "Unsupported DOCX bookmarks were ignored during import",
+        );
+        return Ok(());
+    };
+    let Some(bookmark_id) = sanitize_bookmark_id(&name) else {
+        warnings.warn(
+            "docx_bookmark_ignored",
+            "Unsupported DOCX bookmarks were ignored during import",
+        );
+        return Ok(());
+    };
+    if properties.bookmark_id.is_none() {
+        properties.bookmark_id = Some(bookmark_id);
+    }
+    Ok(())
 }
 
 fn parse_num_properties(
@@ -3523,6 +3610,14 @@ fn hyperlink_ref(
 }
 
 fn push_parsed_block(blocks: &mut Vec<ParsedBlock>, parsed: ParsedBlock) {
+    if parsed.list_marker.is_none() {
+        if let Some(role) = parsed.toc_role {
+            if push_toc_parsed_block(blocks, &parsed.block, role) {
+                return;
+            }
+        }
+    }
+
     let Some(marker) = parsed.list_marker else {
         blocks.push(parsed);
         return;
@@ -3557,7 +3652,96 @@ fn push_parsed_block(blocks: &mut Vec<ParsedBlock>, parsed: ParsedBlock) {
             }],
         }),
         list_marker: None,
+        toc_role: None,
     });
+}
+
+fn push_toc_parsed_block(
+    blocks: &mut Vec<ParsedBlock>,
+    block: &Block,
+    role: TocParagraphRole,
+) -> bool {
+    match role {
+        TocParagraphRole::Title => {
+            let Some(title) = toc_paragraph_text(block) else {
+                return false;
+            };
+            blocks.push(ParsedBlock {
+                block: Block::TableOfContents(TableOfContents {
+                    title,
+                    entries: Vec::new(),
+                }),
+                list_marker: None,
+                toc_role: None,
+            });
+            true
+        }
+        TocParagraphRole::Entry(level) => {
+            let Some(entry) = toc_entry_from_block(block, level) else {
+                return false;
+            };
+            if let Some(ParsedBlock {
+                block: Block::TableOfContents(table_of_contents),
+                ..
+            }) = blocks.last_mut()
+            {
+                table_of_contents.entries.push(entry);
+                return true;
+            }
+            blocks.push(ParsedBlock {
+                block: Block::TableOfContents(TableOfContents::new(vec![entry])),
+                list_marker: None,
+                toc_role: None,
+            });
+            true
+        }
+    }
+}
+
+fn toc_paragraph_text(block: &Block) -> Option<String> {
+    let Block::Paragraph(paragraph) = block else {
+        return None;
+    };
+    Some(
+        inline_text(&paragraph.inlines)
+            .trim()
+            .chars()
+            .take(512)
+            .collect(),
+    )
+}
+
+fn toc_entry_from_block(block: &Block, level: u8) -> Option<TableOfContentsEntry> {
+    let Block::Paragraph(paragraph) = block else {
+        return None;
+    };
+    let mut target = None;
+    for inline in &paragraph.inlines {
+        if inline.text.trim().is_empty() {
+            continue;
+        }
+        let href = inline.link.as_deref()?;
+        let bookmark = href.strip_prefix('#').and_then(sanitize_bookmark_id)?;
+        match target.as_deref() {
+            Some(existing) if existing != bookmark.as_str() => return None,
+            Some(_) => {}
+            None => target = Some(bookmark),
+        }
+    }
+    let target_bookmark_id = target?;
+    let text = inline_text(&paragraph.inlines)
+        .trim()
+        .chars()
+        .take(512)
+        .collect::<String>();
+    if text.is_empty() {
+        return None;
+    }
+    Some(TableOfContentsEntry {
+        level: level.clamp(1, 3),
+        text,
+        target_bookmark_id,
+    })
 }
 
 fn append_inlines(target: &mut Vec<Inline>, source: Vec<Inline>) {
@@ -3645,6 +3829,7 @@ fn paragraph_content_to_blocks(
                 blocks.push(ParsedBlock {
                     block: Block::Image(image),
                     list_marker: None,
+                    toc_role: None,
                 });
             }
         }
@@ -3652,8 +3837,13 @@ fn paragraph_content_to_blocks(
     flush_paragraph_block(&mut blocks, &mut inlines, properties);
     if blocks.is_empty() {
         blocks.push(ParsedBlock {
-            block: paragraph_block_from_inlines(Vec::new(), properties.heading_level),
+            block: paragraph_block_from_inlines(
+                Vec::new(),
+                properties.heading_level,
+                properties.bookmark_id.clone(),
+            ),
             list_marker: properties.list_marker,
+            toc_role: properties.toc_role,
         });
     }
     blocks
@@ -3668,21 +3858,30 @@ fn flush_paragraph_block(
         return;
     }
     blocks.push(ParsedBlock {
-        block: paragraph_block_from_inlines(std::mem::take(inlines), properties.heading_level),
+        block: paragraph_block_from_inlines(
+            std::mem::take(inlines),
+            properties.heading_level,
+            properties.bookmark_id.clone(),
+        ),
         list_marker: properties.list_marker,
+        toc_role: properties.toc_role,
     });
 }
 
-fn paragraph_block_from_inlines(inlines: Vec<Inline>, heading_level: Option<u8>) -> Block {
+fn paragraph_block_from_inlines(
+    inlines: Vec<Inline>,
+    heading_level: Option<u8>,
+    bookmark_id: Option<String>,
+) -> Block {
     if let Some(level) = heading_level {
         Block::Heading(Heading {
-            bookmark_id: None,
+            bookmark_id,
             level,
             inlines,
         })
     } else {
         Block::Paragraph(Paragraph {
-            bookmark_id: None,
+            bookmark_id,
             style: StyleId::from("body"),
             format: Default::default(),
             inlines,
@@ -3871,6 +4070,15 @@ fn heading_level_from_style(style: &str) -> Option<u8> {
         "heading3" | "h3" => Some(3),
         _ => None,
     }
+}
+
+fn toc_role_from_style(style: &str) -> Option<TocParagraphRole> {
+    if style == DOCX_TOC_TITLE_STYLE_ID {
+        return Some(TocParagraphRole::Title);
+    }
+    let suffix = style.strip_prefix(DOCX_TOC_ENTRY_STYLE_PREFIX)?;
+    let level = suffix.parse::<u8>().ok()?.clamp(1, 3);
+    Some(TocParagraphRole::Entry(level))
 }
 
 fn truthy_word_bool(start: &BytesStart<'_>, name: &str) -> Result<bool, DocxError> {
@@ -4214,12 +4422,8 @@ fn render_document_rels_xml(
 
 fn render_document_xml(
     document: &Document,
-    hyperlinks: &HyperlinkIds,
+    context: &DocxRenderContext<'_>,
     page_regions: &DocxPageRegionExports,
-    images: &DocxImageExports,
-    comments: &DocxCommentExports,
-    notes: &DocxNoteExports,
-    revisions: &DocxRevisionExports,
 ) -> String {
     let mut output = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -4229,15 +4433,7 @@ fn render_document_xml(
 
     for section in &document.sections {
         for block in &section.blocks {
-            render_block_xml(
-                block,
-                hyperlinks,
-                images,
-                comments,
-                notes,
-                revisions,
-                &mut output,
-            );
+            render_block_xml(block, context, &mut output);
         }
     }
 
@@ -4327,38 +4523,17 @@ fn render_page_region_block_xml(block: &PageRegionBlock, output: &mut String) {
     }
 }
 
-fn render_block_xml(
-    block: &Block,
-    hyperlinks: &HyperlinkIds,
-    images: &DocxImageExports,
-    comments: &DocxCommentExports,
-    notes: &DocxNoteExports,
-    revisions: &DocxRevisionExports,
-    output: &mut String,
-) {
+fn render_block_xml(block: &Block, context: &DocxRenderContext<'_>, output: &mut String) {
     match block {
-        Block::Paragraph(paragraph) => render_paragraph_xml(
-            paragraph, None, hyperlinks, comments, notes, revisions, output,
-        ),
-        Block::Heading(heading) => {
-            render_heading_xml(heading, hyperlinks, comments, notes, revisions, output)
+        Block::Paragraph(paragraph) => render_paragraph_xml(paragraph, None, context, output),
+        Block::Heading(heading) => render_heading_xml(heading, context, output),
+        Block::List(list) => render_list_xml(list, context, output),
+        Block::Table(table) => render_table_xml(table, context, output),
+        Block::TableOfContents(table_of_contents) => {
+            render_table_of_contents_xml(table_of_contents, context, output)
         }
-        Block::List(list) => {
-            render_list_xml(list, hyperlinks, images, comments, notes, revisions, output)
-        }
-        Block::Table(table) => render_table_xml(
-            table, hyperlinks, images, comments, notes, revisions, output,
-        ),
-        Block::TableOfContents(table_of_contents) => render_fallback_paragraph(
-            &table_of_contents_text(table_of_contents),
-            hyperlinks,
-            comments,
-            notes,
-            revisions,
-            output,
-        ),
         Block::Image(image) => {
-            if let Some(export) = docx_image_export_for(images, &image.asset_id) {
+            if let Some(export) = docx_image_export_for(context.images, &image.asset_id) {
                 render_image_xml(image, export, output);
                 if let Some(caption) = image
                     .presentation
@@ -4366,24 +4541,10 @@ fn render_block_xml(
                     .as_deref()
                     .filter(|value| !value.trim().is_empty())
                 {
-                    render_fallback_paragraph(
-                        caption.trim(),
-                        hyperlinks,
-                        comments,
-                        notes,
-                        revisions,
-                        output,
-                    );
+                    render_fallback_paragraph(caption.trim(), context, output);
                 }
             } else {
-                render_fallback_paragraph(
-                    &image_fallback_text(image),
-                    hyperlinks,
-                    comments,
-                    notes,
-                    revisions,
-                    output,
-                );
+                render_fallback_paragraph(&image_fallback_text(image), context, output);
             }
         }
         Block::PageBreak => {
@@ -4464,35 +4625,74 @@ fn image_fallback_text(image: &ImageBlock) -> String {
     text
 }
 
-fn render_heading_xml(
-    heading: &Heading,
-    hyperlinks: &HyperlinkIds,
-    comments: &DocxCommentExports,
-    notes: &DocxNoteExports,
-    revisions: &DocxRevisionExports,
+fn render_table_of_contents_xml(
+    table_of_contents: &TableOfContents,
+    context: &DocxRenderContext<'_>,
     output: &mut String,
 ) {
+    if !table_of_contents.title.trim().is_empty() {
+        render_styled_paragraph_xml(
+            DOCX_TOC_TITLE_STYLE_ID,
+            vec![Inline::text(table_of_contents.title.trim().to_string())],
+            context,
+            output,
+        );
+    }
+
+    for entry in &table_of_contents.entries {
+        let level = entry.level.clamp(1, 3);
+        let style_id = format!("{DOCX_TOC_ENTRY_STYLE_PREFIX}{level}");
+        let mut inline = Inline::text(entry.text.clone());
+        if let Some(target) = sanitize_bookmark_id(&entry.target_bookmark_id) {
+            if context.bookmarks.numeric_id(Some(&target)).is_some() {
+                inline.link = Some(format!("#{target}"));
+            }
+        }
+        render_styled_paragraph_xml(&style_id, vec![inline], context, output);
+    }
+}
+
+fn render_styled_paragraph_xml(
+    style_id: &str,
+    inlines: Vec<Inline>,
+    context: &DocxRenderContext<'_>,
+    output: &mut String,
+) {
+    output.push_str("<w:p><w:pPr><w:pStyle w:val=\"");
+    output.push_str(&escape_xml(style_id));
+    output.push_str("\"/></w:pPr>");
+    render_inlines_xml(
+        &inlines,
+        context.hyperlinks,
+        context.comments,
+        context.notes,
+        context.revisions,
+        output,
+    );
+    output.push_str("</w:p>");
+}
+
+fn render_heading_xml(heading: &Heading, context: &DocxRenderContext<'_>, output: &mut String) {
     output.push_str("<w:p><w:pPr><w:pStyle w:val=\"Heading");
     output.push_str(&heading.level.clamp(1, 3).to_string());
     output.push_str("\"/></w:pPr>");
+    render_bookmark_start_xml(context.bookmarks, heading.bookmark_id.as_deref(), output);
     render_inlines_xml(
         &heading.inlines,
-        hyperlinks,
-        comments,
-        notes,
-        revisions,
+        context.hyperlinks,
+        context.comments,
+        context.notes,
+        context.revisions,
         output,
     );
+    render_bookmark_end_xml(context.bookmarks, heading.bookmark_id.as_deref(), output);
     output.push_str("</w:p>");
 }
 
 fn render_paragraph_xml(
     paragraph: &Paragraph,
     list_marker: Option<ListMarker>,
-    hyperlinks: &HyperlinkIds,
-    comments: &DocxCommentExports,
-    notes: &DocxNoteExports,
-    revisions: &DocxRevisionExports,
+    context: &DocxRenderContext<'_>,
     output: &mut String,
 ) {
     output.push_str("<w:p>");
@@ -4503,26 +4703,20 @@ fn render_paragraph_xml(
         output.push_str(if marker.ordered { "2" } else { "1" });
         output.push_str("\"/></w:numPr></w:pPr>");
     }
+    render_bookmark_start_xml(context.bookmarks, paragraph.bookmark_id.as_deref(), output);
     render_inlines_xml(
         &paragraph.inlines,
-        hyperlinks,
-        comments,
-        notes,
-        revisions,
+        context.hyperlinks,
+        context.comments,
+        context.notes,
+        context.revisions,
         output,
     );
+    render_bookmark_end_xml(context.bookmarks, paragraph.bookmark_id.as_deref(), output);
     output.push_str("</w:p>");
 }
 
-fn render_list_xml(
-    list: &ListBlock,
-    hyperlinks: &HyperlinkIds,
-    images: &DocxImageExports,
-    comments: &DocxCommentExports,
-    notes: &DocxNoteExports,
-    revisions: &DocxRevisionExports,
-    output: &mut String,
-) {
+fn render_list_xml(list: &ListBlock, context: &DocxRenderContext<'_>, output: &mut String) {
     let ordered = list.definition_id == "900w-ordered";
     for item in &list.items {
         for block in &item.blocks {
@@ -4533,10 +4727,7 @@ fn render_list_xml(
                         ordered,
                         level: item.level.clamp(1, 9),
                     }),
-                    hyperlinks,
-                    comments,
-                    notes,
-                    revisions,
+                    context,
                     output,
                 ),
                 Block::Heading(heading) => {
@@ -4552,44 +4743,20 @@ fn render_list_xml(
                             ordered,
                             level: item.level.clamp(1, 9),
                         }),
-                        hyperlinks,
-                        comments,
-                        notes,
-                        revisions,
+                        context,
                         output,
                     );
                 }
-                Block::Image(image) => render_block_xml(
-                    &Block::Image(image.clone()),
-                    hyperlinks,
-                    images,
-                    comments,
-                    notes,
-                    revisions,
-                    output,
-                ),
-                _ => render_fallback_paragraph(
-                    &block_text(block),
-                    hyperlinks,
-                    comments,
-                    notes,
-                    revisions,
-                    output,
-                ),
+                Block::Image(image) => {
+                    render_block_xml(&Block::Image(image.clone()), context, output)
+                }
+                _ => render_fallback_paragraph(&block_text(block), context, output),
             }
         }
     }
 }
 
-fn render_table_xml(
-    table: &Table,
-    hyperlinks: &HyperlinkIds,
-    images: &DocxImageExports,
-    comments: &DocxCommentExports,
-    notes: &DocxNoteExports,
-    revisions: &DocxRevisionExports,
-    output: &mut String,
-) {
+fn render_table_xml(table: &Table, context: &DocxRenderContext<'_>, output: &mut String) {
     output.push_str("<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/></w:tblPr>");
     render_table_grid_xml(table, output);
     for row in &table.rows {
@@ -4601,32 +4768,15 @@ fn render_table_xml(
             } else {
                 for block in &cell.blocks {
                     match block {
-                        Block::Paragraph(paragraph) => render_paragraph_xml(
-                            paragraph, None, hyperlinks, comments, notes, revisions, output,
-                        ),
-                        Block::Heading(heading) => render_heading_xml(
-                            heading, hyperlinks, comments, notes, revisions, output,
-                        ),
-                        Block::List(list) => render_list_xml(
-                            list, hyperlinks, images, comments, notes, revisions, output,
-                        ),
-                        Block::Image(image) => render_block_xml(
-                            &Block::Image(image.clone()),
-                            hyperlinks,
-                            images,
-                            comments,
-                            notes,
-                            revisions,
-                            output,
-                        ),
-                        _ => render_fallback_paragraph(
-                            &block_text(block),
-                            hyperlinks,
-                            comments,
-                            notes,
-                            revisions,
-                            output,
-                        ),
+                        Block::Paragraph(paragraph) => {
+                            render_paragraph_xml(paragraph, None, context, output)
+                        }
+                        Block::Heading(heading) => render_heading_xml(heading, context, output),
+                        Block::List(list) => render_list_xml(list, context, output),
+                        Block::Image(image) => {
+                            render_block_xml(&Block::Image(image.clone()), context, output)
+                        }
+                        _ => render_fallback_paragraph(&block_text(block), context, output),
                     }
                 }
             }
@@ -4650,14 +4800,7 @@ fn render_table_grid_xml(table: &Table, output: &mut String) {
     output.push_str("</w:tblGrid>");
 }
 
-fn render_fallback_paragraph(
-    text: &str,
-    hyperlinks: &HyperlinkIds,
-    comments: &DocxCommentExports,
-    notes: &DocxNoteExports,
-    revisions: &DocxRevisionExports,
-    output: &mut String,
-) {
+fn render_fallback_paragraph(text: &str, context: &DocxRenderContext<'_>, output: &mut String) {
     render_paragraph_xml(
         &Paragraph {
             bookmark_id: None,
@@ -4670,12 +4813,40 @@ fn render_fallback_paragraph(
             },
         },
         None,
-        hyperlinks,
-        comments,
-        notes,
-        revisions,
+        context,
         output,
     );
+}
+
+fn render_bookmark_start_xml(
+    bookmarks: &DocxBookmarkExports,
+    bookmark_id: Option<&str>,
+    output: &mut String,
+) {
+    let Some(name) = bookmark_id.and_then(sanitize_bookmark_id) else {
+        return;
+    };
+    let Some(numeric_id) = bookmarks.numeric_id(Some(&name)) else {
+        return;
+    };
+    output.push_str("<w:bookmarkStart w:id=\"");
+    output.push_str(&numeric_id.to_string());
+    output.push_str("\" w:name=\"");
+    output.push_str(&escape_xml(&name));
+    output.push_str("\"/>");
+}
+
+fn render_bookmark_end_xml(
+    bookmarks: &DocxBookmarkExports,
+    bookmark_id: Option<&str>,
+    output: &mut String,
+) {
+    let Some(numeric_id) = bookmarks.numeric_id(bookmark_id) else {
+        return;
+    };
+    output.push_str("<w:bookmarkEnd w:id=\"");
+    output.push_str(&numeric_id.to_string());
+    output.push_str("\"/>");
 }
 
 fn render_inlines_xml(
@@ -4934,6 +5105,10 @@ fn render_styles_xml() -> String {
   <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>
   <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:qFormat/><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style>
   <w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:qFormat/><w:rPr><w:b/><w:sz w:val="24"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Word900TocTitle"><w:name w:val="900Word TOC title"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="120" w:after="80"/></w:pPr><w:rPr><w:b/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Word900TocEntry1"><w:name w:val="900Word TOC entry 1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="40"/></w:pPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Word900TocEntry2"><w:name w:val="900Word TOC entry 2"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="360"/><w:spacing w:after="40"/></w:pPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Word900TocEntry3"><w:name w:val="900Word TOC entry 3"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="720"/><w:spacing w:after="40"/></w:pPr></w:style>
 </w:styles>"#
         .to_string()
 }
@@ -5044,6 +5219,20 @@ fn collect_external_hyperlinks(document: &Document) -> BTreeSet<String> {
         collect_external_hyperlinks_from_blocks(&section.blocks, &mut links);
     }
     links
+}
+
+fn collect_docx_bookmark_exports(document: &Document) -> DocxBookmarkExports {
+    let mut counts = BTreeMap::new();
+    for section in &document.sections {
+        collect_docx_bookmark_counts_from_blocks(&section.blocks, &mut counts);
+    }
+    let ids = counts
+        .into_iter()
+        .filter(|(_, count)| *count == 1)
+        .enumerate()
+        .map(|(index, (bookmark_id, _))| (bookmark_id, index as u32))
+        .collect();
+    DocxBookmarkExports { ids }
 }
 
 fn collect_page_region_exports(document: &Document, first_rel_id: usize) -> DocxPageRegionExports {
@@ -5429,6 +5618,47 @@ fn collect_external_hyperlinks_from_blocks(blocks: &[Block], links: &mut BTreeSe
                 for row in &table.rows {
                     for cell in &row.cells {
                         collect_external_hyperlinks_from_blocks(&cell.blocks, links);
+                    }
+                }
+            }
+            Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn collect_docx_bookmark_counts_from_blocks(
+    blocks: &[Block],
+    counts: &mut BTreeMap<String, usize>,
+) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                if let Some(bookmark_id) = paragraph
+                    .bookmark_id
+                    .as_deref()
+                    .and_then(sanitize_bookmark_id)
+                {
+                    *counts.entry(bookmark_id).or_insert(0) += 1;
+                }
+            }
+            Block::Heading(heading) => {
+                if let Some(bookmark_id) = heading
+                    .bookmark_id
+                    .as_deref()
+                    .and_then(sanitize_bookmark_id)
+                {
+                    *counts.entry(bookmark_id).or_insert(0) += 1;
+                }
+            }
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_docx_bookmark_counts_from_blocks(&item.blocks, counts);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_docx_bookmark_counts_from_blocks(&cell.blocks, counts);
                     }
                 }
             }
@@ -7235,6 +7465,124 @@ mod tests {
             paragraph.inlines[0].link.as_deref(),
             Some("https://example.invalid/export")
         );
+    }
+
+    #[test]
+    fn exports_and_imports_generated_docx_toc_with_bookmark_targets() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::TableOfContents(TableOfContents {
+                title: "Contents".to_string(),
+                entries: vec![
+                    TableOfContentsEntry {
+                        level: 1,
+                        text: "Intro".to_string(),
+                        target_bookmark_id: "bm-intro".to_string(),
+                    },
+                    TableOfContentsEntry {
+                        level: 3,
+                        text: "Deep details".to_string(),
+                        target_bookmark_id: "bm-details".to_string(),
+                    },
+                ],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-intro".to_string()),
+                level: 1,
+                inlines: vec![Inline::text("Intro")],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-details".to_string()),
+                level: 3,
+                inlines: vec![Inline::text("Deep details")],
+            }),
+        ];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write toc");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+        let styles_xml = read_zip_text_part(&bytes, "word/styles.xml");
+
+        assert!(document_xml.contains(r#"<w:pStyle w:val="Word900TocTitle"/>"#));
+        assert!(document_xml.contains(r#"<w:pStyle w:val="Word900TocEntry1"/>"#));
+        assert!(document_xml.contains(r#"<w:pStyle w:val="Word900TocEntry3"/>"#));
+        assert!(document_xml.contains(r#"<w:hyperlink w:anchor="bm-intro">"#));
+        assert!(document_xml.contains(r#"<w:hyperlink w:anchor="bm-details">"#));
+        assert!(document_xml.contains(r#"w:name="bm-intro""#));
+        assert!(document_xml.contains(r#"w:name="bm-details""#));
+        assert!(styles_xml.contains("Word900TocEntry3"));
+        assert!(!document_xml.contains("word900:"));
+
+        let parsed = read_docx_bytes(&bytes).expect("written toc package should import");
+        let Block::TableOfContents(table_of_contents) = &parsed.sections[0].blocks[0] else {
+            panic!("toc should round-trip through docx converter");
+        };
+        assert_eq!(table_of_contents.title, "Contents");
+        assert_eq!(table_of_contents.entries.len(), 2);
+        assert_eq!(table_of_contents.entries[0].level, 1);
+        assert_eq!(table_of_contents.entries[0].text, "Intro");
+        assert_eq!(table_of_contents.entries[0].target_bookmark_id, "bm-intro");
+        assert_eq!(table_of_contents.entries[1].level, 3);
+        assert_eq!(
+            table_of_contents.entries[1].target_bookmark_id,
+            "bm-details"
+        );
+
+        let Block::Heading(intro) = &parsed.sections[0].blocks[1] else {
+            panic!("intro heading should round-trip through docx converter");
+        };
+        assert_eq!(intro.bookmark_id.as_deref(), Some("bm-intro"));
+    }
+
+    #[test]
+    fn imports_generated_toc_style_without_internal_link_as_visible_paragraph() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p><w:pPr><w:pStyle w:val="Word900TocEntry1"/></w:pPr><w:r><w:t>Unlinked entry</w:t></w:r></w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let parsed = read_docx_bytes(&bytes).expect("visible fallback should import");
+
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("unlinked toc row should remain visible paragraph");
+        };
+        assert_eq!(inline_text(&paragraph.inlines), "Unlinked entry");
+    }
+
+    #[test]
+    fn omits_generated_toc_hyperlinks_for_duplicate_docx_bookmark_targets() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::TableOfContents(TableOfContents {
+                title: "Contents".to_string(),
+                entries: vec![TableOfContentsEntry {
+                    level: 1,
+                    text: "Duplicate".to_string(),
+                    target_bookmark_id: "bm-duplicate".to_string(),
+                }],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-duplicate".to_string()),
+                level: 1,
+                inlines: vec![Inline::text("First")],
+            }),
+            Block::Heading(Heading {
+                bookmark_id: Some("bm-duplicate".to_string()),
+                level: 1,
+                inlines: vec![Inline::text("Second")],
+            }),
+        ];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write duplicate bookmarks");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+
+        assert!(document_xml.contains("Duplicate"));
+        assert!(!document_xml.contains(r#"<w:hyperlink w:anchor="bm-duplicate">"#));
+        assert!(!document_xml.contains(r#"w:name="bm-duplicate""#));
     }
 
     #[test]
