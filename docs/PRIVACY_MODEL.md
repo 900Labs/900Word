@@ -84,6 +84,8 @@ Sprint 061 DOCX explicit page-break import/export uses only top-level body parag
 
 Sprint 062 DOCX paragraph page-break-before import/export uses only direct paragraph `w:pageBreakBefore` flags already present in preflighted DOCX XML. Accepted top-level body paragraph flags are normalized to local `PageBreak` blocks before the affected paragraph; falsy values are ignored; nested paragraph flags such as table-cell `pageBreakBefore` produce generic warnings and are not preserved. Exported DOCX page breaks remain generated explicit page-break runs from local blocks and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
 
+Sprint 063 DOCX generic font-family import/export uses only direct `w:rFonts` values already present in preflighted DOCX XML or local `word-core` inline style. Accepted imported values are normalized to existing generic 900Word family IDs and never preserve arbitrary source font names. Unsupported, embedded, theme, complex-script-only, or otherwise out-of-model font metadata is ignored. Exported DOCX run font tags are generated from local generic family IDs and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -135,6 +137,8 @@ Sprint 060 DOCX export writes only bounded numeric body-level section page setup
 Sprint 061 DOCX export writes only explicit page-break runs already represented as local `PageBreak` blocks. Generated page breaks do not use local paths, source filenames, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, layout-generated pagination metadata, or private build metadata.
 
 Sprint 062 DOCX export keeps the existing generated explicit page-break run shape for local `PageBreak` blocks. It does not export hidden Word paragraph page-break-before flags, local paths, source filenames, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, layout-generated pagination metadata, or private build metadata.
+
+Sprint 063 DOCX export writes only generated static `w:rFonts` values for local generic font-family IDs. It does not export arbitrary source font names, embedded fonts, theme font metadata, local paths, source filenames, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, or private build metadata.
 
 ## Network
 
