@@ -5,7 +5,8 @@ use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
     sanitize_bookmark_id, Block, Document, DocumentWarning, Heading, Inline, InlineMark, ListBlock,
-    ListItem, Paragraph, StyleId, Table, TableCell, TableRow,
+    ListItem, PageField, PageRegion, PageRegionBlock, PageRegionParagraph, PageRegions, Paragraph,
+    StyleId, Table, TableCell, TableRow,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -21,6 +22,11 @@ const REL_TYPE_STYLES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
 const REL_TYPE_NUMBERING: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
+const REL_TYPE_HEADER: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
+const REL_TYPE_FOOTER: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
+const PAGE_REGION_XML: &str = "DOCX page region";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageLimits {
@@ -111,6 +117,57 @@ struct ParsedBlock {
 #[derive(Debug, Clone, Default)]
 struct RelationshipMap {
     hyperlinks: BTreeMap<String, String>,
+    page_regions: BTreeMap<String, PageRegionRelationship>,
+}
+
+#[derive(Debug, Clone)]
+struct PageRegionRelationship {
+    kind: PageRegionPartKind,
+    target: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PageRegionPartKind {
+    Header,
+    Footer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageRegionReferenceKind {
+    DefaultHeader,
+    DefaultFooter,
+    FirstHeader,
+    FirstFooter,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ParsedDocument {
+    blocks: Vec<Block>,
+    page_regions: PageRegions,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PageRegionReferences {
+    header: Option<String>,
+    footer: Option<String>,
+    first_header: Option<String>,
+    first_footer: Option<String>,
+    different_first_page: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DocxPageRegionExports {
+    parts: Vec<DocxPageRegionPart>,
+}
+
+#[derive(Debug, Clone)]
+struct DocxPageRegionPart {
+    reference: PageRegionReferenceKind,
+    kind: PageRegionPartKind,
+    rel_id: String,
+    path: &'static str,
+    target: &'static str,
+    blocks: Vec<PageRegionBlock>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -168,7 +225,7 @@ struct HyperlinkRef {
     href: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct HyperlinkIds {
     external: BTreeMap<String, String>,
 }
@@ -218,20 +275,28 @@ pub fn read_docx_bytes_with_limits(
     } else {
         parse_relationships_xml(&rels_xml, &mut warnings)?
     };
+    let page_region_part_xml = read_page_region_parts(&mut archive, &rels, &mut warnings)?;
     let numbering = if numbering_xml.is_empty() {
         NumberingMap::default()
     } else {
         parse_numbering_xml(&numbering_xml, &mut warnings)?
     };
-    let blocks = parse_document_xml(&document_xml, &rels, &numbering, &mut warnings)?;
+    let parsed_document = parse_document_xml(
+        &document_xml,
+        &rels,
+        &page_region_part_xml,
+        &numbering,
+        &mut warnings,
+    )?;
 
     let mut document = Document::new_untitled();
     if let Some(section) = document.sections.first_mut() {
-        section.blocks = if blocks.is_empty() {
+        section.blocks = if parsed_document.blocks.is_empty() {
             vec![empty_paragraph_block()]
         } else {
-            blocks
+            parsed_document.blocks
         };
+        section.page_regions = parsed_document.page_regions;
     }
     document.warnings = warnings.warnings;
     Ok(document)
@@ -239,28 +304,36 @@ pub fn read_docx_bytes_with_limits(
 
 pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     let hyperlinks = collect_external_hyperlinks(document);
+    let page_region_exports = collect_page_region_exports(document);
     let hyperlink_ids = assign_hyperlink_ids(&hyperlinks);
     let compressed = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let cursor = Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);
 
     writer.start_file("[Content_Types].xml", compressed)?;
-    writer.write_all(render_content_types_xml().as_bytes())?;
+    writer.write_all(render_content_types_xml(&page_region_exports).as_bytes())?;
 
     writer.start_file("_rels/.rels", compressed)?;
     writer.write_all(render_root_rels_xml().as_bytes())?;
 
     writer.start_file(DOCUMENT_XML, compressed)?;
-    writer.write_all(render_document_xml(document, &hyperlink_ids).as_bytes())?;
+    writer.write_all(
+        render_document_xml(document, &hyperlink_ids, &page_region_exports).as_bytes(),
+    )?;
 
     writer.start_file(DOCUMENT_RELS, compressed)?;
-    writer.write_all(render_document_rels_xml(&hyperlink_ids).as_bytes())?;
+    writer.write_all(render_document_rels_xml(&hyperlink_ids, &page_region_exports).as_bytes())?;
 
     writer.start_file("word/styles.xml", compressed)?;
     writer.write_all(render_styles_xml().as_bytes())?;
 
     writer.start_file(NUMBERING_XML, compressed)?;
     writer.write_all(render_numbering_xml().as_bytes())?;
+
+    for part in &page_region_exports.parts {
+        writer.start_file(part.path, compressed)?;
+        writer.write_all(render_page_region_part_xml(part).as_bytes())?;
+    }
 
     Ok(writer.finish()?.into_inner())
 }
@@ -350,6 +423,32 @@ fn parse_relationships_xml(
                             );
                         }
                     }
+                    (Some(id), Some(rel_type), Some(target))
+                        if rel_type == REL_TYPE_HEADER || rel_type == REL_TYPE_FOOTER =>
+                    {
+                        if target_mode.as_deref() == Some("External") {
+                            warnings.warn(
+                                "docx_page_region_relationship_ignored",
+                                "Unsupported DOCX header or footer relationships were ignored during import",
+                            );
+                            continue;
+                        }
+                        let kind = if rel_type == REL_TYPE_HEADER {
+                            PageRegionPartKind::Header
+                        } else {
+                            PageRegionPartKind::Footer
+                        };
+                        if let Some(target) = resolve_page_region_target(&target, kind) {
+                            relationships
+                                .page_regions
+                                .insert(id, PageRegionRelationship { kind, target });
+                        } else {
+                            warnings.warn(
+                                "docx_page_region_relationship_ignored",
+                                "Unsupported DOCX header or footer relationships were ignored during import",
+                            );
+                        }
+                    }
                     (_, Some(_), _) if target_mode.as_deref() == Some("External") => {
                         warnings.warn(
                             "docx_external_relationship_ignored",
@@ -365,6 +464,34 @@ fn parse_relationships_xml(
     }
 
     Ok(relationships)
+}
+
+fn read_page_region_parts<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    rels: &RelationshipMap,
+    warnings: &mut WarningSink,
+) -> Result<BTreeMap<String, String>, DocxError> {
+    let mut parts = BTreeMap::new();
+    for relationship in rels.page_regions.values() {
+        if parts.contains_key(&relationship.target) {
+            continue;
+        }
+        match archive.by_name(&relationship.target) {
+            Ok(mut file) => {
+                let mut xml = String::new();
+                file.read_to_string(&mut xml)?;
+                parts.insert(relationship.target.clone(), xml);
+            }
+            Err(zip::result::ZipError::FileNotFound) => {
+                warnings.warn(
+                    "docx_page_region_part_missing",
+                    "DOCX headers or footers with missing content were ignored during import",
+                );
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(parts)
 }
 
 fn parse_numbering_xml(xml: &str, warnings: &mut WarningSink) -> Result<NumberingMap, DocxError> {
@@ -431,12 +558,14 @@ fn parse_numbering_xml(xml: &str, warnings: &mut WarningSink) -> Result<Numberin
 fn parse_document_xml(
     xml: &str,
     rels: &RelationshipMap,
+    page_region_part_xml: &BTreeMap<String, String>,
     numbering: &NumberingMap,
     warnings: &mut WarningSink,
-) -> Result<Vec<Block>, DocxError> {
+) -> Result<ParsedDocument, DocxError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     let mut parsed = Vec::new();
+    let mut page_regions = PageRegions::default();
     let mut in_body = false;
 
     loop {
@@ -463,7 +592,9 @@ fn parse_document_xml(
                 );
             }
             Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"sectPr" => {
-                skip_element(&mut reader, b"sectPr", DOCUMENT_XML)?;
+                let references = parse_section_properties(&mut reader, warnings)?;
+                page_regions =
+                    build_page_regions(&references, rels, page_region_part_xml, warnings)?;
             }
             Event::Empty(_) if in_body => {
                 warnings.warn(
@@ -484,7 +615,172 @@ fn parse_document_xml(
         }
     }
 
-    Ok(parsed.into_iter().map(|item| item.block).collect())
+    Ok(ParsedDocument {
+        blocks: parsed.into_iter().map(|item| item.block).collect(),
+        page_regions,
+    })
+}
+
+fn parse_section_properties(
+    reader: &mut Reader<&[u8]>,
+    warnings: &mut WarningSink,
+) -> Result<PageRegionReferences, DocxError> {
+    let mut references = PageRegionReferences::default();
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCUMENT_XML, err))?
+        {
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"headerReference" =>
+            {
+                apply_page_region_reference(
+                    &mut references,
+                    PageRegionPartKind::Header,
+                    &start,
+                    warnings,
+                )?;
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"footerReference" =>
+            {
+                apply_page_region_reference(
+                    &mut references,
+                    PageRegionPartKind::Footer,
+                    &start,
+                    warnings,
+                )?;
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"titlePg" =>
+            {
+                references.different_first_page = truthy_word_bool(&start, DOCUMENT_XML)?;
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"sectPr" => break,
+            Event::Start(start) => {
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCUMENT_XML)?;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(references)
+}
+
+fn apply_page_region_reference(
+    references: &mut PageRegionReferences,
+    kind: PageRegionPartKind,
+    start: &BytesStart<'_>,
+    warnings: &mut WarningSink,
+) -> Result<(), DocxError> {
+    let Some(id) = attr_value(start, b"id", DOCUMENT_XML)? else {
+        warnings.warn(
+            "docx_page_region_reference_ignored",
+            "Unsupported DOCX header or footer references were ignored during import",
+        );
+        return Ok(());
+    };
+    match (kind, attr_value(start, b"type", DOCUMENT_XML)?.as_deref()) {
+        (PageRegionPartKind::Header, Some("first")) => {
+            references.first_header = Some(id);
+            references.different_first_page = true;
+        }
+        (PageRegionPartKind::Footer, Some("first")) => {
+            references.first_footer = Some(id);
+            references.different_first_page = true;
+        }
+        (PageRegionPartKind::Header, Some("even")) | (PageRegionPartKind::Footer, Some("even")) => {
+            warnings.warn(
+                "docx_even_page_regions_ignored",
+                "DOCX even-page headers or footers are not imported as editable page regions yet",
+            );
+        }
+        (PageRegionPartKind::Header, _) => references.header = Some(id),
+        (PageRegionPartKind::Footer, _) => references.footer = Some(id),
+    }
+    Ok(())
+}
+
+fn build_page_regions(
+    references: &PageRegionReferences,
+    rels: &RelationshipMap,
+    page_region_part_xml: &BTreeMap<String, String>,
+    warnings: &mut WarningSink,
+) -> Result<PageRegions, DocxError> {
+    let mut page_regions = PageRegions {
+        different_first_page: references.different_first_page,
+        ..PageRegions::default()
+    };
+    if let Some(region) = parse_referenced_page_region(
+        references.header.as_deref(),
+        PageRegionPartKind::Header,
+        rels,
+        page_region_part_xml,
+        warnings,
+    )? {
+        page_regions.header = region;
+    }
+    if let Some(region) = parse_referenced_page_region(
+        references.footer.as_deref(),
+        PageRegionPartKind::Footer,
+        rels,
+        page_region_part_xml,
+        warnings,
+    )? {
+        page_regions.footer = region;
+    }
+    if let Some(region) = parse_referenced_page_region(
+        references.first_header.as_deref(),
+        PageRegionPartKind::Header,
+        rels,
+        page_region_part_xml,
+        warnings,
+    )? {
+        page_regions.first_header = region;
+        page_regions.different_first_page = true;
+    }
+    if let Some(region) = parse_referenced_page_region(
+        references.first_footer.as_deref(),
+        PageRegionPartKind::Footer,
+        rels,
+        page_region_part_xml,
+        warnings,
+    )? {
+        page_regions.first_footer = region;
+        page_regions.different_first_page = true;
+    }
+    Ok(page_regions)
+}
+
+fn parse_referenced_page_region(
+    id: Option<&str>,
+    expected_kind: PageRegionPartKind,
+    rels: &RelationshipMap,
+    page_region_part_xml: &BTreeMap<String, String>,
+    warnings: &mut WarningSink,
+) -> Result<Option<PageRegion>, DocxError> {
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    let Some(relationship) = rels.page_regions.get(id) else {
+        warnings.warn(
+            "docx_page_region_reference_ignored",
+            "Unsupported DOCX header or footer references were ignored during import",
+        );
+        return Ok(None);
+    };
+    if relationship.kind != expected_kind {
+        warnings.warn(
+            "docx_page_region_reference_ignored",
+            "Unsupported DOCX header or footer references were ignored during import",
+        );
+        return Ok(None);
+    }
+    let Some(xml) = page_region_part_xml.get(&relationship.target) else {
+        return Ok(None);
+    };
+    Ok(Some(parse_page_region_xml(xml, warnings)?))
 }
 
 fn parse_table(
@@ -600,6 +896,102 @@ fn parse_table_cell(
     })
 }
 
+fn parse_page_region_xml(xml: &str, warnings: &mut WarningSink) -> Result<PageRegion, DocxError> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let mut blocks = Vec::new();
+
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(PAGE_REGION_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"p" => {
+                blocks.push(PageRegionBlock::Paragraph(parse_page_region_paragraph(
+                    &mut reader,
+                    warnings,
+                )?));
+            }
+            Event::Start(start) if matches!(local_name(start.name().as_ref()), b"hdr" | b"ftr") => {
+            }
+            Event::End(end) if matches!(local_name(end.name().as_ref()), b"hdr" | b"ftr") => break,
+            Event::Start(start) => {
+                warnings.warn(
+                    "docx_page_region_content_degraded",
+                    "Unsupported DOCX header or footer content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(&mut reader, &end, PAGE_REGION_XML)?;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    Ok(PageRegion {
+        blocks,
+        read_only: false,
+    })
+}
+
+fn parse_page_region_paragraph(
+    reader: &mut Reader<&[u8]>,
+    warnings: &mut WarningSink,
+) -> Result<PageRegionParagraph, DocxError> {
+    let mut inlines = Vec::new();
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(PAGE_REGION_XML, err))?
+        {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"pPr" => {
+                skip_element(reader, b"pPr", PAGE_REGION_XML)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
+                let run = parse_run(reader, None, warnings, PAGE_REGION_XML)?;
+                append_inlines(&mut inlines, run);
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
+                let field = page_field_from_instruction(
+                    attr_value(&start, b"instr", PAGE_REGION_XML)?.as_deref(),
+                );
+                let run = parse_simple_field(reader, field, warnings, PAGE_REGION_XML)?;
+                append_inlines(&mut inlines, run);
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
+                if let Some(field) = page_field_from_instruction(
+                    attr_value(&start, b"instr", PAGE_REGION_XML)?.as_deref(),
+                ) {
+                    inlines.push(Inline::field(field));
+                } else {
+                    warnings.warn(
+                        "docx_field_degraded",
+                        "Unsupported DOCX fields were imported as visible text when available",
+                    );
+                }
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"p" => break,
+            Event::Start(start) => {
+                warnings.warn(
+                    "docx_page_region_content_degraded",
+                    "Unsupported DOCX header or footer content was ignored during import",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, PAGE_REGION_XML)?;
+            }
+            Event::Empty(_) => {
+                warnings.warn(
+                    "docx_page_region_content_degraded",
+                    "Unsupported DOCX header or footer content was ignored during import",
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(PageRegionParagraph { inlines })
+}
+
 fn parse_paragraph(
     reader: &mut Reader<&[u8]>,
     rels: &RelationshipMap,
@@ -618,13 +1010,32 @@ fn parse_paragraph(
                 properties = parse_paragraph_properties(reader, numbering, warnings)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
-                let run = parse_run(reader, None, warnings)?;
+                let run = parse_run(reader, None, warnings, DOCUMENT_XML)?;
                 append_inlines(&mut inlines, run);
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"hyperlink" => {
                 let link = hyperlink_ref(&start, rels, warnings)?;
-                let run = parse_hyperlink(reader, link, warnings)?;
+                let run = parse_hyperlink(reader, link, warnings, DOCUMENT_XML)?;
                 append_inlines(&mut inlines, run);
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
+                let field = page_field_from_instruction(
+                    attr_value(&start, b"instr", DOCUMENT_XML)?.as_deref(),
+                );
+                let run = parse_simple_field(reader, field, warnings, DOCUMENT_XML)?;
+                append_inlines(&mut inlines, run);
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
+                if let Some(field) = page_field_from_instruction(
+                    attr_value(&start, b"instr", DOCUMENT_XML)?.as_deref(),
+                ) {
+                    inlines.push(Inline::field(field));
+                } else {
+                    warnings.warn(
+                        "docx_field_degraded",
+                        "Unsupported DOCX fields were imported as visible text when available",
+                    );
+                }
             }
             Event::Start(start)
                 if matches!(
@@ -769,21 +1180,19 @@ fn parse_hyperlink(
     reader: &mut Reader<&[u8]>,
     link: HyperlinkRef,
     warnings: &mut WarningSink,
+    name: &str,
 ) -> Result<Vec<Inline>, DocxError> {
     let mut inlines = Vec::new();
     loop {
-        match reader
-            .read_event()
-            .map_err(|err| xml_error(DOCUMENT_XML, err))?
-        {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
             Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
-                let run = parse_run(reader, link.href.clone(), warnings)?;
+                let run = parse_run(reader, link.href.clone(), warnings, name)?;
                 append_inlines(&mut inlines, run);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"hyperlink" => break,
             Event::Start(start) => {
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, DOCUMENT_XML)?;
+                skip_element(reader, &end, name)?;
             }
             Event::Eof => break,
             _ => {}
@@ -796,20 +1205,18 @@ fn parse_run(
     reader: &mut Reader<&[u8]>,
     link: Option<String>,
     warnings: &mut WarningSink,
+    name: &str,
 ) -> Result<Vec<Inline>, DocxError> {
     let mut properties = RunProperties::default();
     let mut text = String::new();
 
     loop {
-        match reader
-            .read_event()
-            .map_err(|err| xml_error(DOCUMENT_XML, err))?
-        {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
             Event::Start(start) if local_name(start.name().as_ref()) == b"rPr" => {
-                properties = parse_run_properties(reader)?;
+                properties = parse_run_properties(reader, name)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"t" => {
-                text.push_str(&read_text_element(reader, b"t", DOCUMENT_XML)?);
+                text.push_str(&read_text_element(reader, b"t", name)?);
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"tab" => {
                 text.push('\t');
@@ -839,7 +1246,7 @@ fn parse_run(
                     "Unsupported DOCX media content was ignored during import",
                 );
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, DOCUMENT_XML)?;
+                skip_element(reader, &end, name)?;
             }
             Event::Empty(start)
                 if matches!(
@@ -871,7 +1278,7 @@ fn parse_run(
                     "Unsupported DOCX inline metadata was ignored during import",
                 );
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, DOCUMENT_XML)?;
+                skip_element(reader, &end, name)?;
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"r" => break,
             Event::Empty(_) => {
@@ -886,7 +1293,7 @@ fn parse_run(
                     "Unsupported DOCX run content was ignored during import",
                 );
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, DOCUMENT_XML)?;
+                skip_element(reader, &end, name)?;
             }
             Event::Eof => break,
             _ => {}
@@ -908,39 +1315,87 @@ fn parse_run(
     }])
 }
 
-fn parse_run_properties(reader: &mut Reader<&[u8]>) -> Result<RunProperties, DocxError> {
+fn parse_run_properties(
+    reader: &mut Reader<&[u8]>,
+    name: &str,
+) -> Result<RunProperties, DocxError> {
     let mut properties = RunProperties::default();
     loop {
-        match reader
-            .read_event()
-            .map_err(|err| xml_error(DOCUMENT_XML, err))?
-        {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"b" =>
             {
-                properties.bold = truthy_word_bool(&start, DOCUMENT_XML)?;
+                properties.bold = truthy_word_bool(&start, name)?;
             }
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"i" =>
             {
-                properties.italic = truthy_word_bool(&start, DOCUMENT_XML)?;
+                properties.italic = truthy_word_bool(&start, name)?;
             }
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"u" =>
             {
-                properties.underline =
-                    attr_value(&start, b"val", DOCUMENT_XML)?.as_deref() != Some("none");
+                properties.underline = attr_value(&start, b"val", name)?.as_deref() != Some("none");
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"rPr" => break,
             Event::Start(start) => {
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, DOCUMENT_XML)?;
+                skip_element(reader, &end, name)?;
             }
             Event::Eof => break,
             _ => {}
         }
     }
     Ok(properties)
+}
+
+fn parse_simple_field(
+    reader: &mut Reader<&[u8]>,
+    field: Option<PageField>,
+    warnings: &mut WarningSink,
+    name: &str,
+) -> Result<Vec<Inline>, DocxError> {
+    if let Some(field) = field {
+        skip_element(reader, b"fldSimple", name)?;
+        return Ok(vec![Inline::field(field)]);
+    }
+
+    warnings.warn(
+        "docx_field_degraded",
+        "Unsupported DOCX fields were imported as visible text when available",
+    );
+    let mut inlines = Vec::new();
+    loop {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
+                let run = parse_run(reader, None, warnings, name)?;
+                append_inlines(&mut inlines, run);
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"fldSimple" => break,
+            Event::Start(start) => {
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, name)?;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(inlines)
+}
+
+fn page_field_from_instruction(instruction: Option<&str>) -> Option<PageField> {
+    let instruction = instruction?;
+    let first_token = instruction
+        .trim()
+        .split(|ch: char| !ch.is_ascii_alphabetic())
+        .find(|token| !token.is_empty())?
+        .to_ascii_uppercase();
+    match first_token.as_str() {
+        "PAGE" => Some(PageField::PageNumber),
+        "NUMPAGES" => Some(PageField::PageCount),
+        "DATE" => Some(PageField::Date),
+        _ => None,
+    }
 }
 
 fn hyperlink_ref(
@@ -1133,16 +1588,31 @@ fn table_to_paragraph_block(table: &Table) -> Block {
     })
 }
 
-fn render_content_types_xml() -> String {
-    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+fn render_content_types_xml(page_regions: &DocxPageRegionExports) -> String {
+    let mut output = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
-  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
-</Types>"#
-        .to_string()
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>"#
+        .to_string();
+    for part in &page_regions.parts {
+        output.push_str("\n  <Override PartName=\"/");
+        output.push_str(part.path);
+        output.push_str("\" ContentType=\"");
+        output.push_str(match part.kind {
+            PageRegionPartKind::Header => {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"
+            }
+            PageRegionPartKind::Footer => {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"
+            }
+        });
+        output.push_str("\"/>");
+    }
+    output.push_str("\n</Types>");
+    output
 }
 
 fn render_root_rels_xml() -> String {
@@ -1154,7 +1624,10 @@ fn render_root_rels_xml() -> String {
     )
 }
 
-fn render_document_rels_xml(hyperlinks: &HyperlinkIds) -> String {
+fn render_document_rels_xml(
+    hyperlinks: &HyperlinkIds,
+    page_regions: &DocxPageRegionExports,
+) -> String {
     let mut output = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -1170,11 +1643,27 @@ fn render_document_rels_xml(hyperlinks: &HyperlinkIds) -> String {
         output.push_str(&escape_xml(href));
         output.push_str("\" TargetMode=\"External\"/>");
     }
+    for part in &page_regions.parts {
+        output.push_str("\n  <Relationship Id=\"");
+        output.push_str(&escape_xml(&part.rel_id));
+        output.push_str("\" Type=\"");
+        output.push_str(match part.kind {
+            PageRegionPartKind::Header => REL_TYPE_HEADER,
+            PageRegionPartKind::Footer => REL_TYPE_FOOTER,
+        });
+        output.push_str("\" Target=\"");
+        output.push_str(part.target);
+        output.push_str("\"/>");
+    }
     output.push_str("\n</Relationships>");
     output
 }
 
-fn render_document_xml(document: &Document, hyperlinks: &HyperlinkIds) -> String {
+fn render_document_xml(
+    document: &Document,
+    hyperlinks: &HyperlinkIds,
+    page_regions: &DocxPageRegionExports,
+) -> String {
     let mut output = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -1187,11 +1676,83 @@ fn render_document_xml(document: &Document, hyperlinks: &HyperlinkIds) -> String
         }
     }
 
+    output.push_str(r#"<w:sectPr>"#);
+    render_section_page_region_refs(page_regions, &mut output);
     output.push_str(
-        r#"<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>"#,
+        r#"<w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>"#,
     );
     output.push_str("</w:body></w:document>");
     output
+}
+
+fn render_section_page_region_refs(page_regions: &DocxPageRegionExports, output: &mut String) {
+    let has_first = page_regions.parts.iter().any(|part| {
+        matches!(
+            part.reference,
+            PageRegionReferenceKind::FirstHeader | PageRegionReferenceKind::FirstFooter
+        )
+    });
+    for part in &page_regions.parts {
+        match part.reference {
+            PageRegionReferenceKind::DefaultHeader => {
+                output.push_str("<w:headerReference w:type=\"default\" r:id=\"");
+                output.push_str(&escape_xml(&part.rel_id));
+                output.push_str("\"/>");
+            }
+            PageRegionReferenceKind::DefaultFooter => {
+                output.push_str("<w:footerReference w:type=\"default\" r:id=\"");
+                output.push_str(&escape_xml(&part.rel_id));
+                output.push_str("\"/>");
+            }
+            PageRegionReferenceKind::FirstHeader => {
+                output.push_str("<w:headerReference w:type=\"first\" r:id=\"");
+                output.push_str(&escape_xml(&part.rel_id));
+                output.push_str("\"/>");
+            }
+            PageRegionReferenceKind::FirstFooter => {
+                output.push_str("<w:footerReference w:type=\"first\" r:id=\"");
+                output.push_str(&escape_xml(&part.rel_id));
+                output.push_str("\"/>");
+            }
+        }
+    }
+    if has_first {
+        output.push_str("<w:titlePg/>");
+    }
+}
+
+fn render_page_region_part_xml(part: &DocxPageRegionPart) -> String {
+    let root = match part.kind {
+        PageRegionPartKind::Header => "hdr",
+        PageRegionPartKind::Footer => "ftr",
+    };
+    let mut output = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#);
+    output.push_str("<w:");
+    output.push_str(root);
+    output.push_str(
+        r#" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+    );
+    if part.blocks.is_empty() {
+        output.push_str("<w:p/>");
+    } else {
+        for block in &part.blocks {
+            render_page_region_block_xml(block, &mut output);
+        }
+    }
+    output.push_str("</w:");
+    output.push_str(root);
+    output.push('>');
+    output
+}
+
+fn render_page_region_block_xml(block: &PageRegionBlock, output: &mut String) {
+    match block {
+        PageRegionBlock::Paragraph(paragraph) => {
+            output.push_str("<w:p>");
+            render_inlines_xml(&paragraph.inlines, &HyperlinkIds::default(), output);
+            output.push_str("</w:p>");
+        }
+    }
 }
 
 fn render_block_xml(block: &Block, hyperlinks: &HyperlinkIds, output: &mut String) {
@@ -1369,6 +1930,20 @@ fn render_inlines_xml(inlines: &[Inline], hyperlinks: &HyperlinkIds, output: &mu
 }
 
 fn render_run_xml(inline: &Inline, output: &mut String) {
+    if let Some(field) = inline.field {
+        output.push_str("<w:fldSimple w:instr=\"");
+        output.push_str(match field {
+            PageField::PageNumber => " PAGE ",
+            PageField::PageCount => " NUMPAGES ",
+            PageField::Date => " DATE ",
+        });
+        output.push_str("\">");
+        let mut fallback = Inline::text(field.fallback_text());
+        fallback.marks = inline.marks.clone();
+        render_run_xml(&fallback, output);
+        output.push_str("</w:fldSimple>");
+        return;
+    }
     if inline.text.is_empty() {
         return;
     }
@@ -1443,6 +2018,74 @@ fn collect_external_hyperlinks(document: &Document) -> BTreeSet<String> {
         collect_external_hyperlinks_from_blocks(&section.blocks, &mut links);
     }
     links
+}
+
+fn collect_page_region_exports(document: &Document) -> DocxPageRegionExports {
+    let Some(section) = document.sections.first() else {
+        return DocxPageRegionExports::default();
+    };
+    let mut parts = Vec::new();
+    let mut next_id = collect_external_hyperlinks(document).len() + 3;
+    push_page_region_export(
+        &mut parts,
+        &mut next_id,
+        PageRegionReferenceKind::DefaultHeader,
+        PageRegionPartKind::Header,
+        "word/header1.xml",
+        "header1.xml",
+        &section.page_regions.header,
+    );
+    push_page_region_export(
+        &mut parts,
+        &mut next_id,
+        PageRegionReferenceKind::DefaultFooter,
+        PageRegionPartKind::Footer,
+        "word/footer1.xml",
+        "footer1.xml",
+        &section.page_regions.footer,
+    );
+    push_page_region_export(
+        &mut parts,
+        &mut next_id,
+        PageRegionReferenceKind::FirstHeader,
+        PageRegionPartKind::Header,
+        "word/header2.xml",
+        "header2.xml",
+        &section.page_regions.first_header,
+    );
+    push_page_region_export(
+        &mut parts,
+        &mut next_id,
+        PageRegionReferenceKind::FirstFooter,
+        PageRegionPartKind::Footer,
+        "word/footer2.xml",
+        "footer2.xml",
+        &section.page_regions.first_footer,
+    );
+    DocxPageRegionExports { parts }
+}
+
+fn push_page_region_export(
+    parts: &mut Vec<DocxPageRegionPart>,
+    next_id: &mut usize,
+    reference: PageRegionReferenceKind,
+    kind: PageRegionPartKind,
+    path: &'static str,
+    target: &'static str,
+    region: &PageRegion,
+) {
+    if !region.has_content() {
+        return;
+    }
+    parts.push(DocxPageRegionPart {
+        reference,
+        kind,
+        rel_id: format!("rId{next_id}"),
+        path,
+        target,
+        blocks: region.blocks.clone(),
+    });
+    *next_id += 1;
 }
 
 fn collect_external_hyperlinks_from_blocks(blocks: &[Block], links: &mut BTreeSet<String>) {
@@ -1557,6 +2200,46 @@ fn sanitize_text_href(value: &str) -> Option<String> {
     if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:")
     {
         Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn resolve_page_region_target(target: &str, kind: PageRegionPartKind) -> Option<String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('\\')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+    {
+        return None;
+    }
+    let combined = if trimmed.starts_with("word/") {
+        trimmed.to_string()
+    } else {
+        format!("word/{trimmed}")
+    };
+    if combined
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return None;
+    }
+    let lower = combined.to_ascii_lowercase();
+    let file_name = lower.strip_prefix("word/")?;
+    if file_name.contains('/') {
+        return None;
+    }
+    let matches_kind = match kind {
+        PageRegionPartKind::Header => file_name.starts_with("header"),
+        PageRegionPartKind::Footer => file_name.starts_with("footer"),
+    };
+    if matches_kind
+        && lower.ends_with(".xml")
+        && validate_entry_path(&combined, PackageLimits::default()).is_ok()
+    {
+        Some(combined)
     } else {
         None
     }
@@ -1796,6 +2479,182 @@ mod tests {
     }
 
     #[test]
+    fn imports_synthetic_docx_header_footer_text_and_page_fields() {
+        let bytes = synthetic_docx_with_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+  <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+  <w:sectPr>
+    <w:headerReference w:type="default" r:id="rHdr1"/>
+    <w:footerReference w:type="default" r:id="rFtr1"/>
+    <w:headerReference w:type="first" r:id="rHdr2"/>
+    <w:footerReference w:type="first" r:id="rFtr2"/>
+    <w:titlePg/>
+  </w:sectPr>
+</w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rHdr1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+<Relationship Id="rFtr1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
+<Relationship Id="rHdr2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>
+<Relationship Id="rFtr2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer2.xml"/>
+</Relationships>"#,
+            ),
+            None,
+            &[
+                (
+                    "word/header1.xml",
+                    r#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Page </w:t></w:r><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p></w:hdr>"#,
+                ),
+                (
+                    "word/footer1.xml",
+                    r#"<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Total </w:t></w:r><w:fldSimple w:instr=" NUMPAGES "/></w:p></w:ftr>"#,
+                ),
+                (
+                    "word/header2.xml",
+                    r#"<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>First </w:t></w:r><w:fldSimple w:instr=" DATE "/></w:p></w:hdr>"#,
+                ),
+                (
+                    "word/footer2.xml",
+                    r#"<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>First footer</w:t></w:r></w:p></w:ftr>"#,
+                ),
+            ],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("docx should import page regions");
+        let regions = &document.sections[0].page_regions;
+
+        assert!(regions.different_first_page);
+        let PageRegionBlock::Paragraph(header) = &regions.header.blocks[0];
+        assert_eq!(header.inlines[0].text, "Page ");
+        assert_eq!(header.inlines[1].field, Some(PageField::PageNumber));
+        let PageRegionBlock::Paragraph(footer) = &regions.footer.blocks[0];
+        assert_eq!(footer.inlines[1].field, Some(PageField::PageCount));
+        let PageRegionBlock::Paragraph(first_header) = &regions.first_header.blocks[0];
+        assert_eq!(first_header.inlines[1].field, Some(PageField::Date));
+        let PageRegionBlock::Paragraph(first_footer) = &regions.first_footer.blocks[0];
+        assert_eq!(first_footer.inlines[0].marks, vec![InlineMark::Bold]);
+    }
+
+    #[test]
+    fn exports_and_imports_word_core_page_regions_through_docx_converter() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: ParagraphFormat::default(),
+            inlines: vec![Inline::text("Body")],
+        })];
+        document.sections[0].page_regions.header.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![Inline::text("Page "), Inline::field(PageField::PageNumber)],
+            })];
+        document.sections[0].page_regions.footer.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![Inline::text("of "), Inline::field(PageField::PageCount)],
+            })];
+        document.sections[0].page_regions.first_header.blocks =
+            vec![PageRegionBlock::Paragraph(PageRegionParagraph {
+                inlines: vec![Inline::text("Date "), Inline::field(PageField::Date)],
+            })];
+        document.sections[0].page_regions.different_first_page = true;
+
+        let bytes = write_docx_bytes(&document).expect("docx should write page regions");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let mut archive =
+            ZipArchive::new(Cursor::new(bytes.as_slice())).expect("written docx should open");
+        let mut content_types = String::new();
+        archive
+            .by_name("[Content_Types].xml")
+            .expect("content types should exist")
+            .read_to_string(&mut content_types)
+            .expect("content types should read");
+        let mut document_rels = String::new();
+        archive
+            .by_name(DOCUMENT_RELS)
+            .expect("document rels should exist")
+            .read_to_string(&mut document_rels)
+            .expect("document rels should read");
+        let mut document_xml = String::new();
+        archive
+            .by_name(DOCUMENT_XML)
+            .expect("document xml should exist")
+            .read_to_string(&mut document_xml)
+            .expect("document xml should read");
+        archive
+            .by_name("word/header1.xml")
+            .expect("default header part should exist");
+        archive
+            .by_name("word/footer1.xml")
+            .expect("default footer part should exist");
+        archive
+            .by_name("word/header2.xml")
+            .expect("first header part should exist");
+        assert!(content_types.contains("/word/header1.xml"));
+        assert!(content_types.contains("/word/footer1.xml"));
+        assert!(content_types.contains("/word/header2.xml"));
+        assert!(document_rels.contains("relationships/header"));
+        assert!(document_rels.contains("Target=\"header1.xml\""));
+        assert!(document_rels.contains("Target=\"footer1.xml\""));
+        assert!(document_xml.contains("<w:headerReference w:type=\"default\""));
+        assert!(document_xml.contains("<w:footerReference w:type=\"default\""));
+        assert!(document_xml.contains("<w:headerReference w:type=\"first\""));
+        assert!(document_xml.contains("<w:titlePg/>"));
+
+        let parsed = read_docx_bytes(&bytes).expect("written package should import");
+        let regions = &parsed.sections[0].page_regions;
+
+        assert!(regions.different_first_page);
+        let PageRegionBlock::Paragraph(header) = &regions.header.blocks[0];
+        assert_eq!(header.inlines[1].field, Some(PageField::PageNumber));
+        let PageRegionBlock::Paragraph(footer) = &regions.footer.blocks[0];
+        assert_eq!(footer.inlines[1].field, Some(PageField::PageCount));
+        let PageRegionBlock::Paragraph(first_header) = &regions.first_header.blocks[0];
+        assert_eq!(first_header.inlines[1].field, Some(PageField::Date));
+    }
+
+    #[test]
+    fn ignores_unsafe_header_relationship_targets_with_generic_warning() {
+        for (target, target_mode) in [
+            ("../private/header1.xml", ""),
+            ("/absolute/header1.xml", ""),
+            ("C:/placeholder/header1.xml", ""),
+            ("folder\\header1.xml", ""),
+            ("https://example.invalid/header1.xml", ""),
+            ("header1.xml", r#" TargetMode="External""#),
+        ] {
+            let rels_xml = format!(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rHdr1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="{target}"{target_mode}/>
+</Relationships>"#
+            );
+            let bytes = synthetic_docx(
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+  <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+  <w:sectPr><w:headerReference w:type="default" r:id="rHdr1"/></w:sectPr>
+</w:body></w:document>"#,
+                Some(&rels_xml),
+                None,
+            );
+
+            let document =
+                read_docx_bytes(&bytes).expect("unsafe page region target should degrade");
+
+            assert!(document.sections[0].page_regions.header.blocks.is_empty());
+            let warning = document
+                .warnings
+                .iter()
+                .find(|warning| warning.code == "docx_page_region_relationship_ignored")
+                .expect("unsafe relationship should warn");
+            assert!(!warning.message.contains("private"));
+            assert!(!warning.message.contains("header1.xml"));
+            assert!(!warning.message.contains("example.invalid"));
+            assert!(!warning.message.contains("C:/"));
+        }
+    }
+
+    #[test]
     fn exports_minimal_docx_that_imports_supported_content() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![
@@ -2006,6 +2865,15 @@ mod tests {
         rels_xml: Option<&str>,
         numbering_xml: Option<&str>,
     ) -> Vec<u8> {
+        synthetic_docx_with_parts(document_xml, rels_xml, numbering_xml, &[])
+    }
+
+    fn synthetic_docx_with_parts(
+        document_xml: &str,
+        rels_xml: Option<&str>,
+        numbering_xml: Option<&str>,
+        extra_parts: &[(&str, &str)],
+    ) -> Vec<u8> {
         let mut cursor = Cursor::new(Vec::new());
         let mut writer = ZipWriter::new(&mut cursor);
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -2013,7 +2881,7 @@ mod tests {
             .start_file("[Content_Types].xml", options)
             .expect("content types should start");
         writer
-            .write_all(render_content_types_xml().as_bytes())
+            .write_all(render_content_types_xml(&DocxPageRegionExports::default()).as_bytes())
             .expect("content types should write");
         writer
             .start_file("_rels/.rels", options)
@@ -2042,6 +2910,12 @@ mod tests {
             writer
                 .write_all(numbering_xml.as_bytes())
                 .expect("numbering should write");
+        }
+        for (path, xml) in extra_parts {
+            writer
+                .start_file(*path, options)
+                .expect("part should start");
+            writer.write_all(xml.as_bytes()).expect("part should write");
         }
         writer.finish().expect("zip should finish");
         cursor.into_inner()

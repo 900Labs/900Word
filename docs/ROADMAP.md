@@ -305,3 +305,13 @@ Status: complete.
 - Carry existing text projections for paragraphs, headings, lists, tables, TOCs, notes, and image alt/caption text into the PDF pagination path.
 - Add PDF page-range export settings in the desktop File > Export flow with backend validation and generic range errors.
 - Keep raster image embedding, embedded/subset fonts, active PDF link annotations, complex script shaping, page-bottom note layout, and editor-preview layout fidelity deferred.
+
+## Sprint 033: DOCX Page Regions
+
+Status: complete.
+
+- Extend the conversion-only DOCX boundary to import default and first-page header/footer relationships into `word-core` page regions.
+- Read only safe relationship-resolved `word/header*.xml` and `word/footer*.xml` package parts that pass existing preflight, and keep warnings generic.
+- Map simple paragraph runs and supported page-number, page-count, and date fields through the existing `PageRegions` model.
+- Export 900Word-authored page regions as minimal DOCX header/footer parts with document relationships and section references.
+- Keep ODT canonical, with DOCX images/media, comments, tracked changes, notes, even-page regions, complex fields, complex section layouts, cloud, telemetry, accounts, network behavior, and full layout fidelity deferred.
