@@ -383,6 +383,16 @@ pub fn install_user_dictionary(
     install_result
 }
 
+pub fn remove_user_dictionary(user_root: &Path, language_tag: &str) -> Result<(), SpellError> {
+    validate_language_tag(language_tag)?;
+    let normalized = normalize_language_tag(language_tag);
+    for stem in dictionary_file_stems(&normalized) {
+        remove_regular_dictionary_file(&matching_aff_path(user_root, &stem))?;
+        remove_regular_dictionary_file(&matching_dic_path(user_root, &stem))?;
+    }
+    Ok(())
+}
+
 pub fn user_dictionary_template(language_tag: &str) -> Result<(String, String), SpellError> {
     validate_language_tag(language_tag)?;
     Ok((
@@ -613,6 +623,18 @@ fn is_regular_dictionary_file(path: &Path) -> bool {
             metadata.file_type().is_file() && metadata.len() <= MAX_USER_DICTIONARY_BYTES
         })
         .unwrap_or(false)
+}
+
+fn remove_regular_dictionary_file(path: &Path) -> Result<(), SpellError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(SpellError::DictionaryIo),
+    };
+    if !metadata.file_type().is_file() {
+        return Ok(());
+    }
+    fs::remove_file(path).map_err(|_| SpellError::DictionaryIo)
 }
 
 fn matching_dic_path(root: &Path, language_tag: &str) -> PathBuf {
@@ -1347,6 +1369,146 @@ mod tests {
         assert!(!error.contains(user_dir.path().to_string_lossy().as_ref()));
         assert!(!error.contains(source_dir.path().to_string_lossy().as_ref()));
         assert!(!error.contains("private-client"));
+    }
+
+    #[test]
+    fn remove_user_dictionary_deletes_local_pair_and_leaves_personal_words() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        write_user_dictionary(dir.path(), "sv-SE", &["hej", "dokument"])
+            .expect("test dictionary should write");
+        add_personal_word(dir.path(), "sv-SE", "egenord").expect("personal word should write");
+
+        remove_user_dictionary(dir.path(), "sv-SE").expect("dictionary should remove");
+
+        assert!(!dir.path().join("sv-SE.aff").exists());
+        assert!(!dir.path().join("sv-SE.dic").exists());
+        assert!(list_user_dictionaries(dir.path()).is_empty());
+        assert_eq!(
+            list_personal_words(dir.path(), "sv-SE").expect("personal words should remain"),
+            vec!["egenord".to_string()]
+        );
+    }
+
+    #[test]
+    fn remove_user_dictionary_does_not_remove_bundled_dictionary() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+
+        remove_user_dictionary(dir.path(), "en-US").expect("missing user dictionary is a no-op");
+
+        let dictionaries = list_dictionaries_with_user_root(dir.path());
+        assert!(dictionaries
+            .iter()
+            .any(|dictionary| dictionary.language_tag == "en-US" && dictionary.bundled));
+        let checker = checker_for_with_user_root("en-US", dir.path())
+            .expect("bundled dictionary should still load");
+        assert_eq!(checker.language_tag(), "en-US");
+    }
+
+    #[test]
+    fn remove_user_dictionary_removes_user_override_without_affecting_bundled_fallback() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        write_user_dictionary(dir.path(), "en-US", &["localonly"])
+            .expect("user override should write");
+        assert!(checker_for_with_user_root("en-US", dir.path())
+            .expect("user override should load")
+            .check("localonly")
+            .is_empty());
+
+        remove_user_dictionary(dir.path(), "en-US").expect("user override should remove");
+
+        let dictionaries = list_dictionaries_with_user_root(dir.path());
+        assert_eq!(
+            dictionaries
+                .iter()
+                .filter(|dictionary| dictionary.language_tag == "en-US" && dictionary.user)
+                .count(),
+            0
+        );
+        let checker =
+            checker_for_with_user_root("en-US", dir.path()).expect("bundled fallback should load");
+        assert_eq!(checker.check("localonly").len(), 1);
+    }
+
+    #[test]
+    fn remove_user_dictionary_rejects_invalid_language_without_private_details() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let invalid_language = "privateclient";
+
+        let err = remove_user_dictionary(dir.path(), invalid_language)
+            .expect_err("invalid language should fail");
+
+        assert_eq!(
+            err,
+            SpellError::InvalidDictionary {
+                reason: "language tag is invalid"
+            }
+        );
+        let error = err.to_string();
+        assert!(!error.contains(invalid_language));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn remove_user_dictionary_is_idempotent_for_missing_pair() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+
+        remove_user_dictionary(dir.path(), "sv-SE").expect("missing dictionary should be a no-op");
+
+        assert!(list_user_dictionaries(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn remove_user_dictionary_cleans_visible_half_installed_pair() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        fs::write(dir.path().join("sv-SE.dic"), "1\nhej\n").expect("dic should write");
+
+        remove_user_dictionary(dir.path(), "sv-SE")
+            .expect("partial dictionary cleanup should succeed");
+
+        assert!(!dir.path().join("sv-SE.dic").exists());
+        assert!(list_user_dictionaries(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn remove_user_dictionary_removes_underscore_alias_pair() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        write_user_dictionary(dir.path(), "sv_SE", &["hej"])
+            .expect("alias dictionary should write");
+
+        remove_user_dictionary(dir.path(), "sv-SE").expect("alias dictionary should remove");
+
+        assert!(!dir.path().join("sv_SE.aff").exists());
+        assert!(!dir.path().join("sv_SE.dic").exists());
+        assert!(list_user_dictionaries(dir.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_user_dictionary_does_not_follow_or_delete_symlink_targets() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let external = tempfile::tempdir().expect("external dir should exist");
+        write_user_dictionary(external.path(), "sv-SE", &["hej"])
+            .expect("external dictionary should write");
+        symlink(
+            external.path().join("sv-SE.aff"),
+            dir.path().join("sv-SE.aff"),
+        )
+        .expect("aff symlink should write");
+        symlink(
+            external.path().join("sv-SE.dic"),
+            dir.path().join("sv-SE.dic"),
+        )
+        .expect("dic symlink should write");
+
+        remove_user_dictionary(dir.path(), "sv-SE").expect("symlink entries should be ignored");
+
+        assert!(dir.path().join("sv-SE.aff").exists());
+        assert!(dir.path().join("sv-SE.dic").exists());
+        assert!(external.path().join("sv-SE.aff").is_file());
+        assert!(external.path().join("sv-SE.dic").is_file());
+        assert!(list_user_dictionaries(dir.path()).is_empty());
     }
 
     #[test]

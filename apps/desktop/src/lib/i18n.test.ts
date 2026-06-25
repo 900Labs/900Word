@@ -49,12 +49,18 @@ describe('i18n', () => {
     expect(translate('en-US', 'dictionaryInstallUnsupportedFile')).toBe(
       'Dictionary files are unsupported'
     );
+    expect(translate('en-US', 'dictionaryRemove')).toBe('Remove');
+    expect(translate('en-US', 'dictionaryRemoveSuccess')).toBe('Dictionary removed');
     expect(translate('es-ES', 'dictionarySourceUserFolder')).toBe(
       'Carpeta local de diccionarios del usuario'
     );
     expect(translate('es-ES', 'dictionaryInstallSuccess')).toBe('Diccionario instalado');
+    expect(translate('es-ES', 'dictionaryRemoveFailed')).toBe(
+      'No se pudo quitar el diccionario'
+    );
     expect(translate('ar', 'dictionaryRefresh')).toBe('Refresh');
     expect(translate('ar', 'dictionaryChooseAff')).toBe('Choose AFF');
+    expect(translate('ar', 'dictionaryRemove')).toBe('Remove');
     expect(translate('en-US', 'dictionaryUnavailableOption', { languageTag: 'sv-SE' })).toBe(
       'Unavailable (sv-SE)'
     );

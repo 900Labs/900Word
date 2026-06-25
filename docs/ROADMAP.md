@@ -436,3 +436,12 @@ Status: complete.
 - Validate language tags and source files in Rust, copy accepted pairs to normalized `<language-tag>.aff` and `<language-tag>.dic` filenames, and validate the copied pair before listing it.
 - Refresh installed dictionaries, select the installed language, refresh personal dictionary words, and show generic success/failure statuses without rendering selected local paths or filenames.
 - Keep downloads, remote lookup, cloud sync, accounts, telemetry, plugin-managed dictionaries, document metadata changes, and rich install diagnostics that expose private file details out of scope.
+
+## Sprint 047: Local User Dictionary Removal MVP
+
+Status: complete.
+
+- Add compact Settings remove actions for installed local user dictionaries while hiding removal for bundled dictionaries.
+- Remove only backend-computed app-data Hunspell pair files for a validated language tag, including the existing underscore alias pair, without accepting arbitrary deletion paths from the frontend.
+- Leave personal dictionary word lists intact, refresh dictionaries and personal words after removal, and fall back to bundled English or the first available dictionary when the active user dictionary is removed.
+- Keep downloads, remote lookup, cloud sync, accounts, telemetry, plugin-managed dictionaries, bundled dictionary deletion, document metadata changes, and rich removal diagnostics that expose private file details out of scope.
