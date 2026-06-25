@@ -333,6 +333,10 @@
     smart_typing: defaultSmartTypingSettings()
   });
   let uiDirection = $derived(localeDirection(settings.ui_locale));
+  let normalizedDictionaryLanguageTag = $derived(normalizeDictionaryLanguageTag(settings.language_tag));
+  let selectedDictionary = $derived(
+    dictionaries.find((dictionary) => dictionaryMatchesSelectedLanguage(dictionary, normalizedDictionaryLanguageTag))
+  );
   const shortcutPlatform = shortcutPlatformFromNavigator();
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
@@ -637,6 +641,15 @@
     templates = await invoke<TemplateSummary[]>('list_templates');
   }
 
+  async function refreshDictionaries() {
+    try {
+      dictionaries = await invoke<DictionaryInfo[]>('list_dictionaries');
+      status = tr('dictionaryListRefreshed');
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
   async function saveSettings() {
     settings = await invoke<Settings>('update_settings', {
       settings
@@ -854,6 +867,43 @@
 
   function normalizeSpellWord(word: string) {
     return word.trim().replace(/^'+|'+$/g, '').toLocaleLowerCase();
+  }
+
+  function normalizeDictionaryLanguageTag(languageTag: string) {
+    return languageTag.trim().replaceAll('_', '-');
+  }
+
+  function dictionaryMatchesSelectedLanguage(dictionary: DictionaryInfo, normalizedLanguageTag: string) {
+    return (
+      dictionary.language_tag === normalizedLanguageTag ||
+      (normalizedLanguageTag === 'en' && dictionary.language_tag === 'en-US')
+    );
+  }
+
+  function dictionarySourceTypeLabel(dictionary: DictionaryInfo) {
+    if (dictionary.bundled && dictionary.user) {
+      return tr('dictionarySourceBundledUser');
+    }
+    if (dictionary.user) {
+      return tr('dictionarySourceUser');
+    }
+    if (dictionary.bundled) {
+      return tr('dictionarySourceBundled');
+    }
+    return tr('dictionarySourceLocal');
+  }
+
+  function dictionarySourceLabel(dictionary: DictionaryInfo) {
+    if (dictionary.bundled && dictionary.user) {
+      return tr('dictionarySourceLocal');
+    }
+    if (dictionary.user) {
+      return tr('dictionarySourceUserFolder');
+    }
+    if (dictionary.bundled) {
+      return tr('dictionarySourceAppBundle');
+    }
+    return tr('dictionarySourceLocal');
   }
 
   function applyInlineMark(mark: SupportedMarkName, label: string) {
@@ -3420,16 +3470,70 @@
           <button disabled={pageRegionsReadOnly()} type="button" onclick={applyPageRegions}>{tr('applyHeadersFooters')}</button>
         </section>
 
-        <label>
-          {tr('dictionary')}
-          <select bind:value={settings.language_tag}>
-            {#each dictionaries as dictionary}
-              <option value={dictionary.language_tag}>
-                {dictionary.display_name}{dictionary.user ? ` (${tr('userDictionarySuffix')})` : ''}
-              </option>
-            {/each}
-          </select>
-        </label>
+        <section class="settings-group" aria-labelledby="dictionary-manager-heading">
+          <div class="field-button-row">
+            <h3 id="dictionary-manager-heading">{tr('dictionaryManager')}</h3>
+            <button type="button" onclick={refreshDictionaries}>{tr('dictionaryRefresh')}</button>
+          </div>
+
+          <label>
+            {tr('activeDictionary')}
+            <select bind:value={settings.language_tag}>
+              {#if !selectedDictionary && settings.language_tag.trim().length > 0}
+                <option value={settings.language_tag}>
+                  {tr('dictionaryUnavailableOption', { languageTag: settings.language_tag })}
+                </option>
+              {/if}
+              {#each dictionaries as dictionary}
+                <option value={dictionary.language_tag}>
+                  {dictionary.display_name}{dictionary.user ? ` (${tr('userDictionarySuffix')})` : ''}
+                </option>
+              {/each}
+            </select>
+          </label>
+
+          <p class="compact muted">{tr('dictionaryOfflineState')}</p>
+
+          {#if !selectedDictionary}
+            <p class="compact">{tr('dictionaryUnavailable')}</p>
+          {/if}
+
+          <div class="page-regions-grid" role="list" aria-label={tr('installedDictionaries')}>
+            {#if dictionaries.length === 0}
+              <article role="listitem">
+                <p class="compact muted">{tr('dictionaryNoneInstalled')}</p>
+              </article>
+            {:else}
+              {#each dictionaries as dictionary}
+                <article
+                  aria-current={dictionaryMatchesSelectedLanguage(dictionary, normalizedDictionaryLanguageTag)
+                    ? 'true'
+                    : undefined}
+                  role="listitem"
+                >
+                  <p class="compact">
+                    <strong>{dictionary.display_name}</strong>
+                    <span class="muted">{tr('dictionaryLanguageTag')}: {dictionary.language_tag}</span>
+                  </p>
+                  <dl>
+                    <div>
+                      <dt>{tr('dictionarySourceType')}</dt>
+                      <dd>{dictionarySourceTypeLabel(dictionary)}</dd>
+                    </div>
+                    <div>
+                      <dt>{tr('dictionarySourceLabel')}</dt>
+                      <dd>{dictionarySourceLabel(dictionary)}</dd>
+                    </div>
+                    <div>
+                      <dt>{tr('dictionaryLicense')}</dt>
+                      <dd>{dictionary.license}</dd>
+                    </div>
+                  </dl>
+                </article>
+              {/each}
+            {/if}
+          </div>
+        </section>
 
         <label>
           {tr('uiLocale')}

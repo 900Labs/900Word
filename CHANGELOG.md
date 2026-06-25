@@ -41,6 +41,7 @@ All notable changes to 900Word are tracked here.
 - PDF table and image placeholder rendering MVP with lightweight vector table cell boxes, wrapped cell text, and aligned/scaled figure placeholder boxes for image alt/caption metadata without raster embedding or asset metadata emission.
 - PDF link annotation MVP with bounded active URI annotations for safe external `http`, `https`, and `mailto` text links in generated PDFs, while keeping internal PDF destinations and exact glyph-level geometry deferred.
 - PDF JPEG image embedding MVP with bounded safe in-document baseline JPEG image XObjects, APP/COM metadata marker stripping, visible placeholder fallback for unsupported or over-limit image payloads, preserved alt/caption text, page-range-aware image resources, and no new heavy image-processing dependency.
+- Dictionary Manager MVP under Settings with offline/local-only status, existing local dictionary refresh, active dictionary selection through the current settings flow, installed bundled/user dictionary metadata, and privacy-safe source labels without downloads, cloud sync, telemetry, or plugin runtime behavior.
 
 ### Fixed
 

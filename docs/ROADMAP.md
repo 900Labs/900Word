@@ -381,3 +381,21 @@ Status: complete.
 - Generate safe local note IDs on import, use bounded visible numeric labels, and keep unsupported or hidden DOCX note metadata on generic warning/fallback paths.
 - Export supported 900Word-authored local footnotes/endnotes as generated DOCX note parts with generated relationship IDs, content type overrides, numeric note IDs, and simple body paragraphs.
 - Keep ODT canonical and keep page-bottom placement, continuation separator fidelity, note cross references, rich note formatting/layout, comments/tracked changes inside note bodies, full Word note fidelity, telemetry, accounts, cloud behavior, external converters, heavyweight dependencies, and full DOCX fidelity deferred.
+
+## Sprint 041: Editor Toolbar Selection Fixes
+
+Status: complete.
+
+- Preserve saved editor selections for core toolbar formatting commands when mouse or pointer activation would otherwise move focus to the toolbar.
+- Cover inline mark buttons and paragraph/heading buttons through the same saved-selection command path.
+- Keep the fix local to editor interaction with no import/export, metadata, telemetry, network, accounts, cloud, or document-content logging changes.
+
+## Sprint 042: Dictionary Manager MVP
+
+Status: complete.
+
+- Add an offline dictionary manager section under Settings using the existing local dictionary list and settings commands.
+- Let users select the active spell-check dictionary from installed bundled/user dictionaries and save it through the existing settings flow.
+- Show installed dictionary display name, language tag, bundled/user source type, license, and generic no-local-path source label.
+- Show explicit offline/local-only status and a graceful fallback message when the selected dictionary is unavailable.
+- Keep downloads, remote dictionary lookup, cloud sync, telemetry, accounts, plugin runtime behavior, and dictionary install/import UX deferred.
