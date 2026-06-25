@@ -326,6 +326,60 @@ describe('supportedSchema', () => {
     expect(cell?.attrs.border).toBe('hidden');
   });
 
+  it('accepts bounded table column width attrs and rejects unsafe values', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'table',
+          attrs: { columnWidths: [250, 750] },
+          content: [
+            {
+              type: 'table_row',
+              content: [
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }]
+                },
+                {
+                  type: 'table_cell',
+                  attrs: { unsupported: false, sourceEmpty: false },
+                  content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(doc.firstChild?.attrs.columnWidths).toEqual([250, 750]);
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'table',
+            attrs: { columnWidths: ['width:100%'] },
+            content: [
+              {
+                type: 'table_row',
+                content: [
+                  {
+                    type: 'table_cell',
+                    attrs: { unsupported: false, sourceEmpty: false },
+                    content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      })
+    ).toThrow('unsupported table column widths');
+  });
+
   it('rejects unsupported table cell presentation attrs', () => {
     expect(() =>
       supportedSchema.nodeFromJSON({

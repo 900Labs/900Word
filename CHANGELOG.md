@@ -51,6 +51,7 @@ All notable changes to 900Word are tracked here.
 - Table Cell Styling MVP with durable bounded cell background, per-cell text alignment, and border visible/hidden metadata in `word-core`, compact contextual editor controls, 900Word-authored ODT `word900` preservation, and sanitized HTML/print/PDF projection without table layout engine, merged cells, formulas, network behavior, telemetry, accounts, or cloud sync.
 - Plain-Text Tabular Paste MVP that turns bounded simple TSV clipboard text into supported editable ProseMirror tables, pads one-cell-short rows with editable empty cells, and falls back to existing paragraph/list paste for out-of-bounds or irregular input without adding spreadsheet parsing, telemetry, network behavior, accounts, or cloud sync.
 - JPEG Import Metadata Stripping MVP that removes APP0-APP15 and COM marker payloads from accepted local JPEG/JPG imports before embedding document assets, without decoding, recompressing, resizing, downsampling, adding heavy image dependencies, or changing PNG/GIF/WebP import behavior.
+- Table Column Widths MVP with durable bounded per-mille column width hints for rectangular editable tables, compact contextual width controls, 900Word-authored ODT `word900` preservation, sanitized HTML/print colgroups, and proportional lightweight PDF table projection without adding a full layout engine or arbitrary CSS.
 
 ### Fixed
 

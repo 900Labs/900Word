@@ -358,6 +358,7 @@ export type UiStringKey =
   | 'trackedChangeSelected'
   | 'typoReplacements'
   | 'tableColumns'
+  | 'tableColumnWidth'
   | 'tableCellAlignInherit'
   | 'tableCellAlignment'
   | 'tableCellBackground'
@@ -778,6 +779,7 @@ const english: UiStrings = {
   trackedChangeSelected: 'Tracked change selected',
   typoReplacements: 'Replace common typos',
   tableColumns: 'Table columns',
+  tableColumnWidth: 'Column width',
   tableCellAlignInherit: 'Inherit',
   tableCellAlignment: 'Cell align',
   tableCellBackground: 'Cell fill',
@@ -985,6 +987,7 @@ const spanish: Partial<UiStrings> = {
   tableCellAlignment: 'Alinear celda',
   tableCellBackground: 'Relleno de celda',
   tableCellBorder: 'Borde de celda',
+  tableColumnWidth: 'Ancho de columna',
   tableCellUpdated: 'Celda actualizada',
   deleteTemplate: 'Eliminar plantilla',
   templateLoaded: 'Plantilla cargada',

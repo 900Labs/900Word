@@ -6,15 +6,16 @@ use std::fmt::Display;
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    normalize_comment_author, sanitize_table_cell_background_color, validate_comment_body,
-    validate_comment_id, validate_note_body, validate_note_id, validate_note_label,
-    validate_note_reference, validate_tracked_change_id, AssetRef, Block, CommentThread, Document,
-    DocumentWarning, Heading, ImageAlignment, ImageBlock, ImagePresentation, Inline, InlineMark,
-    InlineNoteReference, InlineStyle, ListBlock, ListDefinition, ListItem, Note, NoteKind,
-    PageField, PageRegion, PageRegionBlock, PageRegionKind, PageRegionParagraph, PageRegions,
-    PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat, Section, Style, StyleId, StyleKind,
-    Table, TableCell, TableCellBorder, TableCellPresentation, TableOfContents,
-    TableOfContentsEntry, TableRow, TrackChangesState, TrackedChange, TrackedChangeKind,
+    normalize_comment_author, sanitize_table_cell_background_color, sanitize_table_column_widths,
+    validate_comment_body, validate_comment_id, validate_note_body, validate_note_id,
+    validate_note_label, validate_note_reference, validate_tracked_change_id, AssetRef, Block,
+    CommentThread, Document, DocumentWarning, Heading, ImageAlignment, ImageBlock,
+    ImagePresentation, Inline, InlineMark, InlineNoteReference, InlineStyle, ListBlock,
+    ListDefinition, ListItem, Note, NoteKind, PageField, PageRegion, PageRegionBlock,
+    PageRegionKind, PageRegionParagraph, PageRegions, PageSetup, Paragraph, ParagraphAlignment,
+    ParagraphFormat, Section, Style, StyleId, StyleKind, Table, TableCell, TableCellBorder,
+    TableCellPresentation, TableOfContents, TableOfContentsEntry, TableRow, TrackChangesState,
+    TrackedChange, TrackedChangeKind, MAX_TABLE_WIDTH_COLUMNS,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -693,7 +694,9 @@ fn render_list(list: &ListBlock, document: &Document, output: &mut String) -> Re
 }
 
 fn render_table(table: &Table, document: &Document, output: &mut String) -> Result<(), OdtError> {
-    output.push_str("<table:table>");
+    output.push_str("<table:table");
+    output.push_str(&table_column_widths_attr(table));
+    output.push('>');
     for row in &table.rows {
         output.push_str("<table:table-row>");
         for cell in &row.cells {
@@ -709,6 +712,18 @@ fn render_table(table: &Table, document: &Document, output: &mut String) -> Resu
     }
     output.push_str("</table:table>");
     Ok(())
+}
+
+fn table_column_widths_attr(table: &Table) -> String {
+    let Some(widths) = table.sanitized_column_widths() else {
+        return String::new();
+    };
+    let value = widths
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(" word900:column-widths=\"{}\"", escape_xml(&value))
 }
 
 fn table_cell_presentation_attrs(presentation: &TableCellPresentation) -> String {
@@ -1715,7 +1730,25 @@ impl<'a> ParseState<'a> {
                     blocks: Vec::new(),
                 });
             }
-            b"table" => self.contexts.push(ParseContext::Table { rows: Vec::new() }),
+            b"table" => {
+                let column_widths = match attr_value_exact(start, b"word900:column-widths")? {
+                    Some(value) => match parse_table_column_widths_metadata(&value) {
+                        Some(widths) => widths,
+                        None => {
+                            self.warn(
+                                "odt_invalid_table_column_widths",
+                                "Unsupported 900Word table column width metadata was ignored",
+                            );
+                            Vec::new()
+                        }
+                    },
+                    None => Vec::new(),
+                };
+                self.contexts.push(ParseContext::Table {
+                    column_widths,
+                    rows: Vec::new(),
+                });
+            }
             b"table-row" => self
                 .contexts
                 .push(ParseContext::TableRow { cells: Vec::new() }),
@@ -2622,7 +2655,7 @@ impl<'a> ParseState<'a> {
             return;
         };
         match self.contexts.last_mut() {
-            Some(ParseContext::Table { rows }) => rows.push(TableRow { cells }),
+            Some(ParseContext::Table { rows, .. }) => rows.push(TableRow { cells }),
             _ => self.warn(
                 "odt_misnested_table_row",
                 "Table row outside a table was ignored",
@@ -2631,11 +2664,33 @@ impl<'a> ParseState<'a> {
     }
 
     fn finish_table(&mut self) {
-        let Some(ParseContext::Table { rows }) = self.contexts.pop() else {
+        let Some(ParseContext::Table {
+            column_widths,
+            rows,
+        }) = self.contexts.pop()
+        else {
             self.warn("odt_misnested_table", "Misnested table was ignored");
             return;
         };
-        self.push_block(Block::Table(Table { rows }));
+        let mut table = Table {
+            column_widths,
+            rows,
+        };
+        if !table.column_widths.is_empty() {
+            if let Some(widths) = sanitize_table_column_widths(
+                &table.column_widths,
+                table.editable_column_count().unwrap_or(0),
+            ) {
+                table.column_widths = widths;
+            } else {
+                self.warn(
+                    "odt_invalid_table_column_widths",
+                    "Unsupported 900Word table column width metadata was ignored",
+                );
+                table.column_widths.clear();
+            }
+        }
+        self.push_block(Block::Table(table));
     }
 
     fn finish_frame(&mut self) {
@@ -2752,6 +2807,7 @@ enum ParseContext {
         blocks: Vec<Block>,
     },
     Table {
+        column_widths: Vec<u16>,
         rows: Vec<TableRow>,
     },
     TableRow {
@@ -3196,6 +3252,24 @@ fn parse_table_cell_presentation(
         text_alignment,
         border,
     })
+}
+
+fn parse_table_column_widths_metadata(value: &str) -> Option<Vec<u16>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return None;
+    }
+    let mut widths = Vec::new();
+    for part in trimmed.split(',') {
+        if part.is_empty()
+            || !part.chars().all(|ch| ch.is_ascii_digit())
+            || widths.len() >= MAX_TABLE_WIDTH_COLUMNS
+        {
+            return None;
+        }
+        widths.push(part.parse::<u16>().ok()?);
+    }
+    Some(widths)
 }
 
 fn parse_table_cell_alignment(value: &str) -> Option<ParagraphAlignment> {
@@ -3684,6 +3758,15 @@ mod tests {
         0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 0, 1, 0, 0, 5, 0, 1,
         13, 10, 45, 180, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
+
+    fn paragraph_block(text: &str) -> Block {
+        Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![Inline::text(text)],
+        })
+    }
 
     #[test]
     fn generated_odt_round_trips_mvp_blocks_and_multilingual_text() {
@@ -4780,6 +4863,7 @@ mod tests {
     fn table_cell_presentation_round_trips_through_word900_metadata() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: Vec::new(),
             rows: vec![TableRow {
                 cells: vec![TableCell {
                     presentation: TableCellPresentation {
@@ -4817,9 +4901,69 @@ mod tests {
     }
 
     #[test]
+    fn table_column_widths_round_trip_through_word900_metadata() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: vec![250, 750],
+            rows: vec![TableRow {
+                cells: vec![
+                    TableCell {
+                        presentation: Default::default(),
+                        blocks: vec![paragraph_block("Narrow")],
+                    },
+                    TableCell {
+                        presentation: Default::default(),
+                        blocks: vec![paragraph_block("Wide")],
+                    },
+                ],
+            }],
+        })];
+
+        let bytes = write_odt_bytes(&document).expect("odt should write");
+        let content_xml = content_xml_from_package(&bytes);
+        assert!(content_xml.contains("word900:column-widths=\"250,750\""));
+
+        let parsed = read_odt_bytes(&bytes).expect("odt should read");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a table");
+        };
+        assert_eq!(table.column_widths, vec![250, 750]);
+    }
+
+    #[test]
+    fn invalid_external_table_column_width_metadata_is_ignored() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+          <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+              xmlns:word900="urn:900labs:900word:metadata">
+            <office:body><office:text>
+              <table:table word900:column-widths="10,990">
+                <table:table-row>
+                  <table:table-cell><text:p>A</text:p></table:table-cell>
+                  <table:table-cell><text:p>B</text:p></table:table-cell>
+                </table:table-row>
+              </table:table>
+            </office:text></office:body>
+          </office:document-content>"#;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a table");
+        };
+        assert!(table.column_widths.is_empty());
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_invalid_table_column_widths"));
+    }
+
+    #[test]
     fn table_cell_presentation_omits_unrecognized_background_color() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: Vec::new(),
             rows: vec![TableRow {
                 cells: vec![TableCell {
                     presentation: TableCellPresentation {
@@ -5135,6 +5279,7 @@ mod tests {
                 ],
             }),
             Block::Table(Table {
+                column_widths: Vec::new(),
                 rows: vec![
                     TableRow {
                         cells: vec![

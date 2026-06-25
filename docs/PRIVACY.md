@@ -49,6 +49,8 @@ Sprint 012 adds editable table projection for supported local document content. 
 
 Sprint 048 adds bounded table-cell presentation metadata for editable local tables. Cell fill, alignment, and border visibility are stored only in the local document model and saved package. The feature does not add telemetry, cloud sync, remote resource fetching, accounts, network calls, local paths, filenames, usernames, hostnames, source document names, or document-content logging.
 
+Sprint 052 adds bounded numeric table column width hints for rectangular editable local tables. Width hints are stored as per-mille integers only and exported as generated safe percentages where applicable. The feature does not store arbitrary CSS, paths, filenames, usernames, hostnames, source document names, account/cloud identifiers, telemetry identifiers, network state, or document-content logs, and it adds no telemetry, network calls, cloud sync, accounts, remote resource fetching, or heavy dependencies.
+
 Sprint 049 adds plain-text TSV paste detection inside the existing local editor paste path. Pasted cell text is converted directly into supported ProseMirror text nodes and synced through the existing local document model. The feature does not log document or clipboard text, add spreadsheet parser dependencies, expose local paths, filenames, usernames, hostnames, source document names, telemetry identifiers, accounts, cloud sync, remote resource fetching, or network calls.
 
 Sprint 013 adds local header/footer editing and typed page fields. Page field values are generated from the document model and exporter context only; they do not read usernames, hostnames, absolute paths, accounts, network state, or external services.

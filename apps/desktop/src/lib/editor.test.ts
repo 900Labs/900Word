@@ -24,6 +24,7 @@ import {
   setEditorBlockBookmarkTransaction,
   setSelectedImageAttrsTransaction,
   setSelectedTableCellAttrsTransaction,
+  setSelectedTableColumnWidthTransaction,
   restoreEditorSelection,
   selectEditorTopLevelBlock,
   setEditorBlockType,
@@ -1628,6 +1629,39 @@ describe('findEditorDocMatches', () => {
     expect(withoutInsertedColumn.doc.child(0).child(1).childCount).toBe(2);
   });
 
+  it('keeps table column widths consistent when adding and deleting columns', () => {
+    const state = tableStateWithSelection('A2', [250, 750]);
+
+    const added = editTableStructureTransaction(state, 'add_column_left');
+
+    expect(added).toBeDefined();
+    const withColumn = state.apply(added!);
+    expect(withColumn.doc.child(0).attrs.columnWidths).toEqual([176, 333, 491]);
+
+    const deleted = editTableStructureTransaction(withColumn, 'delete_column');
+
+    expect(deleted).toBeDefined();
+    const withoutInsertedColumn = withColumn.apply(deleted!);
+    expect(withoutInsertedColumn.doc.child(0).attrs.columnWidths).toEqual([250, 750]);
+  });
+
+  it('updates selected table column width and reports it in selection formatting', () => {
+    const state = tableStateWithSelection('A2', [250, 750]);
+
+    const transaction = setSelectedTableColumnWidthTransaction(state, 60);
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.child(0).attrs.columnWidths).toEqual([400, 600]);
+    expect(selectionAncestorNames(nextState)).toContain('table_cell');
+    expect(editorStateSelectionFormatting(nextState).table?.column).toMatchObject({
+      index: 1,
+      widthPercent: 60,
+      minPercent: 5,
+      maxPercent: 95
+    });
+  });
+
   it('updates selected table cell styling and reports it in selection formatting', () => {
     const state = tableStateWithSelection('A1');
 
@@ -1943,12 +1977,13 @@ function firstTextblockStart(doc: ReturnType<typeof supportedSchema.nodeFromJSON
   return found;
 }
 
-function tableStateWithSelection(cellText: string) {
+function tableStateWithSelection(cellText: string, columnWidths?: number[]) {
   const doc = supportedSchema.nodeFromJSON({
     type: 'doc',
     content: [
       {
         type: 'table',
+        ...(columnWidths ? { attrs: { columnWidths } } : {}),
         content: [
           {
             type: 'table_row',

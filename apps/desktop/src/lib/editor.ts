@@ -101,6 +101,12 @@ export interface EditorTableSnapshot {
   rows: number;
   columns: number;
   cell: SupportedTableCellAttrs;
+  column: {
+    index: number;
+    widthPercent: number;
+    minPercent: number;
+    maxPercent: number;
+  };
   canAddRow: boolean;
   canDeleteRow: boolean;
   canAddColumn: boolean;
@@ -145,6 +151,8 @@ export const MIN_TABLE_ROWS = 1;
 export const MAX_TABLE_ROWS = 8;
 export const MIN_TABLE_COLUMNS = 1;
 export const MAX_TABLE_COLUMNS = 8;
+const TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE = 1000;
+const MIN_TABLE_COLUMN_WIDTH_PER_MILLE = 50;
 
 const spellDecorationStore = new WeakMap<EditorView, SpellDecorationHolder>();
 const REFRESH_SELECTION_FORMATTING_META = '900word-refresh-selection-formatting';
@@ -1218,6 +1226,50 @@ export function setSelectedTableCellAttrsTransaction(
   return transaction.setNodeMarkup(context.cell.pos, context.cell.node.type, nextAttrs, context.cell.node.marks);
 }
 
+export function setSelectedTableColumnWidth(
+  view: EditorView | undefined,
+  widthPercent: number,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = setSelectedTableColumnWidthTransaction(view.state, widthPercent, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function setSelectedTableColumnWidthTransaction(
+  state: EditorState,
+  widthPercent: number,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const context = selectedEditableTableContext(transaction);
+  if (!context) {
+    return undefined;
+  }
+
+  const currentWidths = effectiveTableColumnWidths(context.table.node.attrs.columnWidths, context.columns);
+  const requestedWidth = clampTableColumnWidthPerMille(Math.round(Number(widthPercent) * 10), context.columns);
+  const nextWidths = withSelectedTableColumnWidth(currentWidths, context.cellIndex, requestedWidth);
+  if (tableColumnWidthsEqual(currentWidths, nextWidths)) {
+    return undefined;
+  }
+  return transaction.setNodeMarkup(
+    context.table.pos,
+    context.table.node.type,
+    tableAttrsWithColumnWidths(context.table.node.attrs, nextWidths),
+    context.table.node.marks
+  );
+}
+
 export function imageScalePercentFromResizeDrag(snapshot: ImageResizeDragSnapshot): number {
   const initialWidth = Math.max(1, snapshot.initialWidthPx);
   const nextWidth = initialWidth + snapshot.deltaXPx;
@@ -1566,7 +1618,17 @@ export function editTableStructureTransaction(
         ...cells.slice(insertionIndex)
       ], row.marks);
     });
-    return replaceSelectedTable(transaction, context, nextRows, rowIndex, insertionIndex);
+    return replaceSelectedTable(
+      transaction,
+      context,
+      nextRows,
+      rowIndex,
+      insertionIndex,
+      tableAttrsWithColumnWidths(
+        context.table.node.attrs,
+        tableColumnWidthsAfterInsert(context.table.node.attrs.columnWidths, columnCount, insertionIndex)
+      )
+    );
   }
 
   if (action === 'delete_column') {
@@ -1582,7 +1644,11 @@ export function editTableStructureTransaction(
       context,
       nextRows,
       rowIndex,
-      Math.min(cellIndex, columnCount - 2)
+      Math.min(cellIndex, columnCount - 2),
+      tableAttrsWithColumnWidths(
+        context.table.node.attrs,
+        tableColumnWidthsAfterDelete(context.table.node.attrs.columnWidths, columnCount, cellIndex)
+      )
     );
   }
 
@@ -2218,11 +2284,18 @@ function selectedTableSnapshot(transaction: Transaction): EditorTableSnapshot | 
   if (!context) {
     return null;
   }
+  const columnWidths = effectiveTableColumnWidths(context.table.node.attrs.columnWidths, context.columns);
 
   return {
     rows: context.rows,
     columns: context.columns,
     cell: compactTableCellAttrs(context.cell.node.attrs),
+    column: {
+      index: context.cellIndex,
+      widthPercent: Math.round(columnWidths[context.cellIndex] / 10),
+      minPercent: context.columns === 1 ? 100 : Math.ceil(MIN_TABLE_COLUMN_WIDTH_PER_MILLE / 10),
+      maxPercent: Math.floor(clampTableColumnWidthPerMille(TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE, context.columns) / 10)
+    },
     canAddRow: context.rows < MAX_TABLE_ROWS,
     canDeleteRow: context.rows > MIN_TABLE_ROWS,
     canAddColumn: context.columns < MAX_TABLE_COLUMNS,
@@ -2300,7 +2373,7 @@ function editableRectangularTable(table: ProseMirrorNode): boolean {
   }
 
   const columns = table.child(0).childCount;
-  if (columns < MIN_TABLE_COLUMNS) {
+  if (columns < MIN_TABLE_COLUMNS || columns > MAX_TABLE_COLUMNS) {
     return false;
   }
 
@@ -2352,9 +2425,10 @@ function replaceSelectedTable(
   context: NonNullable<ReturnType<typeof selectedEditableTableContext>>,
   rows: ProseMirrorNode[],
   targetRowIndex: number,
-  targetCellIndex: number
+  targetCellIndex: number,
+  tableAttrs: Record<string, unknown> = context.table.node.attrs
 ): Transaction | undefined {
-  const nextTable = context.table.node.type.create(context.table.node.attrs, rows, context.table.node.marks);
+  const nextTable = context.table.node.type.create(tableAttrs, rows, context.table.node.marks);
   transaction = transaction.replaceWith(
     context.table.pos,
     context.table.pos + context.table.node.nodeSize,
@@ -2741,6 +2815,135 @@ function compactTableCellAttrs(attrs: SupportedTableCellAttrs | Record<string, u
     compact.border = normalizeTableCellBorder(attrs.border);
   }
   return compact;
+}
+
+function tableAttrsWithColumnWidths(
+  attrs: Record<string, unknown>,
+  columnWidths: number[] | null
+): Record<string, unknown> {
+  return {
+    ...attrs,
+    columnWidths
+  };
+}
+
+function effectiveTableColumnWidths(value: unknown, columns: number): number[] {
+  return normalizeTableColumnWidths(value, columns) ?? equalTableColumnWidths(columns);
+}
+
+function normalizeTableColumnWidths(value: unknown, columns: number): number[] | null {
+  if (!Array.isArray(value) || value.length !== columns || columns < MIN_TABLE_COLUMNS || columns > MAX_TABLE_COLUMNS) {
+    return null;
+  }
+  if (!value.every((width) => Number.isInteger(width))) {
+    return null;
+  }
+  if (columns === 1) {
+    return value[0] === TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE ? [TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE] : null;
+  }
+  const total = value.reduce((sum, width) => sum + width, 0);
+  return total === TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE &&
+    value.every((width) => width >= MIN_TABLE_COLUMN_WIDTH_PER_MILLE && width <= TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE)
+    ? [...value]
+    : null;
+}
+
+function equalTableColumnWidths(columns: number): number[] {
+  const safeColumns = Math.min(MAX_TABLE_COLUMNS, Math.max(MIN_TABLE_COLUMNS, Math.trunc(columns)));
+  const base = Math.floor(TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE / safeColumns);
+  const remainder = TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE % safeColumns;
+  return Array.from({ length: safeColumns }, (_, index) => base + (index < remainder ? 1 : 0));
+}
+
+function clampTableColumnWidthPerMille(value: number, columns: number): number {
+  if (columns <= 1) {
+    return TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE;
+  }
+  const maximum = TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE - MIN_TABLE_COLUMN_WIDTH_PER_MILLE * (columns - 1);
+  if (!Number.isFinite(value)) {
+    return Math.round(TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE / columns);
+  }
+  return Math.min(maximum, Math.max(MIN_TABLE_COLUMN_WIDTH_PER_MILLE, Math.round(value)));
+}
+
+function withSelectedTableColumnWidth(widths: number[], selectedIndex: number, selectedWidth: number): number[] {
+  if (widths.length <= 1) {
+    return [TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE];
+  }
+  const fixedWidth = clampTableColumnWidthPerMille(selectedWidth, widths.length);
+  const otherWidths = widths.filter((_, index) => index !== selectedIndex);
+  const distributed = distributeTableColumnWidths(
+    otherWidths,
+    TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE - fixedWidth
+  );
+  const next: number[] = [];
+  let otherIndex = 0;
+  for (let index = 0; index < widths.length; index += 1) {
+    next.push(index === selectedIndex ? fixedWidth : distributed[otherIndex++]);
+  }
+  return next;
+}
+
+function tableColumnWidthsAfterInsert(value: unknown, columns: number, insertionIndex: number): number[] | null {
+  const current = normalizeTableColumnWidths(value, columns);
+  if (!current || columns >= MAX_TABLE_COLUMNS) {
+    return null;
+  }
+  const nextColumns = columns + 1;
+  const insertedWidth = Math.round(TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE / nextColumns);
+  const distributed = distributeTableColumnWidths(
+    current,
+    TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE - insertedWidth
+  );
+  return [
+    ...distributed.slice(0, insertionIndex),
+    insertedWidth,
+    ...distributed.slice(insertionIndex)
+  ];
+}
+
+function tableColumnWidthsAfterDelete(value: unknown, columns: number, deletedIndex: number): number[] | null {
+  const current = normalizeTableColumnWidths(value, columns);
+  if (!current || columns <= MIN_TABLE_COLUMNS) {
+    return null;
+  }
+  const remaining = current.filter((_, index) => index !== deletedIndex);
+  if (remaining.length === 1) {
+    return [TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE];
+  }
+  return distributeTableColumnWidths(remaining, TABLE_COLUMN_WIDTH_TOTAL_PER_MILLE);
+}
+
+function distributeTableColumnWidths(weights: number[], total: number): number[] {
+  if (weights.length === 0) {
+    return [];
+  }
+  if (weights.length === 1) {
+    return [total];
+  }
+  const minimumTotal = MIN_TABLE_COLUMN_WIDTH_PER_MILLE * weights.length;
+  const available = Math.max(0, total - minimumTotal);
+  const weightExtras = weights.map((width) => Math.max(0, width - MIN_TABLE_COLUMN_WIDTH_PER_MILLE));
+  const weightTotal = weightExtras.reduce((sum, width) => sum + width, 0);
+  const rawExtras = weightExtras.map((weight) =>
+    weightTotal > 0 ? (available * weight) / weightTotal : available / weights.length
+  );
+  const extras = rawExtras.map(Math.floor);
+  let remainder = available - extras.reduce((sum, value) => sum + value, 0);
+  rawExtras
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((left, right) => right.fraction - left.fraction || left.index - right.index)
+    .forEach(({ index }) => {
+      if (remainder > 0) {
+        extras[index] += 1;
+        remainder -= 1;
+      }
+    });
+  return extras.map((extra) => MIN_TABLE_COLUMN_WIDTH_PER_MILLE + extra);
+}
+
+function tableColumnWidthsEqual(left: number[], right: number[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function normalizeTableCellBackgroundColor(value: unknown): SupportedTableCellAttrs['backgroundColor'] {

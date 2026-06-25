@@ -32,6 +32,7 @@
     setEditorParagraphFormat,
     setSelectedImageAttrs,
     setSelectedTableCellAttrs,
+    setSelectedTableColumnWidth,
     setEditorSpellIssues,
     setEditorTextStyle,
     selectedEditorText,
@@ -309,6 +310,7 @@
   let tableCellBackground = $state<NonNullable<SupportedTableCellAttrs['backgroundColor']> | 'none'>('none');
   let tableCellAlignment = $state<NonNullable<SupportedTableCellAttrs['align']> | 'inherit'>('inherit');
   let tableCellBorder = $state<NonNullable<SupportedTableCellAttrs['border']>>('visible');
+  let tableColumnWidthPercent = $state(50);
   let spellIssueRanges = $state<EditorSpellIssueRange[]>([]);
   let spellPopover = $state<{
     issue: EditorSpellIssueRange;
@@ -1207,6 +1209,7 @@
     tableCellBackground = activeFormatting.table?.cell.backgroundColor ?? 'none';
     tableCellAlignment = activeFormatting.table?.cell.align ?? 'inherit';
     tableCellBorder = activeFormatting.table?.cell.border ?? 'visible';
+    tableColumnWidthPercent = activeFormatting.table?.column.widthPercent ?? 50;
     selectedCommentText = selectedEditorText(view, selection).trim();
   }
 
@@ -1290,6 +1293,17 @@
       tableCellBorder = value;
       applyTableCellAttrs({ border: value });
     }
+  }
+
+  function setTableColumnWidth(value: number) {
+    if (!editorEditable || !activeFormatting.table) {
+      return;
+    }
+    const column = activeFormatting.table.column;
+    const width = Math.min(column.maxPercent, Math.max(column.minPercent, Math.round(value)));
+    tableColumnWidthPercent = width;
+    const changed = setSelectedTableColumnWidth(view, width, lastEditorSelection);
+    status = changed ? tr('tableUpdated') : tr('paragraphUnchanged');
   }
 
   function markEditorStarted() {
@@ -3252,6 +3266,29 @@
         Del
       </button>
       {#if activeFormatting.table}
+        <label class="compact-number table-column-width" title={tr('tableColumnWidth')}>
+          {tr('tableColumnWidth')}
+          <input
+            disabled={!editorEditable || activeFormatting.table.columns <= 1}
+            min={activeFormatting.table.column.minPercent}
+            max={activeFormatting.table.column.maxPercent}
+            step="1"
+            type="range"
+            bind:value={tableColumnWidthPercent}
+            onpointerdown={() => captureToolbarSelection(true)}
+            onchange={(event) => setTableColumnWidth(Number(event.currentTarget.value))}
+          />
+          <input
+            disabled={!editorEditable || activeFormatting.table.columns <= 1}
+            min={activeFormatting.table.column.minPercent}
+            max={activeFormatting.table.column.maxPercent}
+            step="1"
+            type="number"
+            bind:value={tableColumnWidthPercent}
+            onpointerdown={() => captureToolbarSelection(true)}
+            onchange={(event) => setTableColumnWidth(Number(event.currentTarget.value))}
+          />
+        </label>
         <label class="table-cell-field" title={tr('tableCellBackground')}>
           {tr('tableCellBackground')}
           <select

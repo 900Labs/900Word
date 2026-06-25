@@ -2177,7 +2177,10 @@ fn parse_table(
             _ => {}
         }
     }
-    Ok(Table { rows })
+    Ok(Table {
+        column_widths: Vec::new(),
+        rows,
+    })
 }
 
 fn parse_table_row(
@@ -7004,6 +7007,7 @@ mod tests {
                 }],
             }),
             Block::Table(Table {
+                column_widths: Vec::new(),
                 rows: vec![TableRow {
                     cells: vec![TableCell {
                         presentation: Default::default(),
