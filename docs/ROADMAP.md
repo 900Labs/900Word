@@ -582,3 +582,12 @@ Status: complete.
 - Keep ordinary DOCX line breaks, tracked-change page breaks, and table-cell page breaks as visible inline spacing.
 - Export 900Word-authored `PageBreak` blocks as generated DOCX `w:br w:type="page"` runs.
 - Keep layout-generated page markers, column-break semantics, page-break paragraph flags, deterministic pagination, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
+
+## Sprint 062: DOCX Paragraph Page-Break-Before Interoperability
+
+Status: complete.
+
+- Import truthy top-level body paragraph DOCX `w:pageBreakBefore` flags into local `PageBreak` blocks before the affected paragraph.
+- Ignore falsy `w:pageBreakBefore` values and nested paragraph flags such as table-cell page-break-before with generic warnings.
+- Keep export on the existing generated explicit `w:br w:type="page"` run shape for local `PageBreak` blocks.
+- Keep hidden Word layout fidelity, deterministic pagination, complex section semantics, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
