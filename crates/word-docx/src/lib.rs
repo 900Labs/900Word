@@ -6,13 +6,14 @@ use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
     collect_ordered_note_references, normalize_comment_author, sanitize_bookmark_id,
-    sanitize_table_column_widths, validate_comment_body, validate_comment_id, validate_note_body,
-    validate_note_id, validate_note_reference, validate_tracked_change_id, AssetRef, Block,
-    CommentThread, Document, DocumentWarning, Heading, ImageBlock, ImagePresentation, Inline,
-    InlineMark, InlineNoteReference, ListBlock, ListItem, Note, NoteKind, PageField, PageRegion,
-    PageRegionBlock, PageRegionParagraph, PageRegions, Paragraph, StyleId, Table, TableCell,
-    TableOfContents, TableOfContentsEntry, TableRow, TrackedChange, TrackedChangeKind,
-    DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES, MAX_TABLE_WIDTH_COLUMNS,
+    sanitize_table_cell_background_color, sanitize_table_column_widths, validate_comment_body,
+    validate_comment_id, validate_note_body, validate_note_id, validate_note_reference,
+    validate_tracked_change_id, AssetRef, Block, CommentThread, Document, DocumentWarning, Heading,
+    ImageBlock, ImagePresentation, Inline, InlineMark, InlineNoteReference, ListBlock, ListItem,
+    Note, NoteKind, PageField, PageRegion, PageRegionBlock, PageRegionParagraph, PageRegions,
+    Paragraph, ParagraphAlignment, ParagraphFormat, StyleId, Table, TableCell, TableCellBorder,
+    TableCellPresentation, TableOfContents, TableOfContentsEntry, TableRow, TrackedChange,
+    TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES, MAX_TABLE_WIDTH_COLUMNS,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -138,6 +139,8 @@ struct ParsedBlock {
     block: Block,
     list_marker: Option<ListMarker>,
     toc_role: Option<TocParagraphRole>,
+    counts_for_cell_alignment: bool,
+    paragraph_alignment: Option<ParagraphAlignment>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -428,6 +431,7 @@ struct ParagraphProperties {
     list_marker: Option<ListMarker>,
     toc_role: Option<TocParagraphRole>,
     bookmark_id: Option<String>,
+    alignment: Option<ParagraphAlignment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1974,6 +1978,8 @@ fn parse_document_xml(
                             block: Block::Table(table),
                             list_marker: None,
                             toc_role: None,
+                            counts_for_cell_alignment: false,
+                            paragraph_alignment: None,
                         },
                     );
                 }
@@ -2340,6 +2346,16 @@ fn normalize_docx_table_grid_widths(widths: &[u64], column_count: usize) -> Opti
     sanitize_table_column_widths(&normalized, column_count)
 }
 
+fn docx_paragraph_alignment(value: String) -> Option<ParagraphAlignment> {
+    match value.as_str() {
+        "left" | "start" => Some(ParagraphAlignment::Left),
+        "center" => Some(ParagraphAlignment::Center),
+        "right" | "end" => Some(ParagraphAlignment::Right),
+        "both" | "distribute" => Some(ParagraphAlignment::Justify),
+        _ => None,
+    }
+}
+
 fn parse_table_row(
     reader: &mut Reader<&[u8]>,
     context: &DocxImportContext<'_>,
@@ -2387,6 +2403,7 @@ fn parse_table_cell(
     unsupported_width_shape: &mut bool,
 ) -> Result<TableCell, DocxError> {
     let mut parsed = Vec::new();
+    let mut presentation = TableCellPresentation::default();
     loop {
         match reader
             .read_event()
@@ -2411,13 +2428,17 @@ fn parse_table_cell(
                         block: table_to_paragraph_block(&table),
                         list_marker: None,
                         toc_role: None,
+                        counts_for_cell_alignment: false,
+                        paragraph_alignment: None,
                     },
                 );
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"tcPr" => {
-                if skip_table_cell_properties(reader, state.warnings)? {
+                let properties = parse_table_cell_properties(reader, state.warnings)?;
+                if properties.unsupported_width_shape {
                     *unsupported_width_shape = true;
                 }
+                presentation = properties.presentation;
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tc" => break,
             Event::Empty(_) => {
@@ -2437,18 +2458,121 @@ fn parse_table_cell(
         }
     }
 
+    if presentation.text_alignment.is_none() {
+        presentation.text_alignment = table_cell_text_alignment_from_parsed_blocks(&mut parsed);
+    }
     let blocks = parsed
         .into_iter()
         .map(|item| item.block)
         .collect::<Vec<_>>();
+    let blocks = if blocks.is_empty() {
+        vec![empty_paragraph_block()]
+    } else {
+        blocks
+    };
     Ok(TableCell {
-        presentation: Default::default(),
-        blocks: if blocks.is_empty() {
-            vec![empty_paragraph_block()]
-        } else {
-            blocks
-        },
+        presentation,
+        blocks,
     })
+}
+
+fn table_cell_text_alignment_from_parsed_blocks(
+    parsed_blocks: &mut [ParsedBlock],
+) -> Option<ParagraphAlignment> {
+    let mut summary = TableCellAlignmentSummary::default();
+    collect_parsed_table_cell_alignments(parsed_blocks, &mut summary);
+    if summary.has_unaligned_paragraph || summary.alignments.len() != 1 {
+        return None;
+    }
+    clear_parsed_table_cell_alignments(parsed_blocks);
+    summary.alignments.first().copied()
+}
+
+#[derive(Debug, Default)]
+struct TableCellAlignmentSummary {
+    alignments: Vec<ParagraphAlignment>,
+    has_unaligned_paragraph: bool,
+}
+
+impl TableCellAlignmentSummary {
+    fn add(&mut self, alignment: Option<ParagraphAlignment>) {
+        if let Some(alignment) = alignment {
+            if !self.alignments.contains(&alignment) {
+                self.alignments.push(alignment);
+            }
+        } else {
+            self.has_unaligned_paragraph = true;
+        }
+    }
+}
+
+fn collect_parsed_table_cell_alignments(
+    parsed_blocks: &[ParsedBlock],
+    summary: &mut TableCellAlignmentSummary,
+) {
+    for parsed in parsed_blocks {
+        if parsed.counts_for_cell_alignment {
+            summary.add(parsed.paragraph_alignment);
+        } else {
+            collect_table_cell_block_alignments(std::slice::from_ref(&parsed.block), summary);
+        }
+    }
+}
+
+fn collect_table_cell_block_alignments(blocks: &[Block], summary: &mut TableCellAlignmentSummary) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                summary.add(paragraph.format.alignment);
+            }
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_table_cell_block_alignments(&item.blocks, summary);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_table_cell_block_alignments(&cell.blocks, summary);
+                    }
+                }
+            }
+            Block::Heading(_) | Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn clear_parsed_table_cell_alignments(parsed_blocks: &mut [ParsedBlock]) {
+    for parsed in parsed_blocks {
+        if parsed.counts_for_cell_alignment {
+            if let Block::Paragraph(paragraph) = &mut parsed.block {
+                paragraph.format.alignment = None;
+            }
+        } else {
+            clear_table_cell_block_alignments(std::slice::from_mut(&mut parsed.block));
+        }
+    }
+}
+
+fn clear_table_cell_block_alignments(blocks: &mut [Block]) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => paragraph.format.alignment = None,
+            Block::List(list) => {
+                for item in &mut list.items {
+                    clear_table_cell_block_alignments(&mut item.blocks);
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        clear_table_cell_block_alignments(&mut cell.blocks);
+                    }
+                }
+            }
+            Block::Heading(_) | Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
+        }
+    }
 }
 
 fn parse_page_region_xml(xml: &str, warnings: &mut WarningSink) -> Result<PageRegion, DocxError> {
@@ -2750,6 +2874,12 @@ fn parse_paragraph_properties(
                 properties.list_marker = parse_num_properties(reader, numbering, warnings)?;
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"numPr" => {}
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"jc" =>
+            {
+                properties.alignment =
+                    attr_value(&start, b"val", DOCUMENT_XML)?.and_then(docx_paragraph_alignment);
+            }
             Event::End(end) if local_name(end.name().as_ref()) == b"pPr" => break,
             Event::Start(start)
                 if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
@@ -3653,6 +3783,8 @@ fn push_parsed_block(blocks: &mut Vec<ParsedBlock>, parsed: ParsedBlock) {
         }),
         list_marker: None,
         toc_role: None,
+        counts_for_cell_alignment: false,
+        paragraph_alignment: None,
     });
 }
 
@@ -3673,6 +3805,8 @@ fn push_toc_parsed_block(
                 }),
                 list_marker: None,
                 toc_role: None,
+                counts_for_cell_alignment: false,
+                paragraph_alignment: None,
             });
             true
         }
@@ -3692,6 +3826,8 @@ fn push_toc_parsed_block(
                 block: Block::TableOfContents(TableOfContents::new(vec![entry])),
                 list_marker: None,
                 toc_role: None,
+                counts_for_cell_alignment: false,
+                paragraph_alignment: None,
             });
             true
         }
@@ -3830,6 +3966,8 @@ fn paragraph_content_to_blocks(
                     block: Block::Image(image),
                     list_marker: None,
                     toc_role: None,
+                    counts_for_cell_alignment: false,
+                    paragraph_alignment: None,
                 });
             }
         }
@@ -3841,9 +3979,12 @@ fn paragraph_content_to_blocks(
                 Vec::new(),
                 properties.heading_level,
                 properties.bookmark_id.clone(),
+                properties.alignment,
             ),
             list_marker: properties.list_marker,
             toc_role: properties.toc_role,
+            counts_for_cell_alignment: true,
+            paragraph_alignment: properties.alignment,
         });
     }
     blocks
@@ -3862,9 +4003,12 @@ fn flush_paragraph_block(
             std::mem::take(inlines),
             properties.heading_level,
             properties.bookmark_id.clone(),
+            properties.alignment,
         ),
         list_marker: properties.list_marker,
         toc_role: properties.toc_role,
+        counts_for_cell_alignment: true,
+        paragraph_alignment: properties.alignment,
     });
 }
 
@@ -3872,6 +4016,7 @@ fn paragraph_block_from_inlines(
     inlines: Vec<Inline>,
     heading_level: Option<u8>,
     bookmark_id: Option<String>,
+    alignment: Option<ParagraphAlignment>,
 ) -> Block {
     if let Some(level) = heading_level {
         Block::Heading(Heading {
@@ -3883,7 +4028,10 @@ fn paragraph_block_from_inlines(
         Block::Paragraph(Paragraph {
             bookmark_id,
             style: StyleId::from("body"),
-            format: Default::default(),
+            format: ParagraphFormat {
+                alignment,
+                ..Default::default()
+            },
             inlines,
         })
     }
@@ -3995,15 +4143,158 @@ fn skip_table_row_properties(
     )
 }
 
-fn skip_table_cell_properties(
+#[derive(Debug, Clone, Default)]
+struct ParsedTableCellProperties {
+    unsupported_width_shape: bool,
+    presentation: TableCellPresentation,
+}
+
+fn parse_table_cell_properties(
     reader: &mut Reader<&[u8]>,
     warnings: &mut WarningSink,
-) -> Result<bool, DocxError> {
-    scan_skipped_table_properties(
-        reader,
-        warnings,
-        is_unsupported_docx_table_cell_shape_property,
-    )
+) -> Result<ParsedTableCellProperties, DocxError> {
+    let mut parsed = ParsedTableCellProperties::default();
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCUMENT_XML, err))?
+        {
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"shd" => {
+                apply_docx_table_cell_shading(&start, &mut parsed.presentation)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"shd" => {
+                apply_docx_table_cell_shading(&start, &mut parsed.presentation)?;
+                skip_element(reader, b"shd", DOCUMENT_XML)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"tcBorders" => {
+                parsed.presentation.border = parse_docx_table_cell_borders(reader)?;
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"tcBorders" => {}
+            Event::End(end) if local_name(end.name().as_ref()) == b"tcPr" => break,
+            Event::Start(start) => {
+                let name = start.name();
+                let local = local_name(name.as_ref());
+                if is_any_docx_revision_markup(local) {
+                    warnings.warn(
+                        "docx_revision_markup_degraded",
+                        "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                    );
+                }
+                if is_unsupported_docx_table_cell_shape_property(local) {
+                    parsed.unsupported_width_shape = true;
+                }
+                let end = local.to_vec();
+                skip_element(reader, &end, DOCUMENT_XML)?;
+            }
+            Event::Empty(start) => {
+                let name = start.name();
+                let local = local_name(name.as_ref());
+                if is_any_docx_revision_markup(local) {
+                    warnings.warn(
+                        "docx_revision_markup_degraded",
+                        "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                    );
+                }
+                if is_unsupported_docx_table_cell_shape_property(local) {
+                    parsed.unsupported_width_shape = true;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(parsed)
+}
+
+fn apply_docx_table_cell_shading(
+    start: &BytesStart<'_>,
+    presentation: &mut TableCellPresentation,
+) -> Result<(), DocxError> {
+    if let Some(value) = attr_value(start, b"val", DOCUMENT_XML)? {
+        match value.as_str() {
+            "nil" | "none" => return Ok(()),
+            "clear" | "solid" => {}
+            _ => return Ok(()),
+        }
+    }
+    let Some(fill) = attr_value(start, b"fill", DOCUMENT_XML)? else {
+        return Ok(());
+    };
+    let normalized = format!("#{}", fill.trim().to_ascii_lowercase());
+    if let Some(color) = sanitize_table_cell_background_color(&normalized) {
+        presentation.background_color = Some(color);
+    }
+    Ok(())
+}
+
+fn parse_docx_table_cell_borders(reader: &mut Reader<&[u8]>) -> Result<TableCellBorder, DocxError> {
+    let mut hidden_sides = BTreeSet::new();
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCUMENT_XML, err))?
+        {
+            Event::Empty(start)
+                if is_docx_table_cell_border_side(local_name(start.name().as_ref())) =>
+            {
+                collect_hidden_docx_border_side(&start, &mut hidden_sides)?;
+            }
+            Event::Start(start)
+                if is_docx_table_cell_border_side(local_name(start.name().as_ref())) =>
+            {
+                collect_hidden_docx_border_side(&start, &mut hidden_sides)?;
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCUMENT_XML)?;
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"tcBorders" => break,
+            Event::Start(start) => {
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCUMENT_XML)?;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if ["top", "left", "bottom", "right"]
+        .iter()
+        .all(|side| hidden_sides.contains(*side))
+    {
+        Ok(TableCellBorder::Hidden)
+    } else {
+        Ok(TableCellBorder::Visible)
+    }
+}
+
+fn is_docx_table_cell_border_side(name: &[u8]) -> bool {
+    matches!(name, b"top" | b"left" | b"bottom" | b"right")
+}
+
+fn collect_hidden_docx_border_side(
+    start: &BytesStart<'_>,
+    hidden_sides: &mut BTreeSet<&'static str>,
+) -> Result<(), DocxError> {
+    let Some(value) = attr_value(start, b"val", DOCUMENT_XML)? else {
+        return Ok(());
+    };
+    if !matches!(value.as_str(), "nil" | "none") {
+        return Ok(());
+    }
+    match local_name(start.name().as_ref()) {
+        b"top" => {
+            hidden_sides.insert("top");
+        }
+        b"left" => {
+            hidden_sides.insert("left");
+        }
+        b"bottom" => {
+            hidden_sides.insert("bottom");
+        }
+        b"right" => {
+            hidden_sides.insert("right");
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn scan_skipped_table_properties(
@@ -4526,8 +4817,8 @@ fn render_page_region_block_xml(block: &PageRegionBlock, output: &mut String) {
 fn render_block_xml(block: &Block, context: &DocxRenderContext<'_>, output: &mut String) {
     match block {
         Block::Paragraph(paragraph) => render_paragraph_xml(paragraph, None, context, output),
-        Block::Heading(heading) => render_heading_xml(heading, context, output),
-        Block::List(list) => render_list_xml(list, context, output),
+        Block::Heading(heading) => render_heading_xml(heading, None, context, output),
+        Block::List(list) => render_list_xml(list, None, context, output),
         Block::Table(table) => render_table_xml(table, context, output),
         Block::TableOfContents(table_of_contents) => {
             render_table_of_contents_xml(table_of_contents, context, output)
@@ -4672,10 +4963,21 @@ fn render_styled_paragraph_xml(
     output.push_str("</w:p>");
 }
 
-fn render_heading_xml(heading: &Heading, context: &DocxRenderContext<'_>, output: &mut String) {
+fn render_heading_xml(
+    heading: &Heading,
+    alignment_override: Option<ParagraphAlignment>,
+    context: &DocxRenderContext<'_>,
+    output: &mut String,
+) {
     output.push_str("<w:p><w:pPr><w:pStyle w:val=\"Heading");
     output.push_str(&heading.level.clamp(1, 3).to_string());
-    output.push_str("\"/></w:pPr>");
+    output.push_str("\"/>");
+    if let Some(alignment) = alignment_override {
+        output.push_str("<w:jc w:val=\"");
+        output.push_str(docx_alignment_value(alignment));
+        output.push_str("\"/>");
+    }
+    output.push_str("</w:pPr>");
     render_bookmark_start_xml(context.bookmarks, heading.bookmark_id.as_deref(), output);
     render_inlines_xml(
         &heading.inlines,
@@ -4695,13 +4997,33 @@ fn render_paragraph_xml(
     context: &DocxRenderContext<'_>,
     output: &mut String,
 ) {
+    render_paragraph_xml_with_alignment(paragraph, list_marker, None, context, output);
+}
+
+fn render_paragraph_xml_with_alignment(
+    paragraph: &Paragraph,
+    list_marker: Option<ListMarker>,
+    alignment_override: Option<ParagraphAlignment>,
+    context: &DocxRenderContext<'_>,
+    output: &mut String,
+) {
     output.push_str("<w:p>");
-    if let Some(marker) = list_marker {
-        output.push_str("<w:pPr><w:numPr><w:ilvl w:val=\"");
-        output.push_str(&marker.level.saturating_sub(1).to_string());
-        output.push_str("\"/><w:numId w:val=\"");
-        output.push_str(if marker.ordered { "2" } else { "1" });
-        output.push_str("\"/></w:numPr></w:pPr>");
+    let alignment = alignment_override.or(paragraph.format.alignment);
+    if list_marker.is_some() || alignment.is_some() {
+        output.push_str("<w:pPr>");
+        if let Some(marker) = list_marker {
+            output.push_str("<w:numPr><w:ilvl w:val=\"");
+            output.push_str(&marker.level.saturating_sub(1).to_string());
+            output.push_str("\"/><w:numId w:val=\"");
+            output.push_str(if marker.ordered { "2" } else { "1" });
+            output.push_str("\"/></w:numPr>");
+        }
+        if let Some(alignment) = alignment {
+            output.push_str("<w:jc w:val=\"");
+            output.push_str(docx_alignment_value(alignment));
+            output.push_str("\"/>");
+        }
+        output.push_str("</w:pPr>");
     }
     render_bookmark_start_xml(context.bookmarks, paragraph.bookmark_id.as_deref(), output);
     render_inlines_xml(
@@ -4716,17 +5038,32 @@ fn render_paragraph_xml(
     output.push_str("</w:p>");
 }
 
-fn render_list_xml(list: &ListBlock, context: &DocxRenderContext<'_>, output: &mut String) {
+fn docx_alignment_value(alignment: ParagraphAlignment) -> &'static str {
+    match alignment {
+        ParagraphAlignment::Left => "left",
+        ParagraphAlignment::Center => "center",
+        ParagraphAlignment::Right => "right",
+        ParagraphAlignment::Justify => "both",
+    }
+}
+
+fn render_list_xml(
+    list: &ListBlock,
+    alignment_override: Option<ParagraphAlignment>,
+    context: &DocxRenderContext<'_>,
+    output: &mut String,
+) {
     let ordered = list.definition_id == "900w-ordered";
     for item in &list.items {
         for block in &item.blocks {
             match block {
-                Block::Paragraph(paragraph) => render_paragraph_xml(
+                Block::Paragraph(paragraph) => render_paragraph_xml_with_alignment(
                     paragraph,
                     Some(ListMarker {
                         ordered,
                         level: item.level.clamp(1, 9),
                     }),
+                    alignment_override,
                     context,
                     output,
                 ),
@@ -4737,12 +5074,13 @@ fn render_list_xml(list: &ListBlock, context: &DocxRenderContext<'_>, output: &m
                         format: Default::default(),
                         inlines: heading.inlines.clone(),
                     };
-                    render_paragraph_xml(
+                    render_paragraph_xml_with_alignment(
                         &paragraph,
                         Some(ListMarker {
                             ordered,
                             level: item.level.clamp(1, 9),
                         }),
+                        alignment_override,
                         context,
                         output,
                     );
@@ -4762,17 +5100,30 @@ fn render_table_xml(table: &Table, context: &DocxRenderContext<'_>, output: &mut
     for row in &table.rows {
         output.push_str("<w:tr>");
         for cell in &row.cells {
-            output.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr>");
+            output.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/>");
+            render_table_cell_presentation_xml(&cell.presentation, output);
+            output.push_str("</w:tcPr>");
             if cell.blocks.is_empty() {
                 output.push_str("<w:p/>");
             } else {
                 for block in &cell.blocks {
                     match block {
-                        Block::Paragraph(paragraph) => {
-                            render_paragraph_xml(paragraph, None, context, output)
+                        Block::Paragraph(paragraph) => render_paragraph_xml_with_alignment(
+                            paragraph,
+                            None,
+                            cell.presentation.text_alignment,
+                            context,
+                            output,
+                        ),
+                        Block::Heading(heading) => render_heading_xml(
+                            heading,
+                            cell.presentation.text_alignment,
+                            context,
+                            output,
+                        ),
+                        Block::List(list) => {
+                            render_list_xml(list, cell.presentation.text_alignment, context, output)
                         }
-                        Block::Heading(heading) => render_heading_xml(heading, context, output),
-                        Block::List(list) => render_list_xml(list, context, output),
                         Block::Image(image) => {
                             render_block_xml(&Block::Image(image.clone()), context, output)
                         }
@@ -4798,6 +5149,37 @@ fn render_table_grid_xml(table: &Table, output: &mut String) {
         output.push_str("\"/>");
     }
     output.push_str("</w:tblGrid>");
+}
+
+fn render_table_cell_presentation_xml(presentation: &TableCellPresentation, output: &mut String) {
+    if let Some(fill) = presentation
+        .background_color
+        .as_deref()
+        .and_then(docx_table_cell_fill)
+    {
+        output.push_str("<w:shd w:val=\"clear\" w:fill=\"");
+        output.push_str(fill);
+        output.push_str("\"/>");
+    }
+    if presentation.border == TableCellBorder::Hidden {
+        output.push_str("<w:tcBorders>");
+        for side in ["top", "left", "bottom", "right"] {
+            output.push_str("<w:");
+            output.push_str(side);
+            output.push_str(" w:val=\"nil\"/>");
+        }
+        output.push_str("</w:tcBorders>");
+    }
+}
+
+fn docx_table_cell_fill(color: &str) -> Option<&'static str> {
+    match sanitize_table_cell_background_color(color)?.as_str() {
+        "#f1f5f9" => Some("F1F5F9"),
+        "#fff3bf" => Some("FFF3BF"),
+        "#dbeafe" => Some("DBEAFE"),
+        "#dcfce7" => Some("DCFCE7"),
+        _ => None,
+    }
 }
 
 fn render_fallback_paragraph(text: &str, context: &DocxRenderContext<'_>, output: &mut String) {
@@ -7608,6 +7990,225 @@ mod tests {
             panic!("table should round-trip through docx converter");
         };
         assert_eq!(table.column_widths, vec![250, 750]);
+    }
+
+    #[test]
+    fn exports_and_imports_table_cell_presentation() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: Vec::new(),
+            rows: vec![TableRow {
+                cells: vec![TableCell {
+                    presentation: TableCellPresentation {
+                        background_color: Some("#dbeafe".to_string()),
+                        text_alignment: Some(ParagraphAlignment::Center),
+                        border: TableCellBorder::Hidden,
+                    },
+                    blocks: vec![Block::Paragraph(Paragraph {
+                        bookmark_id: None,
+                        style: StyleId::from("body"),
+                        format: ParagraphFormat::default(),
+                        inlines: vec![Inline::text("Styled")],
+                    })],
+                }],
+            }],
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write styled cell");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+
+        assert!(document_xml.contains(r#"<w:shd w:val="clear" w:fill="DBEAFE"/>"#));
+        assert!(document_xml.contains(r#"<w:top w:val="nil"/>"#));
+        assert!(document_xml.contains(r#"<w:left w:val="nil"/>"#));
+        assert!(document_xml.contains(r#"<w:bottom w:val="nil"/>"#));
+        assert!(document_xml.contains(r#"<w:right w:val="nil"/>"#));
+        assert!(document_xml.contains(r#"<w:jc w:val="center"/>"#));
+
+        let parsed = read_docx_bytes(&bytes).expect("written styled cell should import");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("table should round-trip through docx converter");
+        };
+        let cell = &table.rows[0].cells[0];
+        assert_eq!(
+            cell.presentation,
+            TableCellPresentation {
+                background_color: Some("#dbeafe".to_string()),
+                text_alignment: Some(ParagraphAlignment::Center),
+                border: TableCellBorder::Hidden,
+            }
+        );
+        let Block::Paragraph(paragraph) = &cell.blocks[0] else {
+            panic!("cell paragraph should remain editable");
+        };
+        assert_eq!(paragraph.format.alignment, None);
+    }
+
+    #[test]
+    fn exports_and_imports_heading_table_cell_alignment() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: Vec::new(),
+            rows: vec![TableRow {
+                cells: vec![TableCell {
+                    presentation: TableCellPresentation {
+                        background_color: None,
+                        text_alignment: Some(ParagraphAlignment::Right),
+                        border: TableCellBorder::Visible,
+                    },
+                    blocks: vec![Block::Heading(Heading {
+                        bookmark_id: None,
+                        level: 2,
+                        inlines: vec![Inline::text("Heading cell")],
+                    })],
+                }],
+            }],
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write heading cell");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+
+        assert!(document_xml.contains(r#"<w:pStyle w:val="Heading2"/><w:jc w:val="right"/>"#));
+
+        let parsed = read_docx_bytes(&bytes).expect("written heading cell should import");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("table should round-trip through docx converter");
+        };
+        let cell = &table.rows[0].cells[0];
+        assert_eq!(
+            cell.presentation.text_alignment,
+            Some(ParagraphAlignment::Right)
+        );
+        let Block::Heading(heading) = &cell.blocks[0] else {
+            panic!("cell heading should remain editable");
+        };
+        assert_eq!(inline_text(&heading.inlines), "Heading cell");
+    }
+
+    #[test]
+    fn imports_docx_table_cell_presentation_from_safe_subset() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:tbl>
+    <w:tr>
+      <w:tc>
+        <w:tcPr>
+          <w:shd w:fill="FFF3BF"/>
+          <w:tcBorders><w:top w:val="nil"/><w:left w:val="none"/><w:bottom w:val="nil"/><w:right w:val="none"/></w:tcBorders>
+        </w:tcPr>
+        <w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:t>Styled</w:t></w:r></w:p>
+      </w:tc>
+    </w:tr>
+  </w:tbl>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let parsed = read_docx_bytes(&bytes).expect("styled cell should import");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("table should import");
+        };
+        assert_eq!(
+            table.rows[0].cells[0].presentation,
+            TableCellPresentation {
+                background_color: Some("#fff3bf".to_string()),
+                text_alignment: Some(ParagraphAlignment::Right),
+                border: TableCellBorder::Hidden,
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_unsupported_or_mixed_docx_table_cell_presentation() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:tbl>
+    <w:tr>
+      <w:tc>
+        <w:tcPr>
+          <w:shd w:fill="FF0000"/>
+          <w:tcBorders><w:top w:val="nil"/><w:left w:val="single"/><w:bottom w:val="nil"/><w:right w:val="nil"/></w:tcBorders>
+        </w:tcPr>
+        <w:p><w:pPr><w:jc w:val="left"/></w:pPr><w:r><w:t>Left</w:t></w:r></w:p>
+        <w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:t>Right</w:t></w:r></w:p>
+      </w:tc>
+    </w:tr>
+  </w:tbl>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let parsed = read_docx_bytes(&bytes).expect("unsupported styled cell should degrade");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("table should import");
+        };
+        let cell = &table.rows[0].cells[0];
+        assert_eq!(cell.presentation.background_color, None);
+        assert_eq!(cell.presentation.text_alignment, None);
+        assert_eq!(cell.presentation.border, TableCellBorder::Visible);
+    }
+
+    #[test]
+    fn keeps_mixed_default_docx_table_cell_alignment_paragraph_local() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:tbl>
+    <w:tr>
+      <w:tc>
+        <w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>Centered</w:t></w:r></w:p>
+        <w:p><w:r><w:t>Default</w:t></w:r></w:p>
+      </w:tc>
+    </w:tr>
+  </w:tbl>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let parsed = read_docx_bytes(&bytes).expect("mixed default alignment cell should import");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("table should import");
+        };
+        let cell = &table.rows[0].cells[0];
+        assert_eq!(cell.presentation.text_alignment, None);
+        let Block::Paragraph(first) = &cell.blocks[0] else {
+            panic!("first paragraph should remain editable");
+        };
+        let Block::Paragraph(second) = &cell.blocks[1] else {
+            panic!("second paragraph should remain editable");
+        };
+        assert_eq!(first.format.alignment, Some(ParagraphAlignment::Center));
+        assert_eq!(second.format.alignment, None);
+    }
+
+    #[test]
+    fn ignores_docx_table_cell_shading_when_value_is_nil() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:tbl>
+    <w:tr>
+      <w:tc>
+        <w:tcPr><w:shd w:val="nil" w:fill="DBEAFE"/></w:tcPr>
+        <w:p><w:r><w:t>Unshaded</w:t></w:r></w:p>
+      </w:tc>
+    </w:tr>
+  </w:tbl>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let parsed = read_docx_bytes(&bytes).expect("nil shading cell should import");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("table should import");
+        };
+        assert_eq!(table.rows[0].cells[0].presentation.background_color, None);
     }
 
     #[test]
