@@ -2,6 +2,7 @@
 members = [
   "apps/desktop/src-tauri",
   "crates/word-core",
+  "crates/word-docx",
   "crates/word-odf",
   "crates/word-spell",
   "crates/word-export",

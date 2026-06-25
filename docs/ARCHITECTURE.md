@@ -14,6 +14,7 @@ Tauri commands in apps/desktop/src-tauri
         v
 Rust workspace crates
   - word-core: canonical document model
+  - word-docx: DOCX import/export conversion
   - word-odf: ODT package read/write and validation
   - word-spell: dictionary boundary
   - word-export: TXT, HTML, PDF export
@@ -22,7 +23,7 @@ Rust workspace crates
 
 ## Source Of Truth
 
-`word-core` owns durable document truth. ProseMirror is an editing projection, and ODT is the persisted package format.
+`word-core` owns durable document truth. ProseMirror is an editing projection, and ODT is the persisted package format. DOCX is a conversion format only: importing `.docx` creates an unsaved dirty document, and exporting `.docx` does not change the current `.odt` save path.
 
 The editor schema accepts only nodes and marks with matching `word-core` semantics. Sprint 009 adds editable ordered/unordered list nodes, paragraph direct-format attributes, and inline text-style attributes on top of the original paragraph, heading, text, and inline mark projection. Sprint 010 adds selection-derived toolbar state, list-aware Enter/paste behavior, and a durable update-style-from-selection command for selected paragraph style properties. Sprint 011 adds a live Heading 1/2/3 navigator derived from projected `word-core` blocks and exposes insert/edit/remove hyperlink UI for the existing safe link mark. Sprint 012 adds an editable table projection for table cells containing paragraphs, headings, or lists. Sprint 017 extends that projection with bounded insert-table sizes plus row/column add/delete and delete-table controls for editable rectangular tables. Sprint 013 adds section-level header/footer page regions and typed page fields in `word-core`, while the desktop editor keeps them in Settings as a simple text-backed surface rather than projecting them into the ProseMirror body editor. Sprint 014 adds a non-editable ProseMirror image atom that round-trips to `ImageBlock` and displays only embedded `AssetRef` bytes as offline data URLs. Broader ProseMirror nodes remain unavailable until `word-core` has matching durable semantics and import/export tests. Documents that contain unsupported nested table-cell content or other modeled-but-unprojected blocks open in a read-only editor projection with warnings until those blocks have complete projection support.
 
@@ -41,6 +42,13 @@ Editor sync flow:
 4. Tauri commands validate the request.
 5. `word-core` applies changes and remains the durable source of truth.
 6. `word-odf` writes the supported ODT subset when a save command runs.
+
+DOCX conversion flow:
+
+1. The desktop UI accepts `.docx` through the Open dialog or the explicit DOCX export option.
+2. Rust validates extension, traversal, ZIP package shape, entry sizes, XML depth, unsafe paths, symlink/encrypted entries, macro/executable-like entries, and entity declarations.
+3. `word-docx` converts the supported subset through `word-core` and emits generic warnings for degraded or ignored import content.
+4. DOCX export writes a minimal package from `word-core`; it is not used for native save/reopen state.
 
 Image insertion flow:
 
@@ -70,9 +78,13 @@ Current ODT support covers:
 
 Package preflight enforces raw package size, entry count, entry size, expanded size, path depth, XML depth, image size, safe archive paths, symlink rejection, encrypted entry rejection, executable/script entry rejection, first-entry stored ODT mimetype validation, image magic-byte validation, and XML entity/doctype rejection. Unsupported ODT elements are imported with warnings. Unsafe text links are stripped with warnings. Remote or path-traversing image references are ignored with warnings. Unsupported external header/footer complexity imports with warnings and read-only page-region state so save operations refuse to silently flatten it.
 
+## DOCX Boundary
+
+`word-docx` owns bounded WordprocessingML package conversion. It covers paragraphs, Heading 1-3 paragraph styles, bold/italic/underline runs, safe `http`, `https`, `mailto`, and safe internal-fragment hyperlinks, contiguous simple lists, and simple tables. It does not import media, comments, tracked changes, notes, headers/footers, styles beyond heading detection, embedded objects, macros, custom XML, or full layout semantics. Unsupported structures are ignored, flattened to visible text where practical, or reported as generic document warnings.
+
 ## Fixtures
 
-`crates/word-fixtures` contains generated fixtures only. JSON fixtures must use synthetic content, deterministic identifiers, and no real user documents. ODT round-trip tests generate package bytes in memory from synthetic document data rather than checking binary user documents into the repository.
+`crates/word-fixtures` contains generated fixtures only. JSON fixtures must use synthetic content, deterministic identifiers, and no real user documents. ODT and DOCX round-trip tests generate package bytes in memory from synthetic document data rather than checking binary user documents into the repository.
 
 ## Deferred Systems
 

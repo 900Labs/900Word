@@ -1,0 +1,15 @@
+[package]
+name = "word-docx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Bounded DOCX import/export conversion for 900Word"
+
+[dependencies]
+quick-xml.workspace = true
+thiserror.workspace = true
+word-core = { path = "../word-core" }
+zip.workspace = true

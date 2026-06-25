@@ -181,6 +181,7 @@ pub fn run() {
             new_document_from_template,
             list_templates,
             open_document,
+            open_docx_document,
             open_recent_document,
             save_document,
             save_document_as,
@@ -201,6 +202,7 @@ pub fn run() {
             export_txt_to_path,
             export_html_to_path,
             export_pdf_to_path,
+            export_docx_to_path,
             prepare_print_html,
             check_spelling,
             add_to_personal_dictionary,
@@ -252,6 +254,19 @@ fn open_document(path: String, state: State<'_, AppState>) -> Result<Document, S
     session.current_path = Some(path.clone());
     session.dirty = false;
     remember_recent_path(&mut session, path);
+    Ok(session.document.clone())
+}
+
+#[tauri::command]
+fn open_docx_document(path: String, state: State<'_, AppState>) -> Result<Document, String> {
+    let path = validate_path(&path, "docx")?;
+    let document = read_docx_document_from_path(&path)?;
+
+    let mut session = lock_session(&state)?;
+    session.document = document;
+    session.undo = UndoStack::default();
+    session.current_path = None;
+    session.dirty = true;
     Ok(session.document.clone())
 }
 
@@ -452,6 +467,17 @@ fn export_pdf_to_path(
     let session = lock_session(&state)?;
     let pdf = word_export::export_basic_pdf(&session.document).map_err(|err| err.to_string())?;
     write_export_bytes_to_path("pdf", &path, &pdf)
+}
+
+#[tauri::command]
+fn export_docx_to_path(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<ExportFileResult, String> {
+    let path = validate_path(&path, "docx")?;
+    let session = lock_session(&state)?;
+    let docx = word_docx::write_docx_bytes(&session.document).map_err(safe_docx_export_error)?;
+    write_export_bytes_to_path("docx", &path, &docx)
 }
 
 #[tauri::command]
@@ -1020,6 +1046,54 @@ fn read_document_from_path(path: &Path) -> Result<Document, String> {
     }
     let bytes = std::fs::read(path).map_err(safe_io_error)?;
     word_odf::read_odt_bytes(&bytes).map_err(|err| err.to_string())
+}
+
+fn read_docx_document_from_path(path: &Path) -> Result<Document, String> {
+    let metadata = std::fs::metadata(path).map_err(safe_io_error)?;
+    if metadata.len() > MAX_DOCUMENT_BYTES {
+        return Err("document exceeds supported bootstrap size limit".to_string());
+    }
+    let bytes = std::fs::read(path).map_err(safe_io_error)?;
+    word_docx::read_docx_bytes(&bytes).map_err(safe_docx_import_error)
+}
+
+fn safe_docx_import_error(error: word_docx::DocxError) -> String {
+    match error {
+        word_docx::DocxError::PackageTooLarge => {
+            "DOCX package exceeds supported size limit".to_string()
+        }
+        word_docx::DocxError::TooManyEntries { .. } => {
+            "DOCX package contains too many entries".to_string()
+        }
+        word_docx::DocxError::EntryTooLarge { .. } => {
+            "DOCX package entry exceeds supported size limit".to_string()
+        }
+        word_docx::DocxError::ExpandedSizeTooLarge => {
+            "DOCX package expands beyond supported size limit".to_string()
+        }
+        word_docx::DocxError::UnsafePath { .. }
+        | word_docx::DocxError::PathTooDeep { .. }
+        | word_docx::DocxError::SymlinkEntry { .. }
+        | word_docx::DocxError::EncryptedEntry { .. }
+        | word_docx::DocxError::ExecutableEntry { .. } => {
+            "DOCX package contains unsupported or unsafe entries".to_string()
+        }
+        word_docx::DocxError::MissingDocument => {
+            "DOCX package is missing document content".to_string()
+        }
+        word_docx::DocxError::Xml { .. }
+        | word_docx::DocxError::XmlTooDeep { .. }
+        | word_docx::DocxError::XmlEntityDeclaration { .. } => {
+            "DOCX package contains unsupported XML".to_string()
+        }
+        word_docx::DocxError::Zip(_) | word_docx::DocxError::Io(_) => {
+            "DOCX package could not be read".to_string()
+        }
+    }
+}
+
+fn safe_docx_export_error(_error: word_docx::DocxError) -> String {
+    "DOCX export could not be prepared".to_string()
 }
 
 fn write_export_bytes_to_path(
@@ -1657,6 +1731,50 @@ mod tests {
             std::fs::read_to_string(&target).expect("export should exist"),
             "hello"
         );
+    }
+
+    #[test]
+    fn docx_paths_validate_extension_without_leaking_path() {
+        let err = validate_path("private-client-name.odt", "docx")
+            .expect_err("odt path should fail for docx conversion");
+
+        assert_eq!(err, "expected .docx document path");
+        assert!(!err.contains("private-client-name"));
+    }
+
+    #[test]
+    fn docx_export_write_returns_format_and_byte_count_only() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let target = dir.path().join("private-client-name.docx");
+        let bytes = word_docx::write_docx_bytes(&Document::new_untitled())
+            .expect("docx bytes should write");
+        let result = write_export_bytes_to_path("docx", &target, &bytes)
+            .expect("docx export write should succeed");
+
+        assert_eq!(result.format, "docx");
+        assert_eq!(result.byte_len, bytes.len() as u64);
+        assert!(!result.format.contains("private-client-name"));
+        word_docx::validate_docx_package(&bytes, word_docx::PackageLimits::default())
+            .expect("exported docx package should validate");
+    }
+
+    #[test]
+    fn docx_import_errors_do_not_leak_package_entry_names() {
+        let err = safe_docx_import_error(word_docx::DocxError::UnsafePath {
+            name: "C:/placeholder-private-document/document.xml".to_string(),
+        });
+
+        assert_eq!(err, "DOCX package contains unsupported or unsafe entries");
+        assert!(!err.contains("placeholder-private-document"));
+        assert!(!err.contains("document.xml"));
+    }
+
+    #[test]
+    fn docx_export_errors_do_not_leak_internal_details() {
+        let err = safe_docx_export_error(word_docx::DocxError::MissingDocument);
+
+        assert_eq!(err, "DOCX export could not be prepared");
+        assert!(!err.contains("document.xml"));
     }
 
     #[test]
