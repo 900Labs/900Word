@@ -40,6 +40,8 @@ Sprint 030 document inspector summaries are derived in the desktop UI from exist
 
 Sprint 032 PDF export settings are local UI state only. Page-range start/end values are sent to Rust as typed options and are not stored in the document. Invalid or empty ranges return generic errors without local paths, private filenames, usernames, hostnames, or document text.
 
+Sprint 033 DOCX page-region import/export uses only local package relationships and preflighted header/footer XML parts. Unsafe, remote, missing, or unsupported page-region relationships produce generic warnings without exposing package entry names, local paths, private filenames, usernames, hostnames, or document text. Exported DOCX page-region parts are generated from `word-core` and do not include source paths, account data, telemetry identifiers, or remote references.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -71,6 +73,8 @@ Sprint 028 does not add ODT, TXT, HTML, print HTML, PDF, or app metadata. The ac
 Sprint 030 does not add ODT, TXT, HTML, print HTML, PDF, or app metadata. The Document Inspector is an ephemeral desktop UI projection and does not change saved document packages or exported files.
 
 Sprint 032 PDF export does not add local path metadata, source filenames, usernames, hostnames, creation-date metadata, producer metadata, telemetry identifiers, remote resources, or private build metadata to generated PDFs.
+
+Sprint 033 DOCX export adds simple generated header/footer XML parts only when `word-core` page regions have content. These generated parts do not include local path metadata, source filenames, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, or private build metadata.
 
 ## Network
 

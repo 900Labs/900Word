@@ -7,7 +7,7 @@ OpenDocument Text (`.odt`) is the native saved format.
 ## Bootstrap Support
 
 - `.odt`: MVP read/write boundary for generated documents, covering paragraphs, headings, inline marks, safe links, safe paragraph/heading bookmarks, internal fragment links, generated table-of-contents blocks, footnote/endnote references and bodies authored by 900Word, lists, tables, page breaks, metadata title, named paragraph styles, 900Word-authored paragraph style properties, basic page setup, 900Word-authored direct paragraph/text formatting, 900Word-authored headers/footers/page fields, allowlisted embedded image bytes, 900Word-authored image presentation metadata, 900Word-authored comments, and 900Word-authored text-only tracked changes.
-- `.docx`: conversion-only import/export boundary. DOCX is not the canonical saved format. Import supports paragraphs, Heading 1-3, bold/italic/underline, safe hyperlinks, simple list fallback, and simple tables. Export writes a minimal valid package for paragraphs, headings, basic inline marks, safe hyperlinks, simple lists, and simple tables.
+- `.docx`: conversion-only import/export boundary. DOCX is not the canonical saved format. Import supports paragraphs, Heading 1-3, bold/italic/underline, safe hyperlinks, simple list fallback, simple tables, and simple default/first-page headers/footers with page-number, page-count, and date fields. Export writes a minimal valid package for paragraphs, headings, basic inline marks, safe hyperlinks, simple lists, simple tables, and 900Word-authored page regions.
 - `.txt`: export plain document text to a user-entered `.txt` path.
 - `.html`: export offline sanitized semantic HTML to a user-entered `.html` path.
 - `.pdf`: export a valid lightweight paginated PDF byte stream to a user-entered `.pdf` path for simple text-oriented sharing, with optional page-range export.
@@ -47,18 +47,19 @@ OpenDocument Text (`.odt`) is the native saved format.
 ## Current DOCX Limits
 
 - ODT remains the canonical saved package format. Opening a `.docx` imports it as an unsaved dirty document and does not adopt the `.docx` path for Save.
-- DOCX import reads only bounded WordprocessingML package parts: `word/document.xml`, `word/_rels/document.xml.rels`, and `word/numbering.xml`.
+- DOCX import reads only bounded WordprocessingML package parts: `word/document.xml`, `word/_rels/document.xml.rels`, `word/numbering.xml`, and safe relationship-resolved `word/header*.xml` or `word/footer*.xml` page-region parts.
 - DOCX import warns generically when unsupported content is ignored or degraded. It does not surface source local paths or private filenames in warnings.
 - Simple paragraphs, Heading 1-3 styles, bold, italic, underline, safe `http`, `https`, `mailto`, and safe internal-fragment hyperlinks import into `word-core`.
 - Numbered and bulleted DOCX paragraphs import as generic 900Word list blocks when numbering metadata is simple enough. Unsupported numbering details are reduced to generic markers.
 - Simple DOCX tables import as `word-core` tables. Nested tables are flattened to visible text with a generic warning.
-- DOCX media, comments, tracked changes, footnotes/endnotes, headers/footers, fields, custom XML, embedded objects, macros, rich styles, layout settings, merged cells, formulas, and exact pagination are not imported as structured features in this MVP.
-- DOCX export writes a minimal valid `.docx` package with document, styles, numbering, and relationship parts. It does not export ODT-native metadata fidelity, comments, tracked changes, notes, images, headers/footers, TOC fields, active PDF-like annotations, deterministic layout, or full office-suite style fidelity.
+- Simple default and first-page DOCX headers/footers import into `word-core` `PageRegions` when their relationship targets resolve safely under `word/` and their content is simple paragraphs/runs. `PAGE`, `NUMPAGES`, and `DATE` simple fields map to 900Word page fields where recognized. Even-page regions, complex fields, complex section layouts, and unsupported region content degrade with generic warnings.
+- DOCX media, comments, tracked changes, footnotes/endnotes, custom XML, embedded objects, macros, rich styles, layout settings, merged cells, formulas, and exact pagination are not imported as structured features in this MVP.
+- DOCX export writes a minimal valid `.docx` package with document, styles, numbering, relationship, and simple page-region parts when present. It does not export ODT-native metadata fidelity, comments, tracked changes, notes, images, TOC fields, active PDF-like annotations, deterministic layout, complex section layout, even-page regions, or full office-suite style fidelity.
 - Binary `.doc` compatibility remains deferred.
 
 ## Deferred Support
 
-- Broad `.docx`: comments, tracked changes, notes, images, headers/footers, advanced numbering, styles, layout fidelity, merged cells, embedded objects, and richer compatibility remain deferred.
+- Broad `.docx`: comments, tracked changes, notes, images/media, even-page headers/footers, complex fields, complex section layout, advanced numbering, styles, layout fidelity, merged cells, embedded objects, and richer compatibility remain deferred.
 - PDF raster image embedding, embedded/subset fonts, active PDF link annotations, complex script shaping, page-bottom footnote layout, and editor-preview layout fidelity remain deferred.
 - `.doc`: deferred until external converter security is documented.
 - `.epub`: deferred until PDF and HTML export are stable.
