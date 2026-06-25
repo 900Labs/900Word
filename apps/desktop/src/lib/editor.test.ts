@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { EditorState, NodeSelection, TextSelection, type Transaction } from 'prosemirror-state';
 import {
   findEditorDocMatches,
+  addEditorCommentTransaction,
   clearEditorDirectFormattingTransaction,
   continueListOnEnterTransaction,
   editorDocPlainText,
@@ -12,6 +13,7 @@ import {
   insertTableTransaction,
   mapSpellIssuesToEditorRanges,
   pastePlainTextAsBlocksTransaction,
+  removeEditorCommentTransaction,
   removeEditorLinkTransaction,
   removeEditorBlockBookmarkTransaction,
   setEditorParagraphFormatTransaction,
@@ -23,6 +25,7 @@ import {
   setEditorBlockTypeTransaction,
   setEditorLinkTransaction,
   setEditorTextStyleTransaction,
+  selectedEditorText,
   toggleEditorMark,
   toggleEditorListTransaction,
   toggleEditorMarkTransaction
@@ -268,6 +271,135 @@ describe('findEditorDocMatches', () => {
     expect(removed).toBeDefined();
     nextState = nextState.apply(removed!);
     expect(nextState.doc.firstChild?.firstChild?.marks).toEqual([]);
+  });
+
+  it('adds a comment mark only to non-empty selected text', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Comment this text' }]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = addEditorCommentTransaction(state, 'cmt-abc123', {
+      from: 1,
+      to: 8,
+      empty: false
+    });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.firstChild?.marks.map((mark) => mark.type.name)).toContain('comment');
+    expect(nextState.doc.firstChild?.firstChild?.marks.find((mark) => mark.type.name === 'comment')?.attrs.id).toBe(
+      'cmt-abc123'
+    );
+    expect(selectedEditorText({ state: nextState } as Parameters<typeof selectedEditorText>[0], {
+      from: 1,
+      to: 8,
+      empty: false
+    })).toBe('Comment');
+    expect(addEditorCommentTransaction(state, 'cmt-abc123', { from: 1, to: 1, empty: true })).toBeUndefined();
+    expect(addEditorCommentTransaction(state, '../bad', { from: 1, to: 8, empty: false })).toBeUndefined();
+  });
+
+  it('keeps overlapping comment marks from editor operations', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'abcdef' }]
+        }
+      ]
+    });
+    let state = EditorState.create({ doc });
+
+    const first = addEditorCommentTransaction(state, 'cmt-first', { from: 1, to: 5, empty: false });
+    expect(first).toBeDefined();
+    state = state.apply(first!);
+
+    state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, 3, 7)));
+    const second = addEditorCommentTransaction(state, 'cmt-second');
+    expect(second).toBeDefined();
+    state = state.apply(second!);
+
+    const segments: Array<{ text: string | undefined; commentIds: string[] }> = [];
+    state.doc.descendants((node) => {
+      if (node.isText) {
+        segments.push({
+          text: node.text,
+          commentIds: node.marks
+            .filter((mark) => mark.type.name === 'comment')
+            .map((mark) => String(mark.attrs.id))
+            .sort()
+        });
+      }
+      return true;
+    });
+    expect(segments).toEqual([
+      { text: 'ab', commentIds: ['cmt-first'] },
+      { text: 'cd', commentIds: ['cmt-first', 'cmt-second'] },
+      { text: 'ef', commentIds: ['cmt-second'] }
+    ]);
+  });
+
+  it('removes all anchors for a deleted comment id', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            { type: 'text', text: 'One', marks: [{ type: 'comment', attrs: { id: 'cmt-remove' } }] },
+            { type: 'text', text: ' two', marks: [{ type: 'comment', attrs: { id: 'cmt-keep' } }] }
+          ]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = removeEditorCommentTransaction(state, 'cmt-remove');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.child(0).marks).toEqual([]);
+    expect(nextState.doc.firstChild?.child(1).marks[0].attrs.id).toBe('cmt-keep');
+  });
+
+  it('removes only the requested comment mark from overlapping anchors', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            {
+              type: 'text',
+              text: 'Shared',
+              marks: [
+                { type: 'comment', attrs: { id: 'cmt-remove' } },
+                { type: 'comment', attrs: { id: 'cmt-keep' } }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = removeEditorCommentTransaction(state, 'cmt-remove');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.firstChild?.marks.map((mark) => mark.attrs.id)).toEqual(['cmt-keep']);
   });
 
   it('rejects unsafe link marks from toolbar transactions', () => {
@@ -595,6 +727,36 @@ describe('findEditorDocMatches', () => {
     expect(nextState.doc.firstChild?.attrs.style).toBe('caption');
     expect(nextState.doc.firstChild?.attrs.align).toBeNull();
     expect(nextState.doc.firstChild?.firstChild?.marks).toEqual([]);
+  });
+
+  it('clears visual formatting without removing comment anchors', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body', align: 'center' },
+          content: [
+            {
+              type: 'text',
+              text: 'Commented',
+              marks: [
+                { type: 'bold' },
+                { type: 'comment', attrs: { id: 'cmt-abc123' } }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = clearEditorDirectFormattingTransaction(state, { from: 1, to: 10, empty: false });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.firstChild?.attrs.align).toBeNull();
+    expect(nextState.doc.firstChild?.firstChild?.marks.map((mark) => mark.type.name)).toEqual(['comment']);
   });
 
   it('converts selected top-level paragraphs into a real list node', () => {

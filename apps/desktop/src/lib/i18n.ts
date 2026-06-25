@@ -6,6 +6,7 @@ export type UiStringKey =
   | 'all'
   | 'addColumnLeft'
   | 'addColumnRight'
+  | 'addComment'
   | 'addRowAbove'
   | 'addRowBelow'
   | 'after'
@@ -36,10 +37,21 @@ export type UiStringKey =
   | 'clearFormatting'
   | 'close'
   | 'columnsShort'
+  | 'comments'
+  | 'commentAdded'
+  | 'commentBody'
+  | 'commentBodyRequired'
+  | 'commentBodyTooLong'
+  | 'commentDeleted'
+  | 'commentReopened'
+  | 'commentResolved'
+  | 'commentSelected'
+  | 'commentSelectionRequired'
   | 'custom'
   | 'dateField'
   | 'decreaseIndent'
   | 'deleteColumn'
+  | 'deleteComment'
   | 'deleteRow'
   | 'deleteTable'
   | 'dictionary'
@@ -142,6 +154,7 @@ export type UiStringKey =
   | 'noMatches'
   | 'noSuggestions'
   | 'no'
+  | 'noComments'
   | 'numberedList'
   | 'numberedListApplied'
   | 'off'
@@ -176,8 +189,10 @@ export type UiStringKey =
   | 'recoveryOpened'
   | 'redo'
   | 'redoApplied'
+  | 'reopen'
   | 'replace'
   | 'replaceAll'
+  | 'resolve'
   | 'removeBookmark'
   | 'removeBookmarkShort'
   | 'removeLink'
@@ -260,6 +275,7 @@ const english: UiStrings = {
   all: 'All',
   addColumnLeft: 'Add column left',
   addColumnRight: 'Add column right',
+  addComment: 'Add comment',
   addRowAbove: 'Add row above',
   addRowBelow: 'Add row below',
   after: 'After',
@@ -290,10 +306,21 @@ const english: UiStrings = {
   clearFormatting: 'Clear formatting',
   close: 'Close',
   columnsShort: 'C',
+  comments: 'Comments',
+  commentAdded: 'Comment added',
+  commentBody: 'Comment body',
+  commentBodyRequired: 'Enter a comment before adding it.',
+  commentBodyTooLong: 'Comment is too long. Keep it under {max} characters.',
+  commentDeleted: 'Comment deleted',
+  commentReopened: 'Comment reopened',
+  commentResolved: 'Comment resolved',
+  commentSelected: 'Comment selected',
+  commentSelectionRequired: 'Select non-empty text before adding a comment.',
   custom: 'Custom',
   dateField: 'Date',
   decreaseIndent: 'Decrease indent',
   deleteColumn: 'Delete column',
+  deleteComment: 'Delete comment',
   deleteRow: 'Delete row',
   deleteTable: 'Delete table',
   dictionary: 'Dictionary',
@@ -393,6 +420,7 @@ const english: UiStrings = {
   new: 'New',
   next: 'Next',
   no: 'No',
+  noComments: 'No comments',
   noIssues: 'No issues.',
   noMatches: 'No matches',
   noSuggestions: 'No suggestions',
@@ -430,8 +458,10 @@ const english: UiStrings = {
   recoveryOpened: 'Recovery draft opened',
   redo: 'Redo',
   redoApplied: 'Redo applied',
+  reopen: 'Reopen',
   replace: 'Replace',
   replaceAll: 'All',
+  resolve: 'Resolve',
   removeBookmark: 'Remove bookmark',
   removeBookmarkShort: 'No mark',
   removeLink: 'Remove link',

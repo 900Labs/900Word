@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use std::collections::{BTreeMap, BTreeSet};
@@ -5,7 +6,8 @@ use std::fmt::Display;
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    AssetRef, Block, Document, DocumentWarning, Heading, ImageAlignment, ImageBlock,
+    normalize_comment_author, validate_comment_body, validate_comment_id, AssetRef, Block,
+    CommentThread, Document, DocumentWarning, Heading, ImageAlignment, ImageBlock,
     ImagePresentation, Inline, InlineMark, InlineStyle, ListBlock, ListDefinition, ListItem,
     PageField, PageRegion, PageRegionBlock, PageRegionKind, PageRegionParagraph, PageRegions,
     PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat, Section, Style, StyleId, StyleKind,
@@ -422,6 +424,7 @@ fn render_content_xml(document: &Document) -> Result<String, OdtError> {
          xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\" \
          xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
          xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\" \
+         xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
          xmlns:word900=\"urn:900labs:900word:metadata\" \
          office:version=\"1.3\">\
          {automatic_styles}<office:body><office:text>{body}</office:text></office:body>\
@@ -597,7 +600,7 @@ fn render_block(block: &Block, document: &Document, output: &mut String) -> Resu
                 escape_xml(&style_name),
             ));
             render_bookmark(paragraph.bookmark_id.as_deref(), output);
-            render_inlines(&paragraph.inlines, output);
+            render_inlines(&paragraph.inlines, Some(document), output);
             output.push_str("</text:p>");
         }
         Block::Heading(heading) => {
@@ -606,7 +609,7 @@ fn render_block(block: &Block, document: &Document, output: &mut String) -> Resu
                 heading.level.clamp(1, 6),
             ));
             render_bookmark(heading.bookmark_id.as_deref(), output);
-            render_inlines(&heading.inlines, output);
+            render_inlines(&heading.inlines, Some(document), output);
             output.push_str("</text:h>");
         }
         Block::List(list) => render_list(list, document, output)?,
@@ -718,8 +721,13 @@ fn image_alignment_name(alignment: ImageAlignment) -> &'static str {
     }
 }
 
-fn render_inlines(inlines: &[Inline], output: &mut String) {
+fn render_inlines(inlines: &[Inline], document: Option<&Document>, output: &mut String) {
+    let mut active_comments: Vec<String> = Vec::new();
     for inline in inlines {
+        let next_comments = inline_comment_ids(inline, document);
+        close_inactive_comments(&mut active_comments, &next_comments, output);
+        open_new_comments(&mut active_comments, &next_comments, document, output);
+
         if let Some(field) = inline.field {
             output.push_str(&render_page_field(field, &inline.text));
             continue;
@@ -739,6 +747,73 @@ fn render_inlines(inlines: &[Inline], output: &mut String) {
         }
         output.push_str(&rendered);
     }
+    close_inactive_comments(&mut active_comments, &[], output);
+}
+
+fn inline_comment_ids(inline: &Inline, document: Option<&Document>) -> Vec<String> {
+    let Some(document) = document else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for id in &inline.comment_ids {
+        if ids.contains(id) {
+            continue;
+        }
+        if validate_comment_id(id).is_ok() && document.comments.contains_key(id) {
+            ids.push(id.clone());
+        }
+    }
+    ids
+}
+
+fn close_inactive_comments(active: &mut Vec<String>, next: &[String], output: &mut String) {
+    let common_prefix = active
+        .iter()
+        .zip(next.iter())
+        .take_while(|(left, right)| left == right)
+        .count();
+    while active.len() > common_prefix {
+        let id = active.pop().expect("checked active comment");
+        output.push_str(&format!(
+            "<office:annotation-end office:name=\"{}\"/>",
+            escape_xml(&id)
+        ));
+    }
+}
+
+fn open_new_comments(
+    active: &mut Vec<String>,
+    next: &[String],
+    document: Option<&Document>,
+    output: &mut String,
+) {
+    let Some(document) = document else {
+        return;
+    };
+    for id in next {
+        if active.contains(id) {
+            continue;
+        }
+        if let Some(comment) = document.comments.get(id) {
+            output.push_str(&render_annotation_start(comment));
+            active.push(id.clone());
+        }
+    }
+}
+
+fn render_annotation_start(comment: &CommentThread) -> String {
+    let resolved = if comment.resolved { "true" } else { "false" };
+    format!(
+        "<office:annotation office:name=\"{}\" word900:comment-id=\"{}\" word900:resolved=\"{}\">\
+         <dc:creator>{}</dc:creator><dc:date>{}</dc:date><text:p>{}</text:p>\
+         </office:annotation>",
+        escape_xml(&comment.id),
+        escape_xml(&comment.id),
+        resolved,
+        escape_xml(&comment.author),
+        escape_xml(&comment.created_at.to_rfc3339()),
+        escape_xml(&comment.body)
+    )
 }
 
 fn render_page_field(field: PageField, fallback: &str) -> String {
@@ -835,7 +910,7 @@ fn render_page_region_block(block: &PageRegionBlock, output: &mut String) {
     match block {
         PageRegionBlock::Paragraph(paragraph) => {
             output.push_str("<text:p>");
-            render_inlines(&paragraph.inlines, output);
+            render_inlines(&paragraph.inlines, None, output);
             output.push_str("</text:p>");
         }
     }
@@ -1038,26 +1113,18 @@ fn parse_content_xml(
             Event::Empty(start) => state.empty(&start)?,
             Event::End(end) => state.end(end.name().as_ref())?,
             Event::Text(text) => {
-                if state.unsupported_depth == 0 {
-                    if let Some(active) = state.active_text.as_mut() {
-                        active.text.push_str(
-                            &text
-                                .xml10_content()
-                                .map_err(|err| xml_error("content.xml", err))?,
-                        );
-                    }
-                }
+                state.text(
+                    &text
+                        .xml10_content()
+                        .map_err(|err| xml_error("content.xml", err))?,
+                );
             }
             Event::CData(text) => {
-                if state.unsupported_depth == 0 {
-                    if let Some(active) = state.active_text.as_mut() {
-                        active.text.push_str(
-                            &text
-                                .xml10_content()
-                                .map_err(|err| xml_error("content.xml", err))?,
-                        );
-                    }
-                }
+                state.text(
+                    &text
+                        .xml10_content()
+                        .map_err(|err| xml_error("content.xml", err))?,
+                );
             }
             Event::DocType(_) => {
                 return Err(OdtError::XmlEntityDeclaration {
@@ -1070,6 +1137,56 @@ fn parse_content_xml(
     }
 
     Ok(state.into_document())
+}
+
+fn prune_unanchored_imported_comments(document: &mut Document) {
+    if document.comments.is_empty() {
+        return;
+    }
+    let mut anchored = BTreeSet::new();
+    for section in &document.sections {
+        collect_imported_comment_anchor_ids_from_blocks(&section.blocks, &mut anchored);
+    }
+    document.comments.retain(|id, _| anchored.contains(id));
+}
+
+fn collect_imported_comment_anchor_ids_from_blocks(blocks: &[Block], ids: &mut BTreeSet<String>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                collect_imported_comment_anchor_ids_from_inlines(&paragraph.inlines, ids);
+            }
+            Block::Heading(heading) => {
+                collect_imported_comment_anchor_ids_from_inlines(&heading.inlines, ids);
+            }
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_imported_comment_anchor_ids_from_blocks(&item.blocks, ids);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_imported_comment_anchor_ids_from_blocks(&cell.blocks, ids);
+                    }
+                }
+            }
+            Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn collect_imported_comment_anchor_ids_from_inlines(
+    inlines: &[Inline],
+    ids: &mut BTreeSet<String>,
+) {
+    for inline in inlines {
+        for id in &inline.comment_ids {
+            if validate_comment_id(id).is_ok() {
+                ids.insert(id.clone());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1346,12 +1463,15 @@ struct ParseState<'a> {
     styles: BTreeMap<StyleId, Style>,
     assets: BTreeMap<String, AssetRef>,
     asset_payloads: &'a BTreeMap<String, AssetPayload>,
+    comments: BTreeMap<String, CommentThread>,
     lists: BTreeMap<String, ListDefinition>,
     page: PageSetup,
     warnings: Vec<DocumentWarning>,
     unsupported_elements: BTreeSet<String>,
     unsupported_depth: usize,
     list_counter: usize,
+    active_annotation: Option<AnnotationParse>,
+    annotation_depth: usize,
 }
 
 impl<'a> ParseState<'a> {
@@ -1365,16 +1485,27 @@ impl<'a> ParseState<'a> {
             styles: Document::new_untitled().styles,
             assets: BTreeMap::new(),
             asset_payloads,
+            comments: BTreeMap::new(),
             lists: Document::new_untitled().lists,
             page: PageSetup::default(),
             warnings: Vec::new(),
             unsupported_elements: BTreeSet::new(),
             unsupported_depth: 0,
             list_counter: 0,
+            active_annotation: None,
+            annotation_depth: 0,
         }
     }
 
     fn start(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.active_annotation.is_some() {
+            self.annotation_depth += 1;
+            if let Some(annotation) = self.active_annotation.as_mut() {
+                annotation.start(local_name(start.name().as_ref()));
+            }
+            return Ok(());
+        }
+
         if self.unsupported_depth > 0 {
             self.unsupported_depth += 1;
             return Ok(());
@@ -1386,6 +1517,8 @@ impl<'a> ParseState<'a> {
             b"h" => self.start_heading(start)?,
             b"span" => self.start_span(start)?,
             b"a" => self.start_link(start)?,
+            b"annotation" => self.start_annotation(start)?,
+            b"annotation-end" => self.end_annotation_anchor(start)?,
             b"page-number" => self.start_page_field(PageField::PageNumber),
             b"page-count" => self.start_page_field(PageField::PageCount),
             b"date" => self.start_page_field(PageField::Date),
@@ -1426,6 +1559,10 @@ impl<'a> ParseState<'a> {
     }
 
     fn empty(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if self.active_annotation.is_some() {
+            return Ok(());
+        }
+
         if self.unsupported_depth > 0 {
             return Ok(());
         }
@@ -1446,6 +1583,8 @@ impl<'a> ParseState<'a> {
             }
             b"bookmark" | b"bookmark-start" => self.read_inline_bookmark_id(start)?,
             b"bookmark-end" => {}
+            b"annotation" => self.start_and_finish_empty_annotation(start)?,
+            b"annotation-end" => self.end_annotation_anchor(start)?,
             b"soft-page-break" => {
                 if self.active_text.is_none() {
                     self.push_block(Block::PageBreak);
@@ -1485,6 +1624,19 @@ impl<'a> ParseState<'a> {
     }
 
     fn end(&mut self, name: &[u8]) -> Result<(), OdtError> {
+        if self.active_annotation.is_some() {
+            let local = local_name(name);
+            if let Some(annotation) = self.active_annotation.as_mut() {
+                annotation.end(local);
+            }
+            if local == b"annotation" && self.annotation_depth == 1 {
+                self.finish_annotation_anchor();
+            } else {
+                self.annotation_depth = self.annotation_depth.saturating_sub(1);
+            }
+            return Ok(());
+        }
+
         if self.unsupported_depth > 0 {
             self.unsupported_depth -= 1;
             return Ok(());
@@ -1505,6 +1657,7 @@ impl<'a> ParseState<'a> {
                     active.link_stack.pop();
                 }
             }
+            b"annotation-end" => {}
             b"list-item" => self.finish_list_item(),
             b"list" => self.finish_list(),
             b"table-cell" => self.finish_table_cell(),
@@ -1752,6 +1905,103 @@ impl<'a> ParseState<'a> {
             active.link_stack.push(sanitized);
         }
         Ok(())
+    }
+
+    fn start_annotation(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let id = attr_value(start, b"comment-id")?.or(attr_value(start, b"name")?);
+        let resolved = attr_value(start, b"resolved")?.as_deref() == Some("true");
+        let Some(id) = id.and_then(|value| validate_comment_id(&value).ok()) else {
+            self.warn(
+                "odt_unsafe_comment",
+                "Unsafe comment annotation was ignored during import",
+            );
+            self.unsupported_depth = 1;
+            return Ok(());
+        };
+        self.active_annotation = Some(AnnotationParse::new(id, resolved));
+        self.annotation_depth = 1;
+        Ok(())
+    }
+
+    fn start_and_finish_empty_annotation(
+        &mut self,
+        start: &BytesStart<'_>,
+    ) -> Result<(), OdtError> {
+        self.start_annotation(start)?;
+        if self.active_annotation.is_some() {
+            self.finish_annotation_anchor();
+        }
+        Ok(())
+    }
+
+    fn finish_annotation_anchor(&mut self) {
+        let Some(annotation) = self.active_annotation.take() else {
+            return;
+        };
+        self.annotation_depth = 0;
+        let now = Utc::now();
+        let author = normalize_comment_author(Some(&annotation.author)).unwrap_or_else(|_| {
+            normalize_comment_author(None).expect("default comment author should be valid")
+        });
+        let body = match validate_comment_body(&annotation.body) {
+            Ok(body) => body,
+            Err(_) => {
+                self.warn(
+                    "odt_invalid_comment",
+                    "Invalid comment body was ignored during import",
+                );
+                return;
+            }
+        };
+        if self.active_text.is_none() {
+            self.warn(
+                "odt_unanchored_comment",
+                "Comment annotation outside editable text was ignored during import",
+            );
+            return;
+        }
+        let created_at = annotation
+            .created_at
+            .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+            .map(|value| value.with_timezone(&Utc))
+            .unwrap_or(now);
+        self.comments
+            .entry(annotation.id.clone())
+            .or_insert(CommentThread {
+                id: annotation.id.clone(),
+                author,
+                body,
+                created_at,
+                updated_at: created_at,
+                resolved: annotation.resolved,
+            });
+        if let Some(active) = self.active_text.as_mut() {
+            active.push_comment_id(annotation.id);
+        }
+    }
+
+    fn end_annotation_anchor(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let Some(id) =
+            attr_value(start, b"name")?.and_then(|value| validate_comment_id(&value).ok())
+        else {
+            return Ok(());
+        };
+        if let Some(active) = self.active_text.as_mut() {
+            active.pop_comment_id(&id);
+        }
+        Ok(())
+    }
+
+    fn text(&mut self, value: &str) {
+        if let Some(annotation) = self.active_annotation.as_mut() {
+            annotation.text(value);
+            return;
+        }
+        if self.unsupported_depth == 0 {
+            if let Some(active) = self.active_text.as_mut() {
+                active.text.push_str(value);
+            }
+        }
     }
 
     fn start_page_field(&mut self, field: PageField) {
@@ -2039,8 +2289,10 @@ impl<'a> ParseState<'a> {
         }];
         document.styles = self.styles;
         document.assets = self.assets;
+        document.comments = self.comments;
         document.lists = self.lists;
         document.warnings = self.warnings;
+        prune_unanchored_imported_comments(&mut document);
         document
     }
 }
@@ -2076,6 +2328,64 @@ struct ImageFrame {
 }
 
 #[derive(Debug)]
+struct AnnotationParse {
+    id: String,
+    author: String,
+    body: String,
+    created_at: Option<String>,
+    resolved: bool,
+    field: AnnotationField,
+}
+
+impl AnnotationParse {
+    fn new(id: String, resolved: bool) -> Self {
+        Self {
+            id,
+            author: String::new(),
+            body: String::new(),
+            created_at: None,
+            resolved,
+            field: AnnotationField::None,
+        }
+    }
+
+    fn start(&mut self, name: &[u8]) {
+        self.field = match name {
+            b"creator" => AnnotationField::Author,
+            b"date" => AnnotationField::Date,
+            b"p" => AnnotationField::Body,
+            _ => AnnotationField::None,
+        };
+    }
+
+    fn end(&mut self, name: &[u8]) {
+        if name == b"creator" || name == b"date" || name == b"p" {
+            self.field = AnnotationField::None;
+        }
+    }
+
+    fn text(&mut self, value: &str) {
+        match self.field {
+            AnnotationField::Author => self.author.push_str(value),
+            AnnotationField::Date => {
+                let current = self.created_at.get_or_insert_with(String::new);
+                current.push_str(value);
+            }
+            AnnotationField::Body => self.body.push_str(value),
+            AnnotationField::None => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AnnotationField {
+    None,
+    Author,
+    Date,
+    Body,
+}
+
+#[derive(Debug)]
 enum ActiveTextKind {
     Paragraph {
         bookmark_id: Option<String>,
@@ -2096,6 +2406,7 @@ struct ActiveText {
     mark_stack: Vec<Vec<InlineMark>>,
     style_stack: Vec<InlineStyle>,
     link_stack: Vec<Option<String>>,
+    comment_stack: Vec<String>,
     embedded_blocks: Vec<Block>,
 }
 
@@ -2112,6 +2423,7 @@ impl ActiveText {
             mark_stack: Vec::new(),
             style_stack: Vec::new(),
             link_stack: Vec::new(),
+            comment_stack: Vec::new(),
             embedded_blocks: Vec::new(),
         }
     }
@@ -2124,6 +2436,7 @@ impl ActiveText {
             mark_stack: Vec::new(),
             style_stack: Vec::new(),
             link_stack: Vec::new(),
+            comment_stack: Vec::new(),
             embedded_blocks: Vec::new(),
         }
     }
@@ -2152,6 +2465,7 @@ impl ActiveText {
             text,
             marks: self.active_marks(),
             link: self.active_link(),
+            comment_ids: self.active_comment_ids(),
             style: self.active_style(),
             field: None,
         });
@@ -2163,9 +2477,28 @@ impl ActiveText {
             text: field.fallback_text().to_string(),
             marks: self.active_marks(),
             link: self.active_link(),
+            comment_ids: self.active_comment_ids(),
             style: self.active_style(),
             field: Some(field),
         });
+    }
+
+    fn push_comment_id(&mut self, comment_id: String) {
+        self.flush();
+        if !self.comment_stack.contains(&comment_id) {
+            self.comment_stack.push(comment_id);
+        }
+    }
+
+    fn pop_comment_id(&mut self, comment_id: &str) {
+        self.flush();
+        if let Some(index) = self
+            .comment_stack
+            .iter()
+            .rposition(|active| active == comment_id)
+        {
+            self.comment_stack.remove(index);
+        }
     }
 
     fn active_marks(&self) -> Vec<InlineMark> {
@@ -2180,6 +2513,10 @@ impl ActiveText {
 
     fn active_link(&self) -> Option<String> {
         self.link_stack.iter().rev().find_map(|href| href.clone())
+    }
+
+    fn active_comment_ids(&self) -> Vec<String> {
+        self.comment_stack.clone()
     }
 
     fn active_style(&self) -> InlineStyle {
@@ -3056,6 +3393,7 @@ mod tests {
                     text: "Formatted text".to_string(),
                     marks: vec![InlineMark::Bold],
                     link: None,
+                    comment_ids: Vec::new(),
                     style: InlineStyle {
                         font_family: Some("serif".to_string()),
                         font_size_pt: Some(14),
@@ -3114,6 +3452,108 @@ mod tests {
     }
 
     #[test]
+    fn comments_round_trip_through_odt_annotations_with_formatting() {
+        let created_at = DateTime::parse_from_rfc3339("2026-06-25T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut document = Document::new_untitled();
+        document.comments.insert(
+            "cmt-review".to_string(),
+            CommentThread {
+                id: "cmt-review".to_string(),
+                author: "Local User".to_string(),
+                body: "Check this wording.".to_string(),
+                created_at,
+                updated_at: created_at,
+                resolved: true,
+            },
+        );
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Before "),
+                Inline {
+                    text: "linked bold".to_string(),
+                    marks: vec![InlineMark::Bold],
+                    link: Some("https://example.invalid/review".to_string()),
+                    comment_ids: vec!["cmt-review".to_string()],
+                    style: Default::default(),
+                    field: None,
+                },
+                Inline::text(" after"),
+            ],
+        })];
+
+        let bytes = write_odt_bytes(&document).expect("write should succeed");
+        let content_xml = content_xml_from_package(&bytes);
+        assert!(content_xml.contains("<office:annotation "));
+        assert!(content_xml.contains("word900:comment-id=\"cmt-review\""));
+        assert!(content_xml.contains("word900:resolved=\"true\""));
+        assert!(content_xml.contains("<dc:creator>Local User</dc:creator>"));
+        assert!(content_xml.contains("<text:p>Check this wording.</text:p>"));
+        assert!(content_xml.contains("<office:annotation-end office:name=\"cmt-review\"/>"));
+
+        let parsed = read_odt_bytes(&bytes).expect("read should succeed");
+        let comment = parsed
+            .comments
+            .get("cmt-review")
+            .expect("comment metadata should parse");
+        assert_eq!(comment.author, "Local User");
+        assert_eq!(comment.body, "Check this wording.");
+        assert!(comment.resolved);
+        assert_eq!(comment.created_at, created_at);
+
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a paragraph");
+        };
+        let commented = paragraph
+            .inlines
+            .iter()
+            .find(|inline| inline.text == "linked bold")
+            .expect("commented inline should parse");
+        assert_eq!(commented.marks, vec![InlineMark::Bold]);
+        assert_eq!(
+            commented.link.as_deref(),
+            Some("https://example.invalid/review")
+        );
+        assert_eq!(commented.comment_ids, vec!["cmt-review"]);
+    }
+
+    #[test]
+    fn unanchored_imported_comment_metadata_is_pruned() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:dc="http://purl.org/dc/elements/1.1/"
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:word900="urn:900word:metadata:1.0"
+              office:version="1.3">
+              <office:body><office:text><text:p>Before<office:annotation office:name="cmt-point" word900:comment-id="cmt-point" word900:resolved="false"><dc:creator>Local User</dc:creator><dc:date>2026-06-25T12:00:00Z</dc:date><text:p>Point-only note</text:p></office:annotation><office:annotation-end office:name="cmt-point"/>After</text:p></office:text></office:body>
+            </office:document-content>"#;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        assert!(parsed.comments.is_empty());
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a paragraph");
+        };
+        assert_eq!(
+            paragraph
+                .inlines
+                .iter()
+                .map(|inline| inline.text.as_str())
+                .collect::<String>(),
+            "BeforeAfter"
+        );
+        assert!(paragraph
+            .inlines
+            .iter()
+            .all(|inline| inline.comment_ids.is_empty()));
+    }
+
+    #[test]
     fn bookmarks_and_internal_links_round_trip_through_odt() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![
@@ -3130,6 +3570,7 @@ mod tests {
                     text: "Jump".to_string(),
                     marks: Vec::new(),
                     link: Some("#bm-heading".to_string()),
+                    comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
                 }],
@@ -3298,6 +3739,7 @@ mod tests {
                         text: "Bold العربية 中文 ".to_string(),
                         marks: vec![InlineMark::Bold],
                         link: None,
+                        comment_ids: Vec::new(),
                         style: Default::default(),
                         field: None,
                     },
@@ -3305,6 +3747,7 @@ mod tests {
                         text: "linked text".to_string(),
                         marks: vec![InlineMark::Italic, InlineMark::Underline],
                         link: Some("https://example.invalid/reference".to_string()),
+                        comment_ids: Vec::new(),
                         style: Default::default(),
                         field: None,
                     },

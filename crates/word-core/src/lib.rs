@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -12,6 +12,8 @@ pub struct Document {
     pub styles: BTreeMap<StyleId, Style>,
     pub lists: BTreeMap<String, ListDefinition>,
     pub assets: BTreeMap<String, AssetRef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub comments: BTreeMap<String, CommentThread>,
     pub warnings: Vec<DocumentWarning>,
 }
 
@@ -24,6 +26,7 @@ impl Document {
             styles: default_styles(),
             lists: default_list_definitions(),
             assets: BTreeMap::new(),
+            comments: BTreeMap::new(),
             warnings: Vec::new(),
         }
     }
@@ -74,7 +77,7 @@ impl Document {
             DocumentCommand::InsertBlock {
                 section_index,
                 block_index,
-                block,
+                mut block,
             } => {
                 let section = self
                     .sections
@@ -83,14 +86,16 @@ impl Document {
                 if block_index > section.blocks.len() {
                     return Err(DocumentError::BlockOutOfBounds { block_index });
                 }
+                normalize_comment_anchors_in_block(&mut block);
                 section.blocks.insert(block_index, block);
+                self.prune_unanchored_comments();
                 self.touch();
                 Ok(())
             }
             DocumentCommand::ReplaceBlock {
                 section_index,
                 block_index,
-                block,
+                mut block,
             } => {
                 let section = self
                     .sections
@@ -100,7 +105,9 @@ impl Document {
                     .blocks
                     .get_mut(block_index)
                     .ok_or(DocumentError::BlockOutOfBounds { block_index })?;
+                normalize_comment_anchors_in_block(&mut block);
                 *slot = block;
+                self.prune_unanchored_comments();
                 self.touch();
                 Ok(())
             }
@@ -116,6 +123,7 @@ impl Document {
                     return Err(DocumentError::BlockOutOfBounds { block_index });
                 }
                 section.blocks.remove(block_index);
+                self.prune_unanchored_comments();
                 self.touch();
                 Ok(())
             }
@@ -162,11 +170,70 @@ impl Document {
                 Ok(())
             }
             DocumentCommand::UpdateStyle { style } => self.register_style(style),
+            DocumentCommand::AddComment { id, author, body } => {
+                let id = validate_comment_id(&id)?;
+                if self.comments.contains_key(&id) {
+                    return Err(DocumentError::CommentAlreadyExists { id });
+                }
+                let body = validate_comment_body(&body)?;
+                let author = normalize_comment_author(author.as_deref())?;
+                if !collect_comment_anchor_ids(&self.sections).contains(&id) {
+                    return Err(DocumentError::CommentNotAnchored { id });
+                }
+                let now = Utc::now();
+                self.comments.insert(
+                    id.clone(),
+                    CommentThread {
+                        id,
+                        author,
+                        body,
+                        created_at: now,
+                        updated_at: now,
+                        resolved: false,
+                    },
+                );
+                self.touch();
+                Ok(())
+            }
+            DocumentCommand::SetCommentResolved { id, resolved } => {
+                let id = validate_comment_id(&id)?;
+                let comment = self
+                    .comments
+                    .get_mut(&id)
+                    .ok_or_else(|| DocumentError::CommentNotFound { id: id.clone() })?;
+                comment.resolved = resolved;
+                comment.updated_at = Utc::now();
+                self.touch();
+                Ok(())
+            }
+            DocumentCommand::DeleteComment { id } => {
+                let id = validate_comment_id(&id)?;
+                if self.comments.remove(&id).is_none() {
+                    return Err(DocumentError::CommentNotFound { id });
+                }
+                self.remove_comment_anchors(&id);
+                self.touch();
+                Ok(())
+            }
         }
     }
 
     fn touch(&mut self) {
         self.meta.modified_at = Utc::now();
+    }
+
+    fn remove_comment_anchors(&mut self, comment_id: &str) {
+        for section in &mut self.sections {
+            remove_comment_anchors_from_blocks(&mut section.blocks, comment_id);
+        }
+    }
+
+    fn prune_unanchored_comments(&mut self) {
+        if self.comments.is_empty() {
+            return;
+        }
+        let anchored = collect_comment_anchor_ids(&self.sections);
+        self.comments.retain(|id, _| anchored.contains(id));
     }
 }
 
@@ -192,6 +259,22 @@ impl DocumentMeta {
             generator: "900Word".to_string(),
         }
     }
+}
+
+pub const DEFAULT_COMMENT_AUTHOR: &str = "Local User";
+pub const MAX_COMMENT_ID_LEN: usize = 64;
+pub const MAX_COMMENT_BODY_CHARS: usize = 2_000;
+pub const MAX_COMMENT_AUTHOR_CHARS: usize = 80;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentThread {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub resolved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -486,6 +569,8 @@ pub struct Inline {
     pub text: String,
     pub marks: Vec<InlineMark>,
     pub link: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comment_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "InlineStyle::is_default")]
     pub style: InlineStyle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -498,6 +583,7 @@ impl Inline {
             text: text.into(),
             marks: Vec::new(),
             link: None,
+            comment_ids: Vec::new(),
             style: InlineStyle::default(),
             field: None,
         }
@@ -508,6 +594,7 @@ impl Inline {
             text: field.fallback_text().to_string(),
             marks: Vec::new(),
             link: None,
+            comment_ids: Vec::new(),
             style: InlineStyle::default(),
             field: Some(field),
         }
@@ -777,6 +864,18 @@ pub enum DocumentCommand {
     UpdateStyle {
         style: Style,
     },
+    AddComment {
+        id: String,
+        author: Option<String>,
+        body: String,
+    },
+    SetCommentResolved {
+        id: String,
+        resolved: bool,
+    },
+    DeleteComment {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -853,6 +952,20 @@ pub enum DocumentError {
     InvalidPageSetup { reason: &'static str },
     #[error("page region {region:?} is read-only")]
     ReadOnlyPageRegion { region: PageRegionKind },
+    #[error("invalid comment id")]
+    InvalidCommentId,
+    #[error("comment body must not be empty")]
+    EmptyCommentBody,
+    #[error("comment body is too long; maximum is {max} characters")]
+    CommentBodyTooLong { max: usize },
+    #[error("comment author is too long; maximum is {max} characters")]
+    CommentAuthorTooLong { max: usize },
+    #[error("comment {id} already exists")]
+    CommentAlreadyExists { id: String },
+    #[error("comment {id} was not found")]
+    CommentNotFound { id: String },
+    #[error("comment {id} has no selected text anchor")]
+    CommentNotAnchored { id: String },
 }
 
 fn is_false(value: &bool) -> bool {
@@ -864,6 +977,166 @@ fn validate_non_empty(field: &'static str, value: &str) -> Result<(), DocumentEr
         Err(DocumentError::EmptyField { field })
     } else {
         Ok(())
+    }
+}
+
+pub fn validate_comment_id(value: &str) -> Result<String, DocumentError> {
+    let trimmed = value.trim();
+    let Some(suffix) = trimmed.strip_prefix("cmt-") else {
+        return Err(DocumentError::InvalidCommentId);
+    };
+    if trimmed.len() > MAX_COMMENT_ID_LEN || suffix.is_empty() {
+        return Err(DocumentError::InvalidCommentId);
+    }
+    if suffix
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        Ok(trimmed.to_string())
+    } else {
+        Err(DocumentError::InvalidCommentId)
+    }
+}
+
+pub fn validate_comment_body(value: &str) -> Result<String, DocumentError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(DocumentError::EmptyCommentBody);
+    }
+    if trimmed.chars().count() > MAX_COMMENT_BODY_CHARS {
+        return Err(DocumentError::CommentBodyTooLong {
+            max: MAX_COMMENT_BODY_CHARS,
+        });
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn normalize_comment_author(value: Option<&str>) -> Result<String, DocumentError> {
+    let sanitized = value
+        .unwrap_or(DEFAULT_COMMENT_AUTHOR)
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>();
+    let trimmed = sanitized.trim();
+    let author = if trimmed.is_empty() {
+        DEFAULT_COMMENT_AUTHOR
+    } else {
+        trimmed
+    };
+    if author.chars().count() > MAX_COMMENT_AUTHOR_CHARS {
+        return Err(DocumentError::CommentAuthorTooLong {
+            max: MAX_COMMENT_AUTHOR_CHARS,
+        });
+    }
+    Ok(author.to_string())
+}
+
+fn normalize_comment_anchors_in_block(block: &mut Block) {
+    match block {
+        Block::Paragraph(paragraph) => normalize_comment_anchors_in_inlines(&mut paragraph.inlines),
+        Block::Heading(heading) => normalize_comment_anchors_in_inlines(&mut heading.inlines),
+        Block::List(list) => {
+            for item in &mut list.items {
+                for block in &mut item.blocks {
+                    normalize_comment_anchors_in_block(block);
+                }
+            }
+        }
+        Block::Table(table) => {
+            for row in &mut table.rows {
+                for cell in &mut row.cells {
+                    for block in &mut cell.blocks {
+                        normalize_comment_anchors_in_block(block);
+                    }
+                }
+            }
+        }
+        Block::Image(_) | Block::PageBreak => {}
+    }
+}
+
+fn normalize_comment_anchors_in_inlines(inlines: &mut [Inline]) {
+    for inline in inlines {
+        let mut seen = BTreeSet::new();
+        inline
+            .comment_ids
+            .retain(|id| validate_comment_id(id).is_ok() && seen.insert(id.clone()));
+    }
+}
+
+fn remove_comment_anchors_from_blocks(blocks: &mut [Block], comment_id: &str) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                remove_comment_anchors_from_inlines(&mut paragraph.inlines, comment_id)
+            }
+            Block::Heading(heading) => {
+                remove_comment_anchors_from_inlines(&mut heading.inlines, comment_id)
+            }
+            Block::List(list) => {
+                for item in &mut list.items {
+                    remove_comment_anchors_from_blocks(&mut item.blocks, comment_id);
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        remove_comment_anchors_from_blocks(&mut cell.blocks, comment_id);
+                    }
+                }
+            }
+            Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn remove_comment_anchors_from_inlines(inlines: &mut [Inline], comment_id: &str) {
+    for inline in inlines {
+        inline.comment_ids.retain(|id| id != comment_id);
+    }
+}
+
+fn collect_comment_anchor_ids(sections: &[Section]) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for section in sections {
+        collect_comment_anchor_ids_from_blocks(&section.blocks, &mut ids);
+    }
+    ids
+}
+
+fn collect_comment_anchor_ids_from_blocks(blocks: &[Block], ids: &mut BTreeSet<String>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                collect_comment_anchor_ids_from_inlines(&paragraph.inlines, ids)
+            }
+            Block::Heading(heading) => {
+                collect_comment_anchor_ids_from_inlines(&heading.inlines, ids)
+            }
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_comment_anchor_ids_from_blocks(&item.blocks, ids);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_comment_anchor_ids_from_blocks(&cell.blocks, ids);
+                    }
+                }
+            }
+            Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn collect_comment_anchor_ids_from_inlines(inlines: &[Inline], ids: &mut BTreeSet<String>) {
+    for inline in inlines {
+        for id in &inline.comment_ids {
+            if validate_comment_id(id).is_ok() {
+                ids.insert(id.clone());
+            }
+        }
     }
 }
 
@@ -1223,5 +1496,188 @@ mod tests {
                 .and_then(|format| format.alignment),
             Some(ParagraphAlignment::Justify)
         );
+    }
+
+    #[test]
+    fn comment_command_defaults_author_and_validates_body_and_id() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![Inline {
+                text: "Reviewed range".to_string(),
+                marks: Vec::new(),
+                link: None,
+                comment_ids: vec!["cmt-1234".to_string()],
+                style: Default::default(),
+                field: None,
+            }],
+        })];
+
+        document
+            .apply_command(DocumentCommand::AddComment {
+                id: "cmt-1234".to_string(),
+                author: None,
+                body: "  Please verify this sentence.  ".to_string(),
+            })
+            .expect("valid comment should be added");
+
+        let comment = document.comments.get("cmt-1234").expect("comment exists");
+        assert_eq!(comment.author, DEFAULT_COMMENT_AUTHOR);
+        assert_eq!(comment.body, "Please verify this sentence.");
+        assert!(!comment.resolved);
+
+        let duplicate = document
+            .apply_command(DocumentCommand::AddComment {
+                id: "cmt-1234".to_string(),
+                author: None,
+                body: "Another comment".to_string(),
+            })
+            .expect_err("duplicate comment id should fail");
+        assert_eq!(
+            duplicate,
+            DocumentError::CommentAlreadyExists {
+                id: "cmt-1234".to_string()
+            }
+        );
+
+        let invalid_id = document
+            .apply_command(DocumentCommand::AddComment {
+                id: "../bad".to_string(),
+                author: None,
+                body: "Body".to_string(),
+            })
+            .expect_err("unsafe comment id should fail");
+        assert_eq!(invalid_id, DocumentError::InvalidCommentId);
+
+        let empty_body = document
+            .apply_command(DocumentCommand::AddComment {
+                id: "cmt-empty".to_string(),
+                author: None,
+                body: "   ".to_string(),
+            })
+            .expect_err("empty body should fail");
+        assert_eq!(empty_body, DocumentError::EmptyCommentBody);
+
+        let long_body = document
+            .apply_command(DocumentCommand::AddComment {
+                id: "cmt-long".to_string(),
+                author: None,
+                body: "x".repeat(MAX_COMMENT_BODY_CHARS + 1),
+            })
+            .expect_err("long body should fail");
+        assert_eq!(
+            long_body,
+            DocumentError::CommentBodyTooLong {
+                max: MAX_COMMENT_BODY_CHARS
+            }
+        );
+
+        let unanchored = document
+            .apply_command(DocumentCommand::AddComment {
+                id: "cmt-unanchored".to_string(),
+                author: None,
+                body: "Body".to_string(),
+            })
+            .expect_err("comment without selected text anchor should fail");
+        assert_eq!(
+            unanchored,
+            DocumentError::CommentNotAnchored {
+                id: "cmt-unanchored".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn comment_resolve_unresolve_and_delete_clean_anchors() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![Inline {
+                text: "Reviewed range".to_string(),
+                marks: Vec::new(),
+                link: None,
+                comment_ids: vec!["cmt-review".to_string()],
+                style: Default::default(),
+                field: None,
+            }],
+        })];
+
+        document
+            .apply_command(DocumentCommand::AddComment {
+                id: "cmt-review".to_string(),
+                author: Some("Local User".to_string()),
+                body: "Check wording".to_string(),
+            })
+            .expect("comment should add");
+        document
+            .apply_command(DocumentCommand::SetCommentResolved {
+                id: "cmt-review".to_string(),
+                resolved: true,
+            })
+            .expect("comment should resolve");
+        assert!(document.comments["cmt-review"].resolved);
+        document
+            .apply_command(DocumentCommand::SetCommentResolved {
+                id: "cmt-review".to_string(),
+                resolved: false,
+            })
+            .expect("comment should unresolve");
+        assert!(!document.comments["cmt-review"].resolved);
+
+        document
+            .apply_command(DocumentCommand::DeleteComment {
+                id: "cmt-review".to_string(),
+            })
+            .expect("comment should delete");
+
+        assert!(!document.comments.contains_key("cmt-review"));
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("block should remain a paragraph");
+        };
+        assert!(paragraph.inlines[0].comment_ids.is_empty());
+    }
+
+    #[test]
+    fn replacing_anchored_content_prunes_unanchored_comment_metadata() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![Inline {
+                text: "Commented text".to_string(),
+                marks: Vec::new(),
+                link: None,
+                comment_ids: vec!["cmt-delete-me".to_string()],
+                style: Default::default(),
+                field: None,
+            }],
+        })];
+        document
+            .apply_command(DocumentCommand::AddComment {
+                id: "cmt-delete-me".to_string(),
+                author: None,
+                body: "Remove with anchor".to_string(),
+            })
+            .expect("comment should add");
+
+        document
+            .apply_command(DocumentCommand::ReplaceBlock {
+                section_index: 0,
+                block_index: 0,
+                block: Block::Paragraph(Paragraph {
+                    bookmark_id: None,
+                    style: StyleId::from("body"),
+                    format: Default::default(),
+                    inlines: vec![Inline::text("Plain replacement")],
+                }),
+            })
+            .expect("block should replace");
+
+        assert!(document.comments.is_empty());
     }
 }

@@ -6,7 +6,7 @@ OpenDocument Text (`.odt`) is the native saved format.
 
 ## Bootstrap Support
 
-- `.odt`: MVP read/write boundary for generated documents, covering paragraphs, headings, inline marks, safe links, safe paragraph/heading bookmarks, internal fragment links, lists, tables, page breaks, metadata title, named paragraph styles, 900Word-authored paragraph style properties, basic page setup, 900Word-authored direct paragraph/text formatting, 900Word-authored headers/footers/page fields, allowlisted embedded image bytes, and 900Word-authored image presentation metadata.
+- `.odt`: MVP read/write boundary for generated documents, covering paragraphs, headings, inline marks, safe links, safe paragraph/heading bookmarks, internal fragment links, lists, tables, page breaks, metadata title, named paragraph styles, 900Word-authored paragraph style properties, basic page setup, 900Word-authored direct paragraph/text formatting, 900Word-authored headers/footers/page fields, allowlisted embedded image bytes, 900Word-authored image presentation metadata, and 900Word-authored comments.
 - `.txt`: export plain document text to a user-entered `.txt` path.
 - `.html`: export offline sanitized semantic HTML to a user-entered `.html` path.
 - `.pdf`: export a valid basic PDF byte stream to a user-entered `.pdf` path for smoke testing and simple sharing.
@@ -26,8 +26,10 @@ OpenDocument Text (`.odt`) is the native saved format.
 - Sprint 015 adds editable image alt text, caption text, alignment, and scale percentage. Sprint 018 adds a direct selected-image resize handle that updates the same bounded scale percentage. ODT save/reopen preserves 900Word-authored values with bounded `word900` metadata attributes on image frames. Broader ODT-native image sizing/layout compatibility is not claimed.
 - Sprint 016 adds optional bookmark IDs to paragraph and heading blocks. ODT save/reopen preserves safe values with native `text:bookmark` elements inside `text:p` and `text:h`, and preserves internal links as safe `#fragment` text links. Unsafe imported bookmark names and unsafe internal hrefs are stripped with warnings. The editor exposes stable link targets only for blocks that already have safe bookmark IDs.
 - Sprint 020 adds Draft/Page Layout view modes, Fit Width/100%/custom zoom controls, and simple visual rulers in the desktop editor viewport. These settings are local component state only, are not written to `.odt`, and do not add deterministic pagination, page-break preview, font metrics, or print layout fidelity claims.
+- Sprint 022 adds bounded local comment threads anchored to selected text through inline comment IDs. ODT save/reopen uses ODF `office:annotation` and `office:annotation-end` elements for 900Word-authored comments, with `word900` metadata for local comment ID and resolved state. Unsafe or invalid external annotations are ignored with generic warnings. Full external ODT annotation compatibility, replies, multi-author identity, DOCX comments, and PDF annotation export are not claimed.
 - Sprint 014 and Sprint 015 HTML and print HTML export include allowlisted in-document image assets as `data:image/...;base64,...` URLs under the offline CSP and render image alt/caption/alignment/scale. The basic PDF exporter remains text-oriented and includes image alt/caption text only.
 - Sprint 016 HTML and print HTML export emit safe bookmark IDs as element `id` attributes and preserve safe internal `#fragment` hrefs. The basic PDF exporter remains text-oriented and does not emit active internal link annotations.
+- Sprint 022 TXT, HTML, print HTML, and basic PDF export do not claim comment fidelity. Comment text, sidebars, and active annotations are not exported as PDF/DOCX comments in this MVP.
 - Unsupported ODT elements import with warnings.
 - Unsupported or unsafe image references import with warnings instead of remote loading.
 - Unsupported image payload types are rejected instead of embedded.

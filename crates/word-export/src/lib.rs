@@ -924,6 +924,7 @@ mod tests {
                 text: "unsafe".to_string(),
                 marks: vec![InlineMark::Bold],
                 link: Some("javascript:alert(1)".to_string()),
+                comment_ids: Vec::new(),
                 style: Default::default(),
                 field: None,
             }],
@@ -953,6 +954,7 @@ mod tests {
                     text: "Jump".to_string(),
                     marks: Vec::new(),
                     link: Some("#bm-heading".to_string()),
+                    comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
                 }],
@@ -986,6 +988,7 @@ mod tests {
                 text: "Styled".to_string(),
                 marks: vec![],
                 link: None,
+                comment_ids: Vec::new(),
                 style: word_core::InlineStyle {
                     font_family: Some("serif".to_string()),
                     font_size_pt: Some(14),

@@ -6,6 +6,7 @@ import 'prosemirror-view/style/prosemirror.css';
 import {
   documentToEditorDoc,
   editorDocToWordCoreBlocks,
+  sanitizeCommentId,
   type DocumentState,
   type EditorDoc,
   type EditorProjectedChange
@@ -494,6 +495,141 @@ export function createEditorBookmarkId(): string {
   return `bm-${suffix}`;
 }
 
+export function createEditorCommentId(): string {
+  const bytes = new Uint8Array(8);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  const suffix = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `cmt-${suffix}`;
+}
+
+export function selectedEditorText(
+  view: EditorView | undefined,
+  fallbackSelection?: EditorSelectionSnapshot
+): string {
+  if (!view) {
+    return '';
+  }
+  const transaction = transactionWithFallbackSelection(view.state, fallbackSelection);
+  if (transaction.selection.empty) {
+    return '';
+  }
+  return transaction.doc.textBetween(transaction.selection.from, transaction.selection.to, '\n', ' ');
+}
+
+export function addEditorCommentToSelection(
+  view: EditorView | undefined,
+  commentId: string,
+  fallbackSelection?: EditorSelectionSnapshot
+): boolean {
+  if (!view) {
+    return false;
+  }
+
+  restoreEditorSelection(view, fallbackSelection);
+  const transaction = addEditorCommentTransaction(view.state, commentId, fallbackSelection);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function addEditorCommentTransaction(
+  state: EditorState,
+  commentId: string,
+  fallbackSelection?: EditorSelectionSnapshot
+): Transaction | undefined {
+  const markType = supportedSchema.marks.comment;
+  const safeId = sanitizeCommentId(commentId);
+  if (!markType || !safeId) {
+    return undefined;
+  }
+
+  const transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { empty, from, to } = transaction.selection;
+  if (empty || transaction.doc.textBetween(from, to, '\n', ' ').trim().length === 0) {
+    return undefined;
+  }
+  return transaction.addMark(from, to, markType.create({ id: safeId }));
+}
+
+export function removeEditorCommentFromDocument(
+  view: EditorView | undefined,
+  commentId: string
+): boolean {
+  if (!view) {
+    return false;
+  }
+  const transaction = removeEditorCommentTransaction(view.state, commentId);
+  if (!transaction) {
+    return false;
+  }
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function removeEditorCommentTransaction(
+  state: EditorState,
+  commentId: string
+): Transaction | undefined {
+  const markType = supportedSchema.marks.comment;
+  const safeId = sanitizeCommentId(commentId);
+  if (!markType || !safeId) {
+    return undefined;
+  }
+
+  let transaction = state.tr;
+  let changed = false;
+  state.doc.descendants((node, pos) => {
+    if (!node.isText) {
+      return true;
+    }
+    const targetMark = node.marks.find((mark) => mark.type === markType && mark.attrs.id === safeId);
+    if (targetMark) {
+      transaction = transaction.removeMark(pos, pos + node.nodeSize, targetMark);
+      changed = true;
+    }
+    return true;
+  });
+  return changed ? transaction : undefined;
+}
+
+export function selectEditorCommentRange(view: EditorView | undefined, commentId: string): boolean {
+  if (!view) {
+    return false;
+  }
+  const markType = supportedSchema.marks.comment;
+  const safeId = sanitizeCommentId(commentId);
+  if (!markType || !safeId) {
+    return false;
+  }
+  let range: { from: number; to: number } | undefined;
+  view.state.doc.descendants((node, pos) => {
+    if (range || !node.isText) {
+      return !range;
+    }
+    if (node.marks.some((mark) => mark.type === markType && mark.attrs.id === safeId)) {
+      range = { from: pos, to: pos + node.nodeSize };
+      return false;
+    }
+    return true;
+  });
+  if (!range) {
+    return false;
+  }
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, range.from, range.to)).scrollIntoView());
+  view.focus();
+  return true;
+}
+
 export function setEditorBlockBookmark(
   view: EditorView | undefined,
   bookmarkId: string,
@@ -800,14 +936,14 @@ export function clearEditorDirectFormattingTransaction(
 
   if (transaction.selection.empty) {
     for (const markType of Object.values(supportedSchema.marks)) {
-      if (markType.name === 'link') {
+      if (markType.name === 'link' || markType.name === 'comment') {
         continue;
       }
       transaction = transaction.removeStoredMark(markType);
     }
   } else {
     for (const markType of Object.values(supportedSchema.marks)) {
-      if (markType.name === 'link') {
+      if (markType.name === 'link' || markType.name === 'comment') {
         continue;
       }
       transaction = transaction.removeMark(from, to, markType);

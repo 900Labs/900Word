@@ -8,6 +8,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+chrono.workspace = true
 quick-xml.workspace = true
 thiserror.workspace = true
 word-core = { path = "../word-core" }

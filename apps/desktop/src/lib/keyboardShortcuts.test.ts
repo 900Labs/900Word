@@ -24,6 +24,8 @@ describe('keyboard shortcut labels', () => {
     expect(shortcutLabels('replace', 'windows')).toEqual(['Ctrl+H']);
     expect(shortcutLabel('heading1')).toBe('Cmd+Option+1');
     expect(shortcutLabel('heading1', 'windows')).toBe('Ctrl+Alt+1');
+    expect(shortcutLabel('insertComment')).toBe('Cmd+Option+M');
+    expect(shortcutLabel('insertComment', 'windows')).toBe('Ctrl+Alt+M');
   });
 
   it('detects the current shortcut label platform from browser metadata', () => {
@@ -65,6 +67,10 @@ describe('identifyGlobalShortcut', () => {
       'replace'
     );
     expect(identifyGlobalShortcut({ key: 'h', ctrlKey: true })).toBe('replace');
+    expect(identifyGlobalShortcut({ key: 'm', metaKey: true, altKey: true })).toBe('insertComment');
+    expect(identifyGlobalShortcut({ key: 'Unidentified', code: 'KeyM', ctrlKey: true, altKey: true })).toBe(
+      'insertComment'
+    );
     expect(identifyGlobalShortcut({ key: 'e', metaKey: true, shiftKey: true })).toBe('exportPdf');
   });
 
@@ -81,6 +87,7 @@ describe('identifyGlobalShortcut', () => {
       'saveDocumentAs'
     );
     expect(identifyGlobalShortcut({ key: 'f', metaKey: true, target: input })).toBe('find');
+    expect(identifyGlobalShortcut({ key: 'm', metaKey: true, altKey: true, target: input })).toBeNull();
   });
 
   it('guards shortcuts in textareas and selects', () => {

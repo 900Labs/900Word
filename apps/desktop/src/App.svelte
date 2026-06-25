@@ -3,8 +3,10 @@
   import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
   import { onMount, tick } from 'svelte';
   import {
+    addEditorCommentToSelection,
     createEditor,
     createEditorBookmarkId,
+    createEditorCommentId,
     editorTopLevelInsertionIndex,
     editTableStructure,
     findEditorTextMatches,
@@ -13,7 +15,9 @@
     replaceEditorTextRange,
     removeEditorLink,
     removeEditorBlockBookmark,
+    removeEditorCommentFromDocument,
     restoreEditorSelection,
+    selectEditorCommentRange,
     selectEditorTopLevelBlock,
     selectEditorTextRange,
     adjustSelectedListLevel,
@@ -25,6 +29,7 @@
     setSelectedImageAttrs,
     setEditorSpellIssues,
     setEditorTextStyle,
+    selectedEditorText,
     snapshotEditorFormatting,
     snapshotEditorDomSelection,
     snapshotEditorSelection,
@@ -58,6 +63,7 @@
     type DocumentCommand,
     type DocumentState,
     type EditorProjectedChange,
+    type CommentThread,
     type DocumentLinkTarget,
     type DocumentOutlineEntry,
     type ListBlock,
@@ -201,6 +207,8 @@
     { id: 'center', label: 'Center' },
     { id: 'right', label: 'Right' }
   ];
+  const localCommentAuthor = 'Local User';
+  const maxCommentBodyChars = 2000;
 
   let title = $state('900Word');
   let status = $state(translate('en-US', 'starting'));
@@ -261,6 +269,10 @@
   let linkPanelOpen = $state(false);
   let linkHrefInput = $state('');
   let selectedLinkTargetId = $state('');
+  let commentsPanelOpen = $state(false);
+  let newCommentBody = $state('');
+  let selectedCommentText = $state('');
+  let activeCommentId = $state<string | null>(null);
   let fileMenuOpen = $state(false);
   let exportMenuOpen = $state(false);
   let navigatorHeadings = $state<DocumentOutlineEntry[]>([]);
@@ -276,6 +288,8 @@
   const shortcutPlatform = shortcutPlatformFromNavigator();
   let documentState: DocumentState | undefined;
   let editorEditable = $derived(documentState ? canEditProjectedDocument(documentState) : false);
+  let commentThreads = $derived(sortedCommentThreads(documentState));
+  let unresolvedCommentCount = $derived(commentThreads.filter((comment) => !comment.resolved).length);
   let selectionWordCount = $derived(activeFormatting.selectionWordCount);
   let characterCountNoSpaces = $derived(countNonWhitespaceCharacters(plainText));
   let paragraphCount = $derived(countProjectedParagraphs(documentState));
@@ -286,6 +300,7 @@
   let effectiveZoomPercent = $derived(zoomChoice === 'fit-width' ? fitWidthZoom : customZoomPercent);
   let editorSurfaceStyle = $derived(editorViewportStyle(pageSetup, effectiveZoomPercent));
   let showWorkspaceSidebar = $derived(
+    commentsPanelOpen ||
     navigatorHeadings.length > 0 ||
     fileState.recent_documents.length > 0 ||
       fileState.recovery_documents.length > 0 ||
@@ -302,6 +317,7 @@
   let printFrame: HTMLIFrameElement;
   let findInput = $state<HTMLInputElement | undefined>();
   let replaceInput = $state<HTMLInputElement | undefined>();
+  let commentBodyInput = $state<HTMLTextAreaElement | undefined>();
   let exportPathInputElement = $state<HTMLInputElement | undefined>();
   let linkInput = $state<HTMLInputElement | undefined>();
   let fileMenuRoot = $state<HTMLDivElement | undefined>();
@@ -327,6 +343,12 @@
   async function loadDocumentIntoEditor(document: DocumentState, nextStatus: string) {
     editorSyncError = null;
     documentState = document;
+    if (activeCommentId && !document.comments?.[activeCommentId]) {
+      activeCommentId = null;
+    }
+    if (Object.keys(document.comments ?? {}).length > 0) {
+      commentsPanelOpen = true;
+    }
     title = document.meta.title;
     plainText = documentToText(document);
     navigatorHeadings = documentOutline(document);
@@ -766,6 +788,7 @@
     imageCaption = activeFormatting.image?.caption ?? '';
     imageAlignment = activeFormatting.image?.alignment ?? 'inline';
     imageScalePercent = activeFormatting.image?.scalePercent ?? 100;
+    selectedCommentText = selectedEditorText(view, selection).trim();
   }
 
   function emptyFormattingSnapshot(): EditorFormattingSnapshot {
@@ -1062,6 +1085,115 @@
     linkPanelOpen = false;
     refreshSelectionFormatting();
     status = changed ? tr('linkRemoved') : tr('linkUnchanged');
+  }
+
+  async function addCommentToSelection() {
+    if (!editorEditable) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    captureToolbarSelection(false);
+    const selectedText = selectedEditorText(view, lastEditorSelection).trim();
+    const body = newCommentBody.trim();
+    if (selectedText.length === 0) {
+      status = tr('commentSelectionRequired');
+      return;
+    }
+    if (body.length === 0) {
+      status = tr('commentBodyRequired');
+      return;
+    }
+    if (Array.from(body).length > maxCommentBodyChars) {
+      status = tr('commentBodyTooLong', { max: maxCommentBodyChars });
+      return;
+    }
+
+    const id = createEditorCommentId();
+    if (!addEditorCommentToSelection(view, id, lastEditorSelection)) {
+      status = tr('commentSelectionRequired');
+      return;
+    }
+
+    try {
+      await waitForEditorSync();
+      const document = await invoke<DocumentState>('apply_document_command', {
+        command: {
+          type: 'add_comment',
+          id,
+          author: localCommentAuthor,
+          body
+        }
+      });
+      newCommentBody = '';
+      activeCommentId = id;
+      commentsPanelOpen = true;
+      await loadDocumentIntoEditor(document, tr('commentAdded'));
+      await refreshFileState();
+    } catch (error) {
+      removeEditorCommentFromDocument(view, id);
+      await waitForEditorSync().catch(() => undefined);
+      setStatusFromError(error);
+    }
+  }
+
+  async function openCommentsPanelForShortcut() {
+    if (!editorEditable && commentThreads.length === 0) {
+      status = tr('editorReadOnly');
+      return;
+    }
+    activeView = 'editor';
+    commentsPanelOpen = true;
+    captureToolbarSelection(true);
+    refreshSelectionFormatting(lastEditorSelection);
+    await tick();
+    if (editorEditable) {
+      commentBodyInput?.focus();
+      if (selectedCommentText.length === 0) {
+        status = tr('commentSelectionRequired');
+      }
+    }
+  }
+
+  async function setCommentResolved(comment: CommentThread, resolved: boolean) {
+    try {
+      await waitForEditorSync();
+      const document = await invoke<DocumentState>('apply_document_command', {
+        command: {
+          type: 'set_comment_resolved',
+          id: comment.id,
+          resolved
+        }
+      });
+      activeCommentId = comment.id;
+      await loadDocumentIntoEditor(document, resolved ? tr('commentResolved') : tr('commentReopened'));
+      await refreshFileState();
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  async function deleteComment(comment: CommentThread) {
+    try {
+      await waitForEditorSync();
+      const document = await invoke<DocumentState>('apply_document_command', {
+        command: {
+          type: 'delete_comment',
+          id: comment.id
+        }
+      });
+      activeCommentId = null;
+      await loadDocumentIntoEditor(document, tr('commentDeleted'));
+      await refreshFileState();
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  function jumpToComment(comment: CommentThread) {
+    activeView = 'editor';
+    commentsPanelOpen = true;
+    activeCommentId = comment.id;
+    status = selectEditorCommentRange(view, comment.id) ? tr('commentSelected') : tr('noMatches');
   }
 
   function jumpToHeading(entry: DocumentOutlineEntry) {
@@ -1395,6 +1527,28 @@
     );
   }
 
+  function sortedCommentThreads(document: DocumentState | undefined): CommentThread[] {
+    return Object.values(document?.comments ?? {}).sort((left, right) => {
+      if (left.resolved !== right.resolved) {
+        return left.resolved ? 1 : -1;
+      }
+      return left.created_at.localeCompare(right.created_at);
+    });
+  }
+
+  function commentTimestamp(comment: CommentThread) {
+    const parsed = Date.parse(comment.created_at);
+    if (!Number.isFinite(parsed)) {
+      return '';
+    }
+    return new Intl.DateTimeFormat(settings.ui_locale, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(parsed);
+  }
+
   function isProjectedListBlock(
     block: DocumentState['sections'][number]['blocks'][number]
   ): block is ListBlock {
@@ -1486,6 +1640,9 @@
         break;
       case 'insertLink':
         void openLinkPanel();
+        break;
+      case 'insertComment':
+        openCommentsPanelForShortcut().catch(setStatusFromError);
         break;
       case 'bulletList':
         applyList('bullet_list');
@@ -1998,6 +2155,19 @@
       {/if}
     </div>
 
+    <div class="tool-group comment-tools" role="group" aria-label={tr('comments')}>
+      <button
+        aria-expanded={commentsPanelOpen}
+        class:active-format={commentsPanelOpen}
+        disabled={!editorEditable && commentThreads.length === 0}
+        title={shortcutTitle(tr('comments'), 'insertComment')}
+        type="button"
+        onclick={() => (commentsPanelOpen = !commentsPanelOpen)}
+      >
+        {tr('comments')}{unresolvedCommentCount > 0 ? ` ${unresolvedCommentCount}` : ''}
+      </button>
+    </div>
+
     <div class="tool-group font-tools" role="group" aria-label={tr('fontControls')}>
       <select
         aria-label={tr('fontFamily')}
@@ -2452,6 +2622,57 @@
               </li>
             {/each}
           </ul>
+        {/if}
+
+        {#if commentsPanelOpen}
+          <section class="comments-panel" aria-label={tr('comments')}>
+            <div class="sidebar-section-heading">
+              <h2>{tr('comments')}</h2>
+              <span>{unresolvedCommentCount}/{commentThreads.length}</span>
+            </div>
+            <div class="comment-add-box">
+              <label>
+                {tr('commentBody')}
+                <textarea
+                  bind:this={commentBodyInput}
+                  bind:value={newCommentBody}
+                  disabled={!editorEditable}
+                  maxlength={maxCommentBodyChars}
+                  rows="3"
+                ></textarea>
+              </label>
+              <button
+                disabled={!editorEditable || selectedCommentText.length === 0 || newCommentBody.trim().length === 0}
+                type="button"
+                onclick={addCommentToSelection}
+              >
+                {tr('addComment')}
+              </button>
+            </div>
+            {#if commentThreads.length > 0}
+              <ul class="comments-list">
+                {#each commentThreads as comment}
+                  <li class:resolved-comment={comment.resolved} class:active-comment={activeCommentId === comment.id}>
+                    <button class="comment-jump" type="button" onclick={() => jumpToComment(comment)}>
+                      <span class="comment-author">{comment.author || localCommentAuthor}</span>
+                      {#if commentTimestamp(comment)}
+                        <span class="comment-time">{commentTimestamp(comment)}</span>
+                      {/if}
+                      <span class="comment-body">{comment.body}</span>
+                    </button>
+                    <div class="comment-actions">
+                      <button type="button" onclick={() => setCommentResolved(comment, !comment.resolved)}>
+                        {comment.resolved ? tr('reopen') : tr('resolve')}
+                      </button>
+                      <button type="button" onclick={() => deleteComment(comment)}>{tr('deleteComment')}</button>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="empty-sidebar-note">{tr('noComments')}</p>
+            {/if}
+          </section>
         {/if}
 
         {#if fileState.recent_documents.length > 0}

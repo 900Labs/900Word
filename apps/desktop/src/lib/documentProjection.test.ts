@@ -410,6 +410,84 @@ describe('documentToText', () => {
     ]);
   });
 
+  it('round-trips comment marks alongside formatting, links, and text style', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      comments: {
+        'cmt-abc123': {
+          id: 'cmt-abc123',
+          author: 'Local User',
+          body: 'Check this wording.',
+          created_at: '2026-06-25T00:00:00Z',
+          updated_at: '2026-06-25T00:00:00Z',
+          resolved: false
+        },
+        'cmt-overlap': {
+          id: 'cmt-overlap',
+          author: 'Local User',
+          body: 'Second note on the same range.',
+          created_at: '2026-06-25T00:01:00Z',
+          updated_at: '2026-06-25T00:01:00Z',
+          resolved: false
+        }
+      },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Paragraph',
+              value: {
+                style: 'body',
+                inlines: [
+                  {
+                    text: 'Commented link',
+                    marks: ['Bold'],
+                    link: 'https://example.invalid',
+                    comment_ids: ['cmt-abc123', 'cmt-overlap'],
+                    style: {
+                      font_family: 'serif',
+                      font_size_pt: 14,
+                      text_color: '#1f2937'
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+
+    expect(editorDoc.content[0]).toEqual({
+      type: 'paragraph',
+      attrs: { style: 'body' },
+      content: [
+        {
+          type: 'text',
+          text: 'Commented link',
+          marks: [
+            { type: 'bold' },
+            { type: 'link', attrs: { href: 'https://example.invalid' } },
+            { type: 'comment', attrs: { id: 'cmt-abc123' } },
+            { type: 'comment', attrs: { id: 'cmt-overlap' } },
+            {
+              type: 'textStyle',
+              attrs: {
+                fontFamily: 'serif',
+                fontSizePt: 14,
+                textColor: '#1f2937',
+                highlightColor: null
+              }
+            }
+          ]
+        }
+      ]
+    });
+    expect(editorDocToWordCoreBlocks(editorDoc)).toEqual(document.sections[0].blocks);
+  });
+
   it('projects paragraph direct formatting and inline style to word-core JSON', () => {
     expect(
       editorDocToWordCoreBlocks({

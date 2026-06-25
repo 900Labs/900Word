@@ -33,6 +33,7 @@ describe('supportedSchema', () => {
   it('contains only word-core inline mark projections', () => {
     expect(Object.keys(supportedSchema.marks).sort()).toEqual([
       'bold',
+      'comment',
       'italic',
       'link',
       'strikethrough',
@@ -49,8 +50,61 @@ describe('supportedSchema', () => {
       'superscript',
       'subscript',
       'textStyle',
-      'link'
+      'link',
+      'comment'
     ]);
+  });
+
+  it('accepts only bounded local comment marks', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Commented', marks: [{ type: 'comment', attrs: { id: 'cmt-abc123' } }] }]
+        }
+      ]
+    });
+
+    expect(doc.firstChild?.firstChild?.marks[0].type.name).toBe('comment');
+
+    const overlapping = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [
+            {
+              type: 'text',
+              text: 'Overlap',
+              marks: [
+                { type: 'comment', attrs: { id: 'cmt-first' } },
+                { type: 'comment', attrs: { id: 'cmt-second' } }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    expect(overlapping.firstChild?.firstChild?.marks.map((mark) => mark.attrs.id)).toEqual([
+      'cmt-first',
+      'cmt-second'
+    ]);
+
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            attrs: { style: 'body' },
+            content: [{ type: 'text', text: 'Unsafe', marks: [{ type: 'comment', attrs: { id: '../bad' } }] }]
+          }
+        ]
+      })
+    ).toThrow('unsupported comment id');
   });
 
   it('preserves list nodes and direct text style attrs', () => {
