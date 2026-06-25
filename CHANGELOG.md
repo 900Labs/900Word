@@ -48,6 +48,7 @@ All notable changes to 900Word are tracked here.
 - Local Hunspell dictionary install MVP under Settings with native `.aff`/`.dic` selection, normalized app-data copies, generic selected-state labels, privacy-safe install errors, and no downloads, remote lookup, cloud sync, telemetry, plugin dictionaries, or document metadata changes.
 - Local user dictionary removal MVP under Settings with user-only remove actions, bundled dictionary protection, app-data-only Hunspell pair deletion, personal word preservation, active dictionary fallback, generic errors, and no paths, filenames, network behavior, telemetry, plugin dictionaries, or document metadata changes.
 - Table Cell Styling MVP with durable bounded cell background, per-cell text alignment, and border visible/hidden metadata in `word-core`, compact contextual editor controls, 900Word-authored ODT `word900` preservation, and sanitized HTML/print/PDF projection without table layout engine, merged cells, formulas, network behavior, telemetry, accounts, or cloud sync.
+- Plain-Text Tabular Paste MVP that turns bounded simple TSV clipboard text into supported editable ProseMirror tables, pads one-cell-short rows with editable empty cells, and falls back to existing paragraph/list paste for out-of-bounds or irregular input without adding spreadsheet parsing, telemetry, network behavior, accounts, or cloud sync.
 
 ### Fixed
 
