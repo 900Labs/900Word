@@ -546,3 +546,12 @@ Status: complete.
 - Derive cell text alignment from simple matching paragraph `w:jc` values inside supported table cells.
 - Export 900Word-authored safe cell fills, hidden-border markers, and simple cell text alignment into generated DOCX table cells.
 - Keep ODT canonical and keep arbitrary colors, partial/per-side borders, rich table themes, merged cells, formulas, deterministic table layout, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
+
+## Sprint 058: DOCX Paragraph Formatting Interoperability
+
+Status: complete.
+
+- Import simple DOCX paragraph `w:pPr` alignment, automatic line spacing, spacing before/after, start/end indents, and first-line or hanging indents into the existing bounded `word-core` paragraph format model.
+- Export valid 900Word-authored paragraph formatting as generated DOCX `w:pPr` spacing, indent, and alignment tags.
+- Ignore unsupported line rules, out-of-bounds values, complex Word style inheritance, tabs, borders, shading, outline/keep flags, arbitrary paragraph settings, and full layout fidelity.
+- Keep ODT canonical and keep telemetry, network behavior, accounts, cloud sync, rich Word styles, and heavy dependencies deferred.

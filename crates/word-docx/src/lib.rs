@@ -52,6 +52,12 @@ const MAX_DOCX_COMMENT_PARTS: usize = 4;
 const MAX_DOCX_COMMENTS: usize = 128;
 const MAX_DOCX_REVISIONS: usize = 512;
 const DOCX_TABLE_GRID_TOTAL_DXA: u32 = 10_000;
+const DOCX_LINE_SPACING_BASE: u32 = 240;
+const MAX_DOCX_PARAGRAPH_SPACING_MM: u16 = 100;
+const MAX_DOCX_PARAGRAPH_INDENT_MM: u16 = 100;
+const MAX_DOCX_FIRST_LINE_INDENT_MM: i16 = 100;
+const MIN_DOCX_LINE_SPACING_PER_MILLE: u16 = 500;
+const MAX_DOCX_LINE_SPACING_PER_MILLE: u16 = 3000;
 const IMPORTED_DOCX_REVISION_AUTHOR: &str = "External Reviewer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,7 +437,7 @@ struct ParagraphProperties {
     list_marker: Option<ListMarker>,
     toc_role: Option<TocParagraphRole>,
     bookmark_id: Option<String>,
-    alignment: Option<ParagraphAlignment>,
+    format: ParagraphFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2356,6 +2362,75 @@ fn docx_paragraph_alignment(value: String) -> Option<ParagraphAlignment> {
     }
 }
 
+fn docx_twips_to_mm(twips: i32) -> Option<i16> {
+    let millimeters = (f64::from(twips) * 25.4 / 1440.0).round();
+    if millimeters < f64::from(i16::MIN) || millimeters > f64::from(i16::MAX) {
+        return None;
+    }
+    Some(millimeters as i16)
+}
+
+fn docx_twips_to_bounded_u16_mm(twips: i32, max_mm: u16) -> Option<u16> {
+    if twips < 0 {
+        return None;
+    }
+    let millimeters = docx_twips_to_mm(twips)?;
+    if millimeters < 0 || millimeters > max_mm as i16 {
+        return None;
+    }
+    Some(millimeters as u16)
+}
+
+fn docx_twips_to_bounded_i16_mm(twips: i32, max_abs_mm: i16) -> Option<i16> {
+    let millimeters = docx_twips_to_mm(twips)?;
+    if i32::from(millimeters).abs() > i32::from(max_abs_mm) {
+        return None;
+    }
+    Some(millimeters)
+}
+
+fn mm_to_docx_twips(mm: u16) -> u32 {
+    (f64::from(mm) * 1440.0 / 25.4).round() as u32
+}
+
+fn signed_mm_to_docx_twips(mm: i16) -> u32 {
+    (f64::from(mm.unsigned_abs()) * 1440.0 / 25.4).round() as u32
+}
+
+fn docx_line_spacing_to_per_mille(start: &BytesStart<'_>) -> Result<Option<u16>, DocxError> {
+    let Some(line) = attr_value(start, b"line", DOCUMENT_XML)? else {
+        return Ok(None);
+    };
+    if !matches!(
+        attr_value(start, b"lineRule", DOCUMENT_XML)?.as_deref(),
+        None | Some("auto")
+    ) {
+        return Ok(None);
+    }
+    let Ok(line) = line.parse::<u32>() else {
+        return Ok(None);
+    };
+    let per_mille = ((u64::from(line) * 1000) + (u64::from(DOCX_LINE_SPACING_BASE) / 2))
+        / u64::from(DOCX_LINE_SPACING_BASE);
+    if !(u64::from(MIN_DOCX_LINE_SPACING_PER_MILLE)..=u64::from(MAX_DOCX_LINE_SPACING_PER_MILLE))
+        .contains(&per_mille)
+    {
+        return Ok(None);
+    }
+    Ok(Some(per_mille as u16))
+}
+
+fn per_mille_to_docx_line_spacing(per_mille: u16) -> u32 {
+    ((u32::from(per_mille) * DOCX_LINE_SPACING_BASE) + 500) / 1000
+}
+
+fn parse_docx_i32_attr(start: &BytesStart<'_>, attr: &[u8]) -> Result<Option<i32>, DocxError> {
+    let Some(value) = attr_value(start, attr, DOCUMENT_XML)? else {
+        return Ok(None);
+    };
+    Ok(value.parse::<i32>().ok())
+}
+
 fn parse_table_row(
     reader: &mut Reader<&[u8]>,
     context: &DocxImportContext<'_>,
@@ -2877,8 +2952,22 @@ fn parse_paragraph_properties(
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"jc" =>
             {
-                properties.alignment =
+                properties.format.alignment =
                     attr_value(&start, b"val", DOCUMENT_XML)?.and_then(docx_paragraph_alignment);
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"spacing" => {
+                apply_docx_paragraph_spacing(&start, &mut properties.format)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"spacing" => {
+                apply_docx_paragraph_spacing(&start, &mut properties.format)?;
+                skip_element(reader, b"spacing", DOCUMENT_XML)?;
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"ind" => {
+                apply_docx_paragraph_indent(&start, &mut properties.format)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"ind" => {
+                apply_docx_paragraph_indent(&start, &mut properties.format)?;
+                skip_element(reader, b"ind", DOCUMENT_XML)?;
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"pPr" => break,
             Event::Start(start)
@@ -2909,6 +2998,56 @@ fn parse_paragraph_properties(
     }
 
     Ok(properties)
+}
+
+fn apply_docx_paragraph_spacing(
+    start: &BytesStart<'_>,
+    format: &mut ParagraphFormat,
+) -> Result<(), DocxError> {
+    if let Some(line_spacing) = docx_line_spacing_to_per_mille(start)? {
+        format.line_spacing_per_mille = Some(line_spacing);
+    }
+    if let Some(twips) = parse_docx_i32_attr(start, b"before")? {
+        if let Some(mm) = docx_twips_to_bounded_u16_mm(twips, MAX_DOCX_PARAGRAPH_SPACING_MM) {
+            format.spacing_before_mm = Some(mm);
+        }
+    }
+    if let Some(twips) = parse_docx_i32_attr(start, b"after")? {
+        if let Some(mm) = docx_twips_to_bounded_u16_mm(twips, MAX_DOCX_PARAGRAPH_SPACING_MM) {
+            format.spacing_after_mm = Some(mm);
+        }
+    }
+    Ok(())
+}
+
+fn apply_docx_paragraph_indent(
+    start: &BytesStart<'_>,
+    format: &mut ParagraphFormat,
+) -> Result<(), DocxError> {
+    if let Some(twips) =
+        parse_docx_i32_attr(start, b"left")?.or(parse_docx_i32_attr(start, b"start")?)
+    {
+        if let Some(mm) = docx_twips_to_bounded_u16_mm(twips, MAX_DOCX_PARAGRAPH_INDENT_MM) {
+            format.indent_start_mm = Some(mm);
+        }
+    }
+    if let Some(twips) =
+        parse_docx_i32_attr(start, b"right")?.or(parse_docx_i32_attr(start, b"end")?)
+    {
+        if let Some(mm) = docx_twips_to_bounded_u16_mm(twips, MAX_DOCX_PARAGRAPH_INDENT_MM) {
+            format.indent_end_mm = Some(mm);
+        }
+    }
+    if let Some(twips) = parse_docx_i32_attr(start, b"firstLine")? {
+        if let Some(mm) = docx_twips_to_bounded_i16_mm(twips, MAX_DOCX_FIRST_LINE_INDENT_MM) {
+            format.first_line_indent_mm = Some(mm);
+        }
+    } else if let Some(twips) = parse_docx_i32_attr(start, b"hanging")? {
+        if let Some(mm) = docx_twips_to_bounded_i16_mm(twips, MAX_DOCX_FIRST_LINE_INDENT_MM) {
+            format.first_line_indent_mm = Some(-mm);
+        }
+    }
+    Ok(())
 }
 
 fn apply_paragraph_bookmark(
@@ -3979,12 +4118,12 @@ fn paragraph_content_to_blocks(
                 Vec::new(),
                 properties.heading_level,
                 properties.bookmark_id.clone(),
-                properties.alignment,
+                properties.format.clone(),
             ),
             list_marker: properties.list_marker,
             toc_role: properties.toc_role,
             counts_for_cell_alignment: true,
-            paragraph_alignment: properties.alignment,
+            paragraph_alignment: properties.format.alignment,
         });
     }
     blocks
@@ -4003,12 +4142,12 @@ fn flush_paragraph_block(
             std::mem::take(inlines),
             properties.heading_level,
             properties.bookmark_id.clone(),
-            properties.alignment,
+            properties.format.clone(),
         ),
         list_marker: properties.list_marker,
         toc_role: properties.toc_role,
         counts_for_cell_alignment: true,
-        paragraph_alignment: properties.alignment,
+        paragraph_alignment: properties.format.alignment,
     });
 }
 
@@ -4016,7 +4155,7 @@ fn paragraph_block_from_inlines(
     inlines: Vec<Inline>,
     heading_level: Option<u8>,
     bookmark_id: Option<String>,
-    alignment: Option<ParagraphAlignment>,
+    format: ParagraphFormat,
 ) -> Block {
     if let Some(level) = heading_level {
         Block::Heading(Heading {
@@ -4028,10 +4167,7 @@ fn paragraph_block_from_inlines(
         Block::Paragraph(Paragraph {
             bookmark_id,
             style: StyleId::from("body"),
-            format: ParagraphFormat {
-                alignment,
-                ..Default::default()
-            },
+            format,
             inlines,
         })
     }
@@ -5009,7 +5145,11 @@ fn render_paragraph_xml_with_alignment(
 ) {
     output.push_str("<w:p>");
     let alignment = alignment_override.or(paragraph.format.alignment);
-    if list_marker.is_some() || alignment.is_some() {
+    if list_marker.is_some()
+        || alignment.is_some()
+        || has_docx_paragraph_spacing(&paragraph.format)
+        || has_docx_paragraph_indent(&paragraph.format)
+    {
         output.push_str("<w:pPr>");
         if let Some(marker) = list_marker {
             output.push_str("<w:numPr><w:ilvl w:val=\"");
@@ -5018,6 +5158,8 @@ fn render_paragraph_xml_with_alignment(
             output.push_str(if marker.ordered { "2" } else { "1" });
             output.push_str("\"/></w:numPr>");
         }
+        render_docx_paragraph_spacing(&paragraph.format, output);
+        render_docx_paragraph_indent(&paragraph.format, output);
         if let Some(alignment) = alignment {
             output.push_str("<w:jc w:val=\"");
             output.push_str(docx_alignment_value(alignment));
@@ -5036,6 +5178,100 @@ fn render_paragraph_xml_with_alignment(
     );
     render_bookmark_end_xml(context.bookmarks, paragraph.bookmark_id.as_deref(), output);
     output.push_str("</w:p>");
+}
+
+fn has_docx_paragraph_spacing(format: &ParagraphFormat) -> bool {
+    format.line_spacing_per_mille.is_some_and(|value| {
+        (MIN_DOCX_LINE_SPACING_PER_MILLE..=MAX_DOCX_LINE_SPACING_PER_MILLE).contains(&value)
+    }) || format
+        .spacing_before_mm
+        .is_some_and(|value| value <= MAX_DOCX_PARAGRAPH_SPACING_MM)
+        || format
+            .spacing_after_mm
+            .is_some_and(|value| value <= MAX_DOCX_PARAGRAPH_SPACING_MM)
+}
+
+fn render_docx_paragraph_spacing(format: &ParagraphFormat, output: &mut String) {
+    if !has_docx_paragraph_spacing(format) {
+        return;
+    }
+    output.push_str("<w:spacing");
+    if let Some(line_spacing) = format.line_spacing_per_mille.filter(|value| {
+        (MIN_DOCX_LINE_SPACING_PER_MILLE..=MAX_DOCX_LINE_SPACING_PER_MILLE).contains(value)
+    }) {
+        output.push_str(" w:line=\"");
+        output.push_str(&per_mille_to_docx_line_spacing(line_spacing).to_string());
+        output.push_str("\" w:lineRule=\"auto\"");
+    }
+    if let Some(spacing_before) = format
+        .spacing_before_mm
+        .filter(|value| *value <= MAX_DOCX_PARAGRAPH_SPACING_MM)
+    {
+        output.push_str(" w:before=\"");
+        output.push_str(&mm_to_docx_twips(spacing_before).to_string());
+        output.push('"');
+    }
+    if let Some(spacing_after) = format
+        .spacing_after_mm
+        .filter(|value| *value <= MAX_DOCX_PARAGRAPH_SPACING_MM)
+    {
+        output.push_str(" w:after=\"");
+        output.push_str(&mm_to_docx_twips(spacing_after).to_string());
+        output.push('"');
+    }
+    output.push_str("/>");
+}
+
+fn has_docx_paragraph_indent(format: &ParagraphFormat) -> bool {
+    format
+        .indent_start_mm
+        .is_some_and(|value| value <= MAX_DOCX_PARAGRAPH_INDENT_MM)
+        || format
+            .indent_end_mm
+            .is_some_and(|value| value <= MAX_DOCX_PARAGRAPH_INDENT_MM)
+        || format
+            .first_line_indent_mm
+            .is_some_and(docx_first_line_indent_in_bounds)
+}
+
+fn render_docx_paragraph_indent(format: &ParagraphFormat, output: &mut String) {
+    if !has_docx_paragraph_indent(format) {
+        return;
+    }
+    output.push_str("<w:ind");
+    if let Some(indent_start) = format
+        .indent_start_mm
+        .filter(|value| *value <= MAX_DOCX_PARAGRAPH_INDENT_MM)
+    {
+        output.push_str(" w:left=\"");
+        output.push_str(&mm_to_docx_twips(indent_start).to_string());
+        output.push('"');
+    }
+    if let Some(indent_end) = format
+        .indent_end_mm
+        .filter(|value| *value <= MAX_DOCX_PARAGRAPH_INDENT_MM)
+    {
+        output.push_str(" w:right=\"");
+        output.push_str(&mm_to_docx_twips(indent_end).to_string());
+        output.push('"');
+    }
+    if let Some(first_line_indent) = format
+        .first_line_indent_mm
+        .filter(|value| docx_first_line_indent_in_bounds(*value))
+    {
+        if first_line_indent < 0 {
+            output.push_str(" w:hanging=\"");
+        } else {
+            output.push_str(" w:firstLine=\"");
+        }
+        output.push_str(&signed_mm_to_docx_twips(first_line_indent).to_string());
+        output.push('"');
+    }
+    output.push_str("/>");
+}
+
+fn docx_first_line_indent_in_bounds(value: i16) -> bool {
+    i32::from(value).abs() <= i32::from(MAX_DOCX_FIRST_LINE_INDENT_MM)
 }
 
 fn docx_alignment_value(alignment: ParagraphAlignment) -> &'static str {
@@ -6601,6 +6837,93 @@ mod tests {
     }
 
     #[test]
+    fn imports_docx_paragraph_formatting_from_safe_subset() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:pPr>
+      <w:spacing w:line="360" w:lineRule="auto" w:before="170" w:after="283"/>
+      <w:ind w:left="454" w:right="227" w:hanging="170"/>
+      <w:jc w:val="both"/>
+    </w:pPr>
+    <w:r><w:t>Formatted paragraph</w:t></w:r>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("formatted paragraph should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(
+            paragraph.format,
+            ParagraphFormat {
+                alignment: Some(ParagraphAlignment::Justify),
+                line_spacing_per_mille: Some(1500),
+                spacing_before_mm: Some(3),
+                spacing_after_mm: Some(5),
+                indent_start_mm: Some(8),
+                indent_end_mm: Some(4),
+                first_line_indent_mm: Some(-3),
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_unsupported_docx_paragraph_formatting_values() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:pPr>
+      <w:spacing w:line="480" w:lineRule="exact" w:before="999999" w:after="-1"/>
+      <w:ind w:left="-1" w:right="999999" w:firstLine="999999"/>
+    </w:pPr>
+    <w:r><w:t>Unsupported formatting</w:t></w:r>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("paragraph should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(paragraph.format, ParagraphFormat::default());
+    }
+
+    #[test]
+    fn ignores_extreme_docx_paragraph_formatting_without_overflow() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:pPr>
+      <w:spacing w:line="4294967295" w:before="2147483647"/>
+      <w:ind w:firstLine="-1857940166" w:hanging="-1857940166"/>
+    </w:pPr>
+    <w:r><w:t>Extreme formatting</w:t></w:r>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("extreme formatting should not panic");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(paragraph.format, ParagraphFormat::default());
+    }
+
+    #[test]
     fn imports_unsafe_hyperlinks_as_plain_text_with_warning() {
         let bytes = synthetic_docx(
             r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -7850,6 +8173,42 @@ mod tests {
     }
 
     #[test]
+    fn exports_and_imports_docx_paragraph_formatting() {
+        let mut document = Document::new_untitled();
+        let expected_format = ParagraphFormat {
+            alignment: Some(ParagraphAlignment::Center),
+            line_spacing_per_mille: Some(1500),
+            spacing_before_mm: Some(3),
+            spacing_after_mm: Some(5),
+            indent_start_mm: Some(8),
+            indent_end_mm: Some(4),
+            first_line_indent_mm: Some(3),
+        };
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: expected_format.clone(),
+            inlines: vec![Inline::text("Formatted export")],
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write formatted paragraph");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+
+        assert!(document_xml.contains(
+            r#"<w:spacing w:line="360" w:lineRule="auto" w:before="170" w:after="283"/>"#
+        ));
+        assert!(document_xml.contains(r#"<w:ind w:left="454" w:right="227" w:firstLine="170"/>"#));
+        assert!(document_xml.contains(r#"<w:jc w:val="center"/>"#));
+
+        let parsed = read_docx_bytes(&bytes).expect("formatted paragraph should import");
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("formatted paragraph should round-trip through docx converter");
+        };
+        assert_eq!(paragraph.format, expected_format);
+    }
+
+    #[test]
     fn exports_and_imports_generated_docx_toc_with_bookmark_targets() {
         let mut document = Document::new_untitled();
         document.sections[0].blocks = vec![
@@ -8184,6 +8543,44 @@ mod tests {
         };
         assert_eq!(first.format.alignment, Some(ParagraphAlignment::Center));
         assert_eq!(second.format.alignment, None);
+    }
+
+    #[test]
+    fn keeps_docx_table_cell_paragraph_format_when_promoting_common_alignment() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:tbl>
+    <w:tr>
+      <w:tc>
+        <w:p>
+          <w:pPr><w:spacing w:line="360" w:lineRule="auto" w:after="283"/><w:ind w:left="454"/><w:jc w:val="center"/></w:pPr>
+          <w:r><w:t>Formatted aligned</w:t></w:r>
+        </w:p>
+      </w:tc>
+    </w:tr>
+  </w:tbl>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let parsed = read_docx_bytes(&bytes).expect("formatted aligned cell should import");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("table should import");
+        };
+        let cell = &table.rows[0].cells[0];
+        assert_eq!(
+            cell.presentation.text_alignment,
+            Some(ParagraphAlignment::Center)
+        );
+        let Block::Paragraph(paragraph) = &cell.blocks[0] else {
+            panic!("cell paragraph should remain editable");
+        };
+        assert_eq!(paragraph.format.alignment, None);
+        assert_eq!(paragraph.format.line_spacing_per_mille, Some(1500));
+        assert_eq!(paragraph.format.spacing_after_mm, Some(5));
+        assert_eq!(paragraph.format.indent_start_mm, Some(8));
     }
 
     #[test]
