@@ -1649,7 +1649,7 @@ export function pastePlainTextAsBlocksTransaction(
   text: string,
   fallbackSelection?: EditorSelectionSnapshot
 ): Transaction | undefined {
-  if (!text.includes('\n')) {
+  if (!hasPlainTextLineBreak(text)) {
     return undefined;
   }
 
@@ -2470,34 +2470,54 @@ function nodeChildren(node: ProseMirrorNode): ProseMirrorNode[] {
 }
 
 function createTableNode(rows: number, columns: number): ProseMirrorNode | undefined {
+  if (!validTableDimensions(rows, columns)) {
+    return undefined;
+  }
+
+  return createTableNodeFromCells(
+    Array.from({ length: rows }, () => Array.from({ length: columns }, () => ''))
+  );
+}
+
+function createTableNodeFromCells(cells: string[][]): ProseMirrorNode | undefined {
   const tableType = supportedSchema.nodes.table;
   const rowType = supportedSchema.nodes.table_row;
-  if (
-    !tableType ||
-    !rowType ||
-    !validTableDimension(rows, MIN_TABLE_ROWS, MAX_TABLE_ROWS) ||
-    !validTableDimension(columns, MIN_TABLE_COLUMNS, MAX_TABLE_COLUMNS)
-  ) {
+  if (!tableType || !rowType) {
+    return undefined;
+  }
+
+  const rows = cells.length;
+  const columns = cells[0]?.length ?? 0;
+  if (!validTableDimensions(rows, columns) || cells.some((row) => row.length !== columns)) {
     return undefined;
   }
 
   return tableType.create(
     null,
-    Array.from({ length: rows }, () => createEmptyTableRow(columns))
+    cells.map((row) => createTableRowFromCells(row))
   );
 }
 
 function createEmptyTableRow(columns: number): ProseMirrorNode {
-  return supportedSchema.nodes.table_row.create(
-    null,
-    Array.from({ length: columns }, () => createEmptyTableCell())
-  );
+  return createTableRowFromCells(Array.from({ length: columns }, () => ''));
+}
+
+function createTableRowFromCells(cells: string[]): ProseMirrorNode {
+  return supportedSchema.nodes.table_row.create(null, cells.map((cell) => createTableCell(cell)));
 }
 
 function createEmptyTableCell(): ProseMirrorNode {
+  return createTableCell('');
+}
+
+function createTableCell(text: string): ProseMirrorNode {
+  const paragraph = supportedSchema.nodes.paragraph.create(
+    { style: 'body' },
+    text.length > 0 ? supportedSchema.text(text) : undefined
+  );
   return supportedSchema.nodes.table_cell.create(
     { unsupported: false, sourceEmpty: false },
-    supportedSchema.nodes.paragraph.create({ style: 'body' })
+    paragraph
   );
 }
 
@@ -2544,6 +2564,13 @@ function validTableDimension(value: number, min: number, max: number): boolean {
   return Number.isInteger(value) && value >= min && value <= max;
 }
 
+function validTableDimensions(rows: number, columns: number): boolean {
+  return (
+    validTableDimension(rows, MIN_TABLE_ROWS, MAX_TABLE_ROWS) &&
+    validTableDimension(columns, MIN_TABLE_COLUMNS, MAX_TABLE_COLUMNS)
+  );
+}
+
 function isEmptyParagraphNode(node: ProseMirrorNode): boolean {
   return node.type.name === 'paragraph' && node.textContent.length === 0;
 }
@@ -2564,9 +2591,8 @@ function firstTextblockStartBetween(doc: ProseMirrorNode, from: number, to: numb
 }
 
 function parsePlainTextBlocks(text: string): ProseMirrorNode[] {
-  const lines = text
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
+  const normalized = normalizePlainTextNewlines(text);
+  const lines = normalized
     .split('\n')
     .map((line) => line.trimEnd())
     .filter((line) => line.trim().length > 0);
@@ -2595,12 +2621,57 @@ function parsePlainTextBlocks(text: string): ProseMirrorNode[] {
     ];
   }
 
+  const table = parsePlainTextTable(normalized);
+  if (table) {
+    return [table];
+  }
+
   return lines.map((line) =>
     supportedSchema.nodes.paragraph.create(
       { style: 'body' },
       line.trim().length > 0 ? supportedSchema.text(line.trim()) : undefined
     )
   );
+}
+
+function normalizePlainTextNewlines(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function hasPlainTextLineBreak(text: string): boolean {
+  return text.includes('\n') || text.includes('\r');
+}
+
+function parsePlainTextTable(text: string): ProseMirrorNode | undefined {
+  if (!text.includes('\t')) {
+    return undefined;
+  }
+
+  const rows = text.split('\n');
+  while (rows.length > 0 && rows[rows.length - 1] === '') {
+    rows.pop();
+  }
+  if (
+    rows.length < 2 ||
+    rows.length > MAX_TABLE_ROWS ||
+    rows.some((row) => row.length === 0 || (!row.includes('\t') && row.trim().length === 0))
+  ) {
+    return undefined;
+  }
+
+  const cells = rows.map((row) => row.split('\t'));
+  if (cells.some((row) => row.every((cell) => cell.trim().length === 0))) {
+    return undefined;
+  }
+  const columns = Math.max(...cells.map((row) => row.length));
+  if (!validTableDimension(columns, MIN_TABLE_COLUMNS, MAX_TABLE_COLUMNS)) {
+    return undefined;
+  }
+  if (cells.some((row) => row.length < columns - 1)) {
+    return undefined;
+  }
+
+  return createTableNodeFromCells(cells.map((row) => [...row, ...Array.from({ length: columns - row.length }, () => '')]));
 }
 
 function parsePlainTextListLine(line: string): { ordered: boolean; text: string; level: number } | undefined {

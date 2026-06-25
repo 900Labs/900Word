@@ -455,3 +455,13 @@ Status: complete.
 - Preserve 900Word-authored metadata through ODT save/reopen with bounded `word900` attributes.
 - Reflect supported cell background, alignment, and border visibility in sanitized HTML/print HTML and the lightweight PDF table projection where practical.
 - Keep merged cells, formulas, cell sizing, rich table themes, arbitrary colors, per-side borders, external table-style compatibility claims, network behavior, telemetry, accounts, and cloud sync out of scope.
+
+## Sprint 049: Plain-Text Tabular Paste MVP
+
+Status: complete.
+
+- Detect simple tab-separated plain text on the existing multiline paste path and insert a supported editable table when the selection is an empty top-level block or full top-level content.
+- Bound pasted tables to the existing 1-8 row and 1-8 column table limits, require at least two rows and one tab, and normalize CRLF/CR line endings.
+- Pad simple one-cell-short rows with editable empty cells while falling back to existing paragraph paste for out-of-bounds or too-irregular tabular text.
+- Keep list paste priority, native partial replacement paste behavior, `.odt` as canonical saved format, and `word-core` table sync unchanged.
+- Keep rich spreadsheet paste, formulas, merged cells, table sizing, HTML clipboard import, external spreadsheet parser dependencies, network behavior, telemetry, accounts, and cloud sync out of scope.

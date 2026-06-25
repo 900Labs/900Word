@@ -37,6 +37,7 @@ import {
   toggleEditorMarkTransaction
 } from './editor';
 import { supportedSchema } from './editorSchema';
+import { editorDocToWordCoreBlocks } from './documentProjection';
 
 describe('findEditorDocMatches', () => {
   it('does not match across paragraph boundaries', () => {
@@ -1375,6 +1376,143 @@ describe('findEditorDocMatches', () => {
     const nextState = state.apply(transaction!);
     expect(nextState.doc.childCount).toBe(2);
     expect(nextState.doc.child(1).textContent).toBe('Two');
+  });
+
+  it('pastes simple TSV text as a supported table', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'A1\tA2\nB1\tB2');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    const table = nextState.doc.child(0);
+    expect(table.type.name).toBe('table');
+    expect(table.childCount).toBe(2);
+    expect(table.child(0).childCount).toBe(2);
+    expect(table.child(0).child(0).textContent).toBe('A1');
+    expect(table.child(1).child(1).textContent).toBe('B2');
+    expect(selectionAncestorNames(nextState)).toContain('table_cell');
+    expect(editorDocToWordCoreBlocks(nextState.doc.toJSON())).toEqual([
+      {
+        type: 'Table',
+        value: {
+          rows: [
+            {
+              cells: [
+                { blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'A1', marks: [], link: null }] } }] },
+                { blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'A2', marks: [], link: null }] } }] }
+              ]
+            },
+            {
+              cells: [
+                { blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'B1', marks: [], link: null }] } }] },
+                { blocks: [{ type: 'Paragraph', value: { style: 'body', inlines: [{ text: 'B2', marks: [], link: null }] } }] }
+              ]
+            }
+          ]
+        }
+      }
+    ]);
+  });
+
+  it('normalizes CRLF TSV paste into table rows', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'A1\tA2\r\nB1\tB2');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.child(0).type.name).toBe('table');
+    expect(nextState.doc.child(0).child(1).child(0).textContent).toBe('B1');
+  });
+
+  it('normalizes CR-only TSV paste into table rows', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'A1\tA2\rB1\tB2');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.child(0).type.name).toBe('table');
+    expect(nextState.doc.child(0).child(1).child(0).textContent).toBe('B1');
+  });
+
+  it('pads a simple short TSV row with an editable empty cell', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'A1\tA2\nB1');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    const table = nextState.doc.child(0);
+    const paddedCell = table.child(1).child(1);
+    expect(table.type.name).toBe('table');
+    expect(paddedCell.attrs.sourceEmpty).toBe(false);
+    expect(paddedCell.textContent).toBe('');
+    expect(paddedCell.child(0).type.name).toBe('paragraph');
+  });
+
+  it('falls back to paragraph paste for too-irregular TSV text', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'A1\tA2\tA3\nB1');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.childCount).toBe(2);
+    expect(nextState.doc.child(0).type.name).toBe('paragraph');
+    expect(nextState.doc.child(0).textContent).toBe('A1\tA2\tA3');
+  });
+
+  it('falls back to paragraph paste for blank interior TSV rows', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, 'A1\tA2\n\t\nB1\tB2');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.child(0).type.name).toBe('paragraph');
+    expect(nextState.doc.child(0).textContent).toBe('A1\tA2');
+    expect(nextState.doc.child(1).textContent).toBe('B1\tB2');
+  });
+
+  it('falls back to paragraph paste when TSV dimensions exceed table bounds', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = pastePlainTextAsBlocksTransaction(state, '1\t2\t3\t4\t5\t6\t7\t8\t9\nA\tB\tC\tD\tE\tF\tG\tH\tI');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.child(0).type.name).toBe('paragraph');
+    expect(nextState.doc.child(1).textContent).toBe('A\tB\tC\tD\tE\tF\tG\tH\tI');
   });
 
   it('inserts a default 2x2 table at the toolbar selection', () => {
