@@ -52,6 +52,7 @@ All notable changes to 900Word are tracked here.
 - Plain-Text Tabular Paste MVP that turns bounded simple TSV clipboard text into supported editable ProseMirror tables, pads one-cell-short rows with editable empty cells, and falls back to existing paragraph/list paste for out-of-bounds or irregular input without adding spreadsheet parsing, telemetry, network behavior, accounts, or cloud sync.
 - JPEG Import Metadata Stripping MVP that removes APP0-APP15 and COM marker payloads from accepted local JPEG/JPG imports before embedding document assets, without decoding, recompressing, resizing, downsampling, adding heavy image dependencies, or changing PNG/GIF/WebP import behavior.
 - Table Column Widths MVP with durable bounded per-mille column width hints for rectangular editable tables, compact contextual width controls, 900Word-authored ODT `word900` preservation, sanitized HTML/print colgroups, and proportional lightweight PDF table projection without adding a full layout engine or arbitrary CSS.
+- DOCX table width interoperability for bounded editable tables, importing simple `w:tblGrid` hints into sanitized per-mille `word-core` widths and exporting 900Word-authored widths as minimal generated DOCX grid hints while keeping ODT canonical and DOCX conversion-only.
 
 ### Fixed
 

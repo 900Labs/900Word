@@ -6,12 +6,13 @@ use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
     collect_ordered_note_references, normalize_comment_author, sanitize_bookmark_id,
-    validate_comment_body, validate_comment_id, validate_note_body, validate_note_id,
-    validate_note_reference, validate_tracked_change_id, AssetRef, Block, CommentThread, Document,
-    DocumentWarning, Heading, ImageBlock, ImagePresentation, Inline, InlineMark,
-    InlineNoteReference, ListBlock, ListItem, Note, NoteKind, PageField, PageRegion,
+    sanitize_table_column_widths, validate_comment_body, validate_comment_id, validate_note_body,
+    validate_note_id, validate_note_reference, validate_tracked_change_id, AssetRef, Block,
+    CommentThread, Document, DocumentWarning, Heading, ImageBlock, ImagePresentation, Inline,
+    InlineMark, InlineNoteReference, ListBlock, ListItem, Note, NoteKind, PageField, PageRegion,
     PageRegionBlock, PageRegionParagraph, PageRegions, Paragraph, StyleId, Table, TableCell,
     TableRow, TrackedChange, TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES,
+    MAX_TABLE_WIDTH_COLUMNS,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -47,6 +48,7 @@ const MAX_DOCX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_DOCX_COMMENT_PARTS: usize = 4;
 const MAX_DOCX_COMMENTS: usize = 128;
 const MAX_DOCX_REVISIONS: usize = 512;
+const DOCX_TABLE_GRID_TOTAL_DXA: u32 = 10_000;
 const IMPORTED_DOCX_REVISION_AUTHOR: &str = "External Reviewer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2160,13 +2162,41 @@ fn parse_table(
     state: &mut DocxBodyParseState<'_>,
 ) -> Result<Table, DocxError> {
     let mut rows = Vec::new();
+    let mut grid_widths = None;
+    let mut seen_grid = false;
+    let mut unsupported_width_shape = false;
     loop {
         match reader
             .read_event()
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"tblGrid" => {
+                if !seen_grid {
+                    seen_grid = true;
+                    grid_widths = parse_table_grid_widths(reader)?;
+                } else {
+                    unsupported_width_shape = true;
+                    grid_widths = None;
+                    skip_element(reader, b"tblGrid", DOCUMENT_XML)?;
+                }
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"tblGrid" => {
+                if !seen_grid {
+                    seen_grid = true;
+                    grid_widths = None;
+                } else {
+                    unsupported_width_shape = true;
+                    grid_widths = None;
+                }
+            }
             Event::Start(start) if local_name(start.name().as_ref()) == b"tr" => {
-                rows.push(parse_table_row(reader, context, numbering, state)?);
+                rows.push(parse_table_row(
+                    reader,
+                    context,
+                    numbering,
+                    state,
+                    &mut unsupported_width_shape,
+                )?);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tbl" => break,
             Event::Start(start) => {
@@ -2177,10 +2207,104 @@ fn parse_table(
             _ => {}
         }
     }
-    Ok(Table {
+    let mut table = Table {
         column_widths: Vec::new(),
         rows,
-    })
+    };
+    if !unsupported_width_shape {
+        if let Some(column_count) = table.editable_column_count() {
+            if let Some(widths) = grid_widths
+                .as_deref()
+                .and_then(|widths| normalize_docx_table_grid_widths(widths, column_count))
+            {
+                table.column_widths = widths;
+            }
+        }
+    }
+    Ok(table)
+}
+
+fn parse_table_grid_widths(reader: &mut Reader<&[u8]>) -> Result<Option<Vec<u64>>, DocxError> {
+    let mut widths = Vec::new();
+    let mut valid = true;
+    loop {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCUMENT_XML, err))?
+        {
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"gridCol" => {
+                valid &= push_docx_grid_column_width(&start, &mut widths)?;
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"gridCol" => {
+                valid &= push_docx_grid_column_width(&start, &mut widths)?;
+                skip_element(reader, b"gridCol", DOCUMENT_XML)?;
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == b"tblGrid" => break,
+            Event::Start(start) => {
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCUMENT_XML)?;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if valid && !widths.is_empty() && widths.len() <= MAX_TABLE_WIDTH_COLUMNS {
+        Ok(Some(widths))
+    } else {
+        Ok(None)
+    }
+}
+
+fn push_docx_grid_column_width(
+    start: &BytesStart<'_>,
+    widths: &mut Vec<u64>,
+) -> Result<bool, DocxError> {
+    let Some(value) = attr_value(start, b"w", DOCUMENT_XML)? else {
+        return Ok(false);
+    };
+    let Ok(width) = value.parse::<u64>() else {
+        return Ok(false);
+    };
+    if width == 0 {
+        return Ok(false);
+    }
+    widths.push(width);
+    Ok(widths.len() <= MAX_TABLE_WIDTH_COLUMNS)
+}
+
+fn normalize_docx_table_grid_widths(widths: &[u64], column_count: usize) -> Option<Vec<u16>> {
+    if widths.len() != column_count {
+        return None;
+    }
+    let total = widths
+        .iter()
+        .try_fold(0_u128, |total, width| total.checked_add(u128::from(*width)))?;
+    if total == 0 {
+        return None;
+    }
+
+    let mut normalized = Vec::with_capacity(widths.len());
+    let mut remainders = Vec::with_capacity(widths.len());
+    let mut normalized_total = 0_u16;
+    for (index, width) in widths.iter().enumerate() {
+        let scaled = u128::from(*width).checked_mul(1000)?;
+        let value = (scaled / total) as u16;
+        normalized_total = normalized_total.checked_add(value)?;
+        normalized.push(value);
+        remainders.push((index, scaled % total));
+    }
+
+    let mut remaining = 1000_u16.checked_sub(normalized_total)?;
+    remainders.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    for (index, _) in remainders {
+        if remaining == 0 {
+            break;
+        }
+        normalized[index] = normalized[index].checked_add(1)?;
+        remaining -= 1;
+    }
+
+    sanitize_table_column_widths(&normalized, column_count)
 }
 
 fn parse_table_row(
@@ -2188,6 +2312,7 @@ fn parse_table_row(
     context: &DocxImportContext<'_>,
     numbering: &NumberingMap,
     state: &mut DocxBodyParseState<'_>,
+    unsupported_width_shape: &mut bool,
 ) -> Result<TableRow, DocxError> {
     let mut cells = Vec::new();
     loop {
@@ -2196,10 +2321,18 @@ fn parse_table_row(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"tc" => {
-                cells.push(parse_table_cell(reader, context, numbering, state)?);
+                cells.push(parse_table_cell(
+                    reader,
+                    context,
+                    numbering,
+                    state,
+                    unsupported_width_shape,
+                )?);
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"trPr" => {
-                skip_element_with_revision_warning(reader, b"trPr", DOCUMENT_XML, state.warnings)?;
+                if skip_table_row_properties(reader, state.warnings)? {
+                    *unsupported_width_shape = true;
+                }
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tr" => break,
             Event::Start(start) => {
@@ -2218,6 +2351,7 @@ fn parse_table_cell(
     context: &DocxImportContext<'_>,
     numbering: &NumberingMap,
     state: &mut DocxBodyParseState<'_>,
+    unsupported_width_shape: &mut bool,
 ) -> Result<TableCell, DocxError> {
     let mut parsed = Vec::new();
     loop {
@@ -2232,6 +2366,7 @@ fn parse_table_cell(
                 }
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"tbl" => {
+                *unsupported_width_shape = true;
                 state.warnings.warn(
                     "docx_nested_table_degraded",
                     "Nested DOCX tables were imported as plain visible text",
@@ -2246,16 +2381,20 @@ fn parse_table_cell(
                 );
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"tcPr" => {
-                skip_element_with_revision_warning(reader, b"tcPr", DOCUMENT_XML, state.warnings)?;
+                if skip_table_cell_properties(reader, state.warnings)? {
+                    *unsupported_width_shape = true;
+                }
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tc" => break,
             Event::Empty(_) => {
+                *unsupported_width_shape = true;
                 state.warnings.warn(
                     "docx_unsupported_table_content",
                     "Unsupported DOCX table content was ignored during import",
                 );
             }
             Event::Start(start) => {
+                *unsupported_width_shape = true;
                 let end = local_name(start.name().as_ref()).to_vec();
                 skip_element(reader, &end, DOCUMENT_XML)?;
             }
@@ -3646,30 +3785,65 @@ fn skip_element(reader: &mut Reader<&[u8]>, _end_name: &[u8], name: &str) -> Res
     Ok(())
 }
 
-fn skip_element_with_revision_warning(
+fn skip_table_row_properties(
     reader: &mut Reader<&[u8]>,
-    _end_name: &[u8],
-    name: &str,
     warnings: &mut WarningSink,
-) -> Result<(), DocxError> {
+) -> Result<bool, DocxError> {
+    scan_skipped_table_properties(
+        reader,
+        warnings,
+        is_unsupported_docx_table_row_shape_property,
+    )
+}
+
+fn skip_table_cell_properties(
+    reader: &mut Reader<&[u8]>,
+    warnings: &mut WarningSink,
+) -> Result<bool, DocxError> {
+    scan_skipped_table_properties(
+        reader,
+        warnings,
+        is_unsupported_docx_table_cell_shape_property,
+    )
+}
+
+fn scan_skipped_table_properties(
+    reader: &mut Reader<&[u8]>,
+    warnings: &mut WarningSink,
+    is_unsupported_shape_property: fn(&[u8]) -> bool,
+) -> Result<bool, DocxError> {
     let mut depth = 1_usize;
+    let mut unsupported_shape = false;
     loop {
-        match reader.read_event().map_err(|err| xml_error(name, err))? {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(DOCUMENT_XML, err))?
+        {
             Event::Start(start) => {
-                if is_any_docx_revision_markup(local_name(start.name().as_ref())) {
+                let name = start.name();
+                let local = local_name(name.as_ref());
+                if is_any_docx_revision_markup(local) {
                     warnings.warn(
                         "docx_revision_markup_degraded",
                         "Unsupported DOCX tracked-change markup was imported as visible text when available",
                     );
                 }
+                if is_unsupported_shape_property(local) {
+                    unsupported_shape = true;
+                }
                 depth += 1;
             }
             Event::Empty(start) => {
-                if is_any_docx_revision_markup(local_name(start.name().as_ref())) {
+                let name = start.name();
+                let local = local_name(name.as_ref());
+                if is_any_docx_revision_markup(local) {
                     warnings.warn(
                         "docx_revision_markup_degraded",
                         "Unsupported DOCX tracked-change markup was imported as visible text when available",
                     );
+                }
+                if is_unsupported_shape_property(local) {
+                    unsupported_shape = true;
                 }
             }
             Event::End(_) => {
@@ -3682,7 +3856,7 @@ fn skip_element_with_revision_warning(
             _ => {}
         }
     }
-    Ok(())
+    Ok(unsupported_shape)
 }
 
 fn heading_level_from_style(style: &str) -> Option<u8> {
@@ -3762,6 +3936,14 @@ fn docx_note_reference_fallback_text(kind: NoteKind) -> &'static str {
 
 fn is_any_docx_revision_markup(name: &[u8]) -> bool {
     docx_tracked_change_kind(name).is_some() || is_unsupported_docx_revision_markup(name)
+}
+
+fn is_unsupported_docx_table_row_shape_property(name: &[u8]) -> bool {
+    matches!(name, b"gridBefore" | b"gridAfter")
+}
+
+fn is_unsupported_docx_table_cell_shape_property(name: &[u8]) -> bool {
+    matches!(name, b"gridSpan" | b"hMerge" | b"vMerge")
 }
 
 fn is_unsupported_docx_revision_markup(name: &[u8]) -> bool {
@@ -4409,6 +4591,7 @@ fn render_table_xml(
     output: &mut String,
 ) {
     output.push_str("<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/></w:tblPr>");
+    render_table_grid_xml(table, output);
     for row in &table.rows {
         output.push_str("<w:tr>");
         for cell in &row.cells {
@@ -4452,6 +4635,19 @@ fn render_table_xml(
         output.push_str("</w:tr>");
     }
     output.push_str("</w:tbl>");
+}
+
+fn render_table_grid_xml(table: &Table, output: &mut String) {
+    let Some(widths) = table.sanitized_column_widths() else {
+        return;
+    };
+    output.push_str("<w:tblGrid>");
+    for width in widths {
+        output.push_str("<w:gridCol w:w=\"");
+        output.push_str(&((u32::from(width) * DOCX_TABLE_GRID_TOTAL_DXA) / 1000).to_string());
+        output.push_str("\"/>");
+    }
+    output.push_str("</w:tblGrid>");
 }
 
 fn render_fallback_paragraph(
@@ -7042,6 +7238,155 @@ mod tests {
     }
 
     #[test]
+    fn exports_and_imports_table_column_width_grid_hints() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Table(Table {
+            column_widths: vec![250, 750],
+            rows: vec![TableRow {
+                cells: vec![table_cell_with_text("A1"), table_cell_with_text("B1")],
+            }],
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write table widths");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+
+        assert!(document_xml
+            .contains(r#"<w:tblGrid><w:gridCol w:w="2500"/><w:gridCol w:w="7500"/></w:tblGrid>"#));
+        assert!(!document_xml.contains("word900:column-widths"));
+
+        let parsed = read_docx_bytes(&bytes).expect("written package should import");
+        let Block::Table(table) = &parsed.sections[0].blocks[0] else {
+            panic!("table should round-trip through docx converter");
+        };
+        assert_eq!(table.column_widths, vec![250, 750]);
+    }
+
+    #[test]
+    fn imports_docx_table_grid_widths_as_sanitized_per_mille() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:tbl>
+    <w:tblGrid><w:gridCol w:w="1440"/><w:gridCol w:w="2880"/><w:gridCol w:w="1440"/></w:tblGrid>
+    <w:tr>
+      <w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>C1</w:t></w:r></w:p></w:tc>
+    </w:tr>
+  </w:tbl>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("docx should import table widths");
+
+        assert!(document.warnings.is_empty(), "{:?}", document.warnings);
+        let Block::Table(table) = &document.sections[0].blocks[0] else {
+            panic!("table should import");
+        };
+        assert_eq!(table.column_widths, vec![250, 500, 250]);
+    }
+
+    #[test]
+    fn ignores_invalid_or_mismatched_docx_table_grid_widths() {
+        let two_cell_row = r#"
+    <w:tr>
+      <w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc>
+    </w:tr>"#;
+        let cases = [
+            (
+                "mismatched",
+                r#"<w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/></w:tblGrid>"#,
+                two_cell_row,
+            ),
+            (
+                "zero",
+                r#"<w:tblGrid><w:gridCol w:w="0"/><w:gridCol w:w="1000"/></w:tblGrid>"#,
+                two_cell_row,
+            ),
+            (
+                "missing-width",
+                r#"<w:tblGrid><w:gridCol/><w:gridCol w:w="1000"/></w:tblGrid>"#,
+                two_cell_row,
+            ),
+            (
+                "overflow",
+                r#"<w:tblGrid><w:gridCol w:w="184467440737095516160"/><w:gridCol w:w="1000"/></w:tblGrid>"#,
+                two_cell_row,
+            ),
+            (
+                "nonnumeric",
+                r#"<w:tblGrid><w:gridCol w:w="not-a-number"/><w:gridCol w:w="1000"/></w:tblGrid>"#,
+                two_cell_row,
+            ),
+            (
+                "multiple-grid",
+                r#"<w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/></w:tblGrid><w:tblGrid><w:gridCol w:w="2500"/><w:gridCol w:w="7500"/></w:tblGrid>"#,
+                two_cell_row,
+            ),
+            (
+                "empty-then-grid",
+                r#"<w:tblGrid/><w:tblGrid><w:gridCol w:w="2500"/><w:gridCol w:w="7500"/></w:tblGrid>"#,
+                two_cell_row,
+            ),
+            (
+                "non-rectangular",
+                r#"<w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/></w:tblGrid>"#,
+                r#"
+    <w:tr>
+      <w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc>
+    </w:tr>
+    <w:tr>
+      <w:tc><w:p><w:r><w:t>A2</w:t></w:r></w:p></w:tc>
+    </w:tr>"#,
+            ),
+            (
+                "merged-cell",
+                r#"<w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/></w:tblGrid>"#,
+                r#"
+    <w:tr>
+      <w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc>
+    </w:tr>
+    <w:tr>
+      <w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p><w:r><w:t>A2</w:t></w:r></w:p></w:tc>
+      <w:tc><w:p><w:r><w:t>B2</w:t></w:r></w:p></w:tc>
+    </w:tr>"#,
+            ),
+            (
+                "nested-table",
+                r#"<w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/></w:tblGrid>"#,
+                r#"
+    <w:tr>
+      <w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Nested</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:tc>
+      <w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc>
+    </w:tr>"#,
+            ),
+        ];
+
+        for (case, grid, rows) in cases {
+            let document_xml = format!(
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:tbl>{grid}{rows}</w:tbl></w:body></w:document>"#
+            );
+            let bytes = synthetic_docx(&document_xml, None, None);
+            let document = read_docx_bytes(&bytes).expect("docx should import table");
+            let Block::Table(table) = &document.sections[0].blocks[0] else {
+                panic!("table should import for {case}");
+            };
+
+            assert!(table.column_widths.is_empty(), "{case}");
+            for warning in &document.warnings {
+                assert!(!warning.message.contains("not-a-number"), "{case}");
+            }
+        }
+    }
+
+    #[test]
     fn imports_synthetic_docx_embedded_png_image() {
         let bytes = synthetic_docx_with_binary_parts(
             r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
@@ -7682,6 +8027,18 @@ mod tests {
             assert!(!warning.message.contains("placeholder"));
             assert!(!warning.message.contains("example.invalid"));
             assert!(!warning.message.contains(private_body));
+        }
+    }
+
+    fn table_cell_with_text(text: &str) -> TableCell {
+        TableCell {
+            presentation: Default::default(),
+            blocks: vec![Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: StyleId::from("body"),
+                format: ParagraphFormat::default(),
+                inlines: vec![Inline::text(text)],
+            })],
         }
     }
 

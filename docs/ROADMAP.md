@@ -496,3 +496,13 @@ Status: complete.
 - Preserve 900Word-authored widths through ODT `word900` table metadata and safely ignore invalid external values.
 - Reflect valid hints in sanitized HTML/print HTML colgroups and proportional lightweight PDF table layout where practical.
 - Keep merged cells, formulas, arbitrary CSS, rich table themes, spreadsheet import, remote behavior, telemetry, accounts, cloud sync, heavy dependencies, and full table layout fidelity deferred.
+
+## Sprint 053: DOCX Table Width Interoperability
+
+Status: complete.
+
+- Import simple DOCX `w:tblGrid` / `w:gridCol w:w` width hints for editable rectangular tables with 1-8 columns.
+- Normalize positive DOCX grid widths into bounded per-mille `word-core` `Table.column_widths` values through the existing sanitizer.
+- Export valid 900Word-authored `Table.column_widths` as generated DOCX table grid hints.
+- Ignore invalid, mismatched, duplicate, zero, overflowed, missing, merged-cell, nested-table, or unsupported DOCX width metadata without preserving path-like or source-identifying values.
+- Keep ODT canonical and keep full table layout fidelity, drag resizing, merged cells, formulas, arbitrary CSS, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
