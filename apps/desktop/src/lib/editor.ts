@@ -1,4 +1,4 @@
-import { Fragment, type MarkType, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model';
+import { Fragment, type Mark, type MarkType, type Node as ProseMirrorNode, type ResolvedPos } from 'prosemirror-model';
 import { EditorState, NodeSelection, type Transaction } from 'prosemirror-state';
 import { TextSelection } from 'prosemirror-state';
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view';
@@ -117,6 +117,10 @@ export interface ImageResizeDragSnapshot {
 
 interface CreateEditorOptions {
   editable: boolean;
+  trackChanges?: {
+    recording: boolean;
+    author?: string;
+  };
   onInteraction?: () => void;
   onSelectionChange?: (selection: EditorSelectionSnapshot) => void;
 }
@@ -132,6 +136,7 @@ export const MAX_TABLE_COLUMNS = 8;
 
 const spellDecorationStore = new WeakMap<EditorView, SpellDecorationHolder>();
 const REFRESH_SELECTION_FORMATTING_META = '900word-refresh-selection-formatting';
+const LOCAL_TRACKED_CHANGE_AUTHOR = 'Local User';
 
 export function createEditor(
   host: HTMLElement,
@@ -154,7 +159,39 @@ export function createEditor(
     decorations() {
       return spellDecorations.value;
     },
+    handleTextInput(editorView, from, to, text) {
+      if (!options.trackChanges?.recording) {
+        return false;
+      }
+      const transaction = recordTextInsertionTransaction(
+        editorView.state,
+        text,
+        { from, to, empty: from === to },
+        options.trackChanges.author
+      );
+      if (!transaction) {
+        return false;
+      }
+      editorView.dispatch(transaction.scrollIntoView());
+      return true;
+    },
     handleKeyDown(editorView, event) {
+      if (
+        options.trackChanges?.recording &&
+        (event.key === 'Backspace' || event.key === 'Delete') &&
+        !editorView.state.selection.empty
+      ) {
+        const transaction = recordSelectedDeletionTransaction(
+          editorView.state,
+          undefined,
+          options.trackChanges.author
+        );
+        if (transaction) {
+          event.preventDefault();
+          editorView.dispatch(transaction.scrollIntoView());
+          return true;
+        }
+      }
       if (event.key !== 'Enter' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
         return false;
       }
@@ -508,6 +545,93 @@ export function createEditorCommentId(): string {
   return `cmt-${suffix}`;
 }
 
+export function createEditorTrackedChangeId(): string {
+  const bytes = new Uint8Array(8);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  const suffix = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `chg-${suffix}`;
+}
+
+export function recordTextInsertionTransaction(
+  state: EditorState,
+  text: string,
+  fallbackSelection?: EditorSelectionSnapshot,
+  author = LOCAL_TRACKED_CHANGE_AUTHOR
+): Transaction | undefined {
+  if (text.length === 0) {
+    return undefined;
+  }
+  const insertionMark = trackedChangeMark('insertion', author);
+  if (!insertionMark) {
+    return undefined;
+  }
+  let transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { empty, from, to } = transaction.selection;
+  const insertionPosition = empty ? from : to;
+  if (!empty) {
+    const deletionMark = trackedChangeMark('deletion', author);
+    if (!deletionMark) {
+      return undefined;
+    }
+    transaction = transaction.addMark(from, to, deletionMark);
+  }
+  const textNode = supportedSchema.text(text, insertionMarks(transaction, insertionMark));
+  transaction = transaction.insert(insertionPosition, textNode);
+  return transaction.setSelection(TextSelection.create(transaction.doc, insertionPosition + text.length));
+}
+
+export function recordSelectedDeletionTransaction(
+  state: EditorState,
+  fallbackSelection?: EditorSelectionSnapshot,
+  author = LOCAL_TRACKED_CHANGE_AUTHOR
+): Transaction | undefined {
+  const deletionMark = trackedChangeMark('deletion', author);
+  if (!deletionMark) {
+    return undefined;
+  }
+  const transaction = transactionWithFallbackSelection(state, fallbackSelection);
+  const { empty, from, to } = transaction.selection;
+  if (empty || transaction.doc.textBetween(from, to, '\n', ' ').length === 0) {
+    return undefined;
+  }
+  const nextTransaction = transaction.addMark(from, to, deletionMark);
+  return nextTransaction.docChanged ? nextTransaction : transaction;
+}
+
+function trackedChangeMark(kind: 'insertion' | 'deletion', author: string): Mark | undefined {
+  const markType = supportedSchema.marks.trackedChange;
+  if (!markType) {
+    return undefined;
+  }
+  return markType.create({
+    id: createEditorTrackedChangeId(),
+    kind,
+    author: normalizeLocalTrackedChangeAuthor(author),
+    createdAt: new Date().toISOString()
+  });
+}
+
+function insertionMarks(transaction: Transaction, trackedMark: Mark): Mark[] {
+  const activeMarks = transaction.storedMarks ?? transaction.selection.$from.marks();
+  return [
+    ...activeMarks.filter((mark) => mark.type.name !== 'trackedChange'),
+    trackedMark
+  ];
+}
+
+function normalizeLocalTrackedChangeAuthor(author: string): string {
+  const normalized = author.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return normalized.length > 0 && Array.from(normalized).length <= 80
+    ? normalized
+    : LOCAL_TRACKED_CHANGE_AUTHOR;
+}
+
 export function selectedEditorText(
   view: EditorView | undefined,
   fallbackSelection?: EditorSelectionSnapshot
@@ -617,6 +741,33 @@ export function selectEditorCommentRange(view: EditorView | undefined, commentId
       return !range;
     }
     if (node.marks.some((mark) => mark.type === markType && mark.attrs.id === safeId)) {
+      range = { from: pos, to: pos + node.nodeSize };
+      return false;
+    }
+    return true;
+  });
+  if (!range) {
+    return false;
+  }
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, range.from, range.to)).scrollIntoView());
+  view.focus();
+  return true;
+}
+
+export function selectEditorTrackedChangeRange(view: EditorView | undefined, changeId: string): boolean {
+  if (!view) {
+    return false;
+  }
+  const markType = supportedSchema.marks.trackedChange;
+  if (!markType || !/^chg-[A-Za-z0-9_-]+$/.test(changeId)) {
+    return false;
+  }
+  let range: { from: number; to: number } | undefined;
+  view.state.doc.descendants((node, pos) => {
+    if (range || !node.isText) {
+      return !range;
+    }
+    if (node.marks.some((mark) => mark.type === markType && mark.attrs.id === changeId)) {
       range = { from: pos, to: pos + node.nodeSize };
       return false;
     }
@@ -936,14 +1087,14 @@ export function clearEditorDirectFormattingTransaction(
 
   if (transaction.selection.empty) {
     for (const markType of Object.values(supportedSchema.marks)) {
-      if (markType.name === 'link' || markType.name === 'comment') {
+      if (markType.name === 'link' || markType.name === 'comment' || markType.name === 'trackedChange') {
         continue;
       }
       transaction = transaction.removeStoredMark(markType);
     }
   } else {
     for (const markType of Object.values(supportedSchema.marks)) {
-      if (markType.name === 'link' || markType.name === 'comment') {
+      if (markType.name === 'link' || markType.name === 'comment' || markType.name === 'trackedChange') {
         continue;
       }
       transaction = transaction.removeMark(from, to, markType);

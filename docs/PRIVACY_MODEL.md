@@ -24,6 +24,8 @@ Sprint 014 image insertion reads a user-selected local image path only inside th
 
 Sprint 022 comments are stored as bounded local document metadata plus inline selected-text anchors. The default author string is `Local User`; no operating-system username, hostname, account identifier, contact record, local path, or source filename is read or serialized for comment authorship.
 
+Sprint 023 tracked changes are stored as local document metadata on inline text anchors. The default author string is `Local User`; no operating-system username, hostname, account identifier, contact record, local path, source filename, or cloud identity is read or serialized for tracked-change authorship. Unaccepted tracked deletions intentionally keep deleted text in the saved document package, so shared files may reveal edit history until changes are accepted or rejected.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -39,6 +41,8 @@ Sprint 013 TXT, HTML, print HTML, and basic PDF exports include simple header/fo
 Sprint 014 HTML and print HTML exporters embed allowlisted in-document image bytes as `data:` URLs. They do not emit remote image URLs, `file:` URLs, source paths, original local filenames, usernames, hostnames, or private build metadata. The basic PDF exporter remains text-oriented and may include image alt/caption text only.
 
 Sprint 022 stores 900Word-authored comments in ODT with ODF annotation elements and `word900` metadata for local comment ID and resolved state. TXT, HTML, print HTML, and basic PDF export do not claim comment fidelity or active annotations; they continue to avoid local usernames, hostnames, absolute paths, account metadata, and private build metadata.
+
+Sprint 023 stores 900Word-authored tracked changes in ODT with `word900` metadata on inline text spans for local change ID, kind, author, and timestamp, plus document-level recording state. This is a 900Word-authored text-only compatibility boundary, not a claim of DOCX/PDF track changes or full external ODT change-tracking fidelity.
 
 ## Network
 

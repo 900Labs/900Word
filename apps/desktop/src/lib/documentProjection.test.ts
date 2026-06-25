@@ -13,6 +13,7 @@ import {
   pageFieldTokens,
   pageRegionTextToBlocks,
   pageRegionToText,
+  trackedChangesInDocument,
   type DocumentState
 } from './documentProjection';
 
@@ -354,6 +355,131 @@ describe('documentToText', () => {
         blockIndex: 1,
         editorBlockIndex: 1
       }
+    ]);
+  });
+
+  it('round-trips tracked change marks with comments and links', () => {
+    const document: DocumentState = {
+      meta: { title: 'Generated test' },
+      comments: {
+        'cmt-change': {
+          id: 'cmt-change',
+          author: 'Local User',
+          body: 'Review this insertion.',
+          created_at: '2026-06-25T12:00:00Z',
+          updated_at: '2026-06-25T12:00:00Z'
+        }
+      },
+      sections: [
+        {
+          blocks: [
+            {
+              type: 'Paragraph',
+              value: {
+                inlines: [
+                  {
+                    text: 'Inserted',
+                    marks: ['Bold'],
+                    link: 'https://example.invalid/change',
+                    comment_ids: ['cmt-change'],
+                    tracked_change: {
+                      id: 'chg-insert',
+                      kind: 'insertion',
+                      author: 'Local User',
+                      created_at: '2026-06-25T12:00:00Z'
+                    }
+                  },
+                  {
+                    text: ' deleted',
+                    tracked_change: {
+                      id: 'chg-delete',
+                      kind: 'deletion',
+                      author: 'Local User',
+                      created_at: '2026-06-25T12:01:00Z'
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const editorDoc = documentToEditorDoc(document);
+    expect(editorDoc.content[0]).toMatchObject({
+      type: 'paragraph',
+      content: [
+        {
+          text: 'Inserted',
+          marks: [
+            { type: 'bold' },
+            { type: 'link', attrs: { href: 'https://example.invalid/change' } },
+            { type: 'comment', attrs: { id: 'cmt-change' } },
+            {
+              type: 'trackedChange',
+              attrs: {
+                id: 'chg-insert',
+                kind: 'insertion',
+                author: 'Local User',
+                createdAt: '2026-06-25T12:00:00.000Z'
+              }
+            }
+          ]
+        },
+        {
+          text: ' deleted',
+          marks: [
+            {
+              type: 'trackedChange',
+              attrs: {
+                id: 'chg-delete',
+                kind: 'deletion',
+                author: 'Local User',
+                createdAt: '2026-06-25T12:01:00.000Z'
+              }
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(editorDocToWordCoreBlocks(editorDoc)).toEqual([
+      {
+        type: 'Paragraph',
+        value: {
+          style: 'body',
+          inlines: [
+            {
+              text: 'Inserted',
+              marks: ['Bold'],
+              link: 'https://example.invalid/change',
+              comment_ids: ['cmt-change'],
+              tracked_change: {
+                id: 'chg-insert',
+                kind: 'insertion',
+                author: 'Local User',
+                created_at: '2026-06-25T12:00:00.000Z'
+              }
+            },
+            {
+              text: ' deleted',
+              marks: [],
+              link: null,
+              tracked_change: {
+                id: 'chg-delete',
+                kind: 'deletion',
+                author: 'Local User',
+                created_at: '2026-06-25T12:01:00.000Z'
+              }
+            }
+          ]
+        }
+      }
+    ]);
+    expect(trackedChangesInDocument(document).map((change) => [change.id, change.kind, change.text])).toEqual([
+      ['chg-insert', 'insertion', 'Inserted'],
+      ['chg-delete', 'deletion', ' deleted']
     ]);
   });
 

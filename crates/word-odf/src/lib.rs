@@ -6,12 +6,13 @@ use std::fmt::Display;
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
-    normalize_comment_author, validate_comment_body, validate_comment_id, AssetRef, Block,
-    CommentThread, Document, DocumentWarning, Heading, ImageAlignment, ImageBlock,
-    ImagePresentation, Inline, InlineMark, InlineStyle, ListBlock, ListDefinition, ListItem,
-    PageField, PageRegion, PageRegionBlock, PageRegionKind, PageRegionParagraph, PageRegions,
-    PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat, Section, Style, StyleId, StyleKind,
-    Table, TableCell, TableRow,
+    normalize_comment_author, validate_comment_body, validate_comment_id,
+    validate_tracked_change_id, AssetRef, Block, CommentThread, Document, DocumentWarning, Heading,
+    ImageAlignment, ImageBlock, ImagePresentation, Inline, InlineMark, InlineStyle, ListBlock,
+    ListDefinition, ListItem, PageField, PageRegion, PageRegionBlock, PageRegionKind,
+    PageRegionParagraph, PageRegions, PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat,
+    Section, Style, StyleId, StyleKind, Table, TableCell, TableRow, TrackChangesState,
+    TrackedChange, TrackedChangeKind,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -427,8 +428,9 @@ fn render_content_xml(document: &Document) -> Result<String, OdtError> {
          xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
          xmlns:word900=\"urn:900labs:900word:metadata\" \
          office:version=\"1.3\">\
-         {automatic_styles}<office:body><office:text>{body}</office:text></office:body>\
-         </office:document-content>"
+         {automatic_styles}<office:body><office:text word900:track-changes-recording=\"{}\">{body}</office:text></office:body>\
+         </office:document-content>",
+        document.track_changes.recording
     ))
 }
 
@@ -733,11 +735,10 @@ fn render_inlines(inlines: &[Inline], document: Option<&Document>, output: &mut 
             continue;
         }
         let mut rendered = escape_xml(&inline.text);
-        if let Some(style_name) = text_style_name(&inline.marks, &inline.style) {
-            rendered = format!(
-                "<text:span text:style-name=\"{}\">{rendered}</text:span>",
-                escape_xml(&style_name)
-            );
+        let style_name = text_style_name(&inline.marks, &inline.style);
+        let span_attrs = inline_span_attrs(style_name.as_deref(), inline.tracked_change.as_ref());
+        if !span_attrs.is_empty() {
+            rendered = format!("<text:span{span_attrs}>{rendered}</text:span>");
         }
         if let Some(href) = inline.link.as_deref().and_then(sanitize_text_href) {
             rendered = format!(
@@ -748,6 +749,40 @@ fn render_inlines(inlines: &[Inline], document: Option<&Document>, output: &mut 
         output.push_str(&rendered);
     }
     close_inactive_comments(&mut active_comments, &[], output);
+}
+
+fn inline_span_attrs(style_name: Option<&str>, tracked_change: Option<&TrackedChange>) -> String {
+    let mut attrs = String::new();
+    if let Some(style_name) = style_name {
+        attrs.push_str(&format!(" text:style-name=\"{}\"", escape_xml(style_name)));
+    }
+    if let Some(change) =
+        tracked_change.filter(|change| validate_tracked_change_id(&change.id).is_ok())
+    {
+        attrs.push_str(&format!(
+            " word900:change-id=\"{}\" word900:change-kind=\"{}\" word900:change-author=\"{}\" word900:change-created-at=\"{}\"",
+            escape_xml(&change.id),
+            tracked_change_kind_name(change.kind),
+            escape_xml(&change.author),
+            escape_xml(&change.created_at.to_rfc3339())
+        ));
+    }
+    attrs
+}
+
+fn tracked_change_kind_name(kind: TrackedChangeKind) -> &'static str {
+    match kind {
+        TrackedChangeKind::Insertion => "insertion",
+        TrackedChangeKind::Deletion => "deletion",
+    }
+}
+
+fn parse_tracked_change_kind(value: &str) -> Option<TrackedChangeKind> {
+    match value {
+        "insertion" => Some(TrackedChangeKind::Insertion),
+        "deletion" => Some(TrackedChangeKind::Deletion),
+        _ => None,
+    }
 }
 
 fn inline_comment_ids(inline: &Inline, document: Option<&Document>) -> Vec<String> {
@@ -1383,6 +1418,7 @@ impl PageRegionParseState {
                     active.flush();
                     active.mark_stack.pop();
                     active.style_stack.pop();
+                    active.tracked_change_stack.pop();
                 }
             }
             b"a" => {
@@ -1466,6 +1502,7 @@ struct ParseState<'a> {
     comments: BTreeMap<String, CommentThread>,
     lists: BTreeMap<String, ListDefinition>,
     page: PageSetup,
+    track_changes: TrackChangesState,
     warnings: Vec<DocumentWarning>,
     unsupported_elements: BTreeSet<String>,
     unsupported_depth: usize,
@@ -1488,6 +1525,7 @@ impl<'a> ParseState<'a> {
             comments: BTreeMap::new(),
             lists: Document::new_untitled().lists,
             page: PageSetup::default(),
+            track_changes: TrackChangesState::default(),
             warnings: Vec::new(),
             unsupported_elements: BTreeSet::new(),
             unsupported_depth: 0,
@@ -1512,7 +1550,8 @@ impl<'a> ParseState<'a> {
         }
 
         match local_name(start.name().as_ref()) {
-            b"document-content" | b"automatic-styles" | b"body" | b"text" => {}
+            b"text" => self.read_track_changes_state(start)?,
+            b"document-content" | b"automatic-styles" | b"body" => {}
             b"p" => self.start_paragraph(start)?,
             b"h" => self.start_heading(start)?,
             b"span" => self.start_span(start)?,
@@ -1612,12 +1651,12 @@ impl<'a> ParseState<'a> {
             b"document-content"
             | b"automatic-styles"
             | b"body"
-            | b"text"
             | b"text-properties"
             | b"list-style"
             | b"list-level-style-bullet"
             | b"list-level-style-number" => {}
             b"paragraph-properties" => self.read_paragraph_style_properties(start)?,
+            b"text" => self.read_track_changes_state(start)?,
             unknown => self.warn_unsupported_element(unknown),
         }
         Ok(())
@@ -1809,6 +1848,13 @@ impl<'a> ParseState<'a> {
         Ok(())
     }
 
+    fn read_track_changes_state(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        if attr_value_exact(start, b"word900:track-changes-recording")?.as_deref() == Some("true") {
+            self.track_changes.recording = true;
+        }
+        Ok(())
+    }
+
     fn start_paragraph(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
         if self.active_text.is_some() {
             self.warn(
@@ -1874,9 +1920,10 @@ impl<'a> ParseState<'a> {
     }
 
     fn start_span(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
+        let style_name = attr_value(start, b"style-name")?;
+        let tracked_change = self.read_tracked_change(start)?;
         if let Some(active) = self.active_text.as_mut() {
             active.flush();
-            let style_name = attr_value(start, b"style-name")?;
             let marks = style_name
                 .as_deref()
                 .map(marks_from_text_style)
@@ -1887,8 +1934,56 @@ impl<'a> ParseState<'a> {
                 .unwrap_or_default();
             active.mark_stack.push(marks);
             active.style_stack.push(inline_style);
+            active.tracked_change_stack.push(tracked_change);
         }
         Ok(())
+    }
+
+    fn read_tracked_change(
+        &mut self,
+        start: &BytesStart<'_>,
+    ) -> Result<Option<TrackedChange>, OdtError> {
+        let id = attr_value_exact(start, b"word900:change-id")?;
+        let kind = attr_value_exact(start, b"word900:change-kind")?;
+        if id.is_none() && kind.is_none() {
+            return Ok(None);
+        }
+        let Some(id) = id.and_then(|value| validate_tracked_change_id(&value).ok()) else {
+            self.warn(
+                "odt_unsafe_tracked_change",
+                "Unsafe tracked-change metadata was ignored during import",
+            );
+            return Ok(None);
+        };
+        let Some(kind) = kind.as_deref().and_then(parse_tracked_change_kind) else {
+            self.warn(
+                "odt_unsupported_tracked_change",
+                "Unsupported tracked-change kind was ignored during import",
+            );
+            return Ok(None);
+        };
+        let created_at = match attr_value_exact(start, b"word900:change-created-at")?
+            .and_then(|value| DateTime::parse_from_rfc3339(&value).ok())
+            .map(|value| value.with_timezone(&Utc))
+        {
+            Some(created_at) => created_at,
+            None => {
+                self.warn(
+                    "odt_unsafe_tracked_change",
+                    "Unsafe tracked-change metadata was ignored during import",
+                );
+                return Ok(None);
+            }
+        };
+        let author =
+            normalize_comment_author(attr_value_exact(start, b"word900:change-author")?.as_deref())
+                .unwrap_or_else(|_| word_core::DEFAULT_TRACKED_CHANGE_AUTHOR.to_string());
+        Ok(Some(TrackedChange {
+            id,
+            kind,
+            author,
+            created_at,
+        }))
     }
 
     fn start_link(&mut self, start: &BytesStart<'_>) -> Result<(), OdtError> {
@@ -2291,6 +2386,7 @@ impl<'a> ParseState<'a> {
         document.assets = self.assets;
         document.comments = self.comments;
         document.lists = self.lists;
+        document.track_changes = self.track_changes;
         document.warnings = self.warnings;
         prune_unanchored_imported_comments(&mut document);
         document
@@ -2407,6 +2503,7 @@ struct ActiveText {
     style_stack: Vec<InlineStyle>,
     link_stack: Vec<Option<String>>,
     comment_stack: Vec<String>,
+    tracked_change_stack: Vec<Option<TrackedChange>>,
     embedded_blocks: Vec<Block>,
 }
 
@@ -2424,6 +2521,7 @@ impl ActiveText {
             style_stack: Vec::new(),
             link_stack: Vec::new(),
             comment_stack: Vec::new(),
+            tracked_change_stack: Vec::new(),
             embedded_blocks: Vec::new(),
         }
     }
@@ -2437,6 +2535,7 @@ impl ActiveText {
             style_stack: Vec::new(),
             link_stack: Vec::new(),
             comment_stack: Vec::new(),
+            tracked_change_stack: Vec::new(),
             embedded_blocks: Vec::new(),
         }
     }
@@ -2468,6 +2567,7 @@ impl ActiveText {
             comment_ids: self.active_comment_ids(),
             style: self.active_style(),
             field: None,
+            tracked_change: self.active_tracked_change(),
         });
     }
 
@@ -2480,6 +2580,7 @@ impl ActiveText {
             comment_ids: self.active_comment_ids(),
             style: self.active_style(),
             field: Some(field),
+            tracked_change: self.active_tracked_change(),
         });
     }
 
@@ -2517,6 +2618,13 @@ impl ActiveText {
 
     fn active_comment_ids(&self) -> Vec<String> {
         self.comment_stack.clone()
+    }
+
+    fn active_tracked_change(&self) -> Option<TrackedChange> {
+        self.tracked_change_stack
+            .iter()
+            .rev()
+            .find_map(|change| change.clone())
     }
 
     fn active_style(&self) -> InlineStyle {
@@ -2577,6 +2685,20 @@ fn attr_value(start: &BytesStart<'_>, local: &[u8]) -> Result<Option<String>, Od
     for attr in start.attributes().with_checks(true) {
         let attr = attr.map_err(|err| xml_error("content.xml", err))?;
         if local_name(attr.key.as_ref()) == local {
+            return Ok(Some(
+                attr.decode_and_unescape_value(start.decoder())
+                    .map_err(|err| xml_error("content.xml", err))?
+                    .into_owned(),
+            ));
+        }
+    }
+    Ok(None)
+}
+
+fn attr_value_exact(start: &BytesStart<'_>, name: &[u8]) -> Result<Option<String>, OdtError> {
+    for attr in start.attributes().with_checks(true) {
+        let attr = attr.map_err(|err| xml_error("content.xml", err))?;
+        if attr.key.as_ref() == name {
             return Ok(Some(
                 attr.decode_and_unescape_value(start.decoder())
                     .map_err(|err| xml_error("content.xml", err))?
@@ -3401,6 +3523,7 @@ mod tests {
                         highlight_color: Some("#fff3bf".to_string()),
                     },
                     field: None,
+                    tracked_change: None,
                 }],
             }),
             Block::List(ListBlock {
@@ -3481,6 +3604,7 @@ mod tests {
                     comment_ids: vec!["cmt-review".to_string()],
                     style: Default::default(),
                     field: None,
+                    tracked_change: None,
                 },
                 Inline::text(" after"),
             ],
@@ -3519,6 +3643,152 @@ mod tests {
             Some("https://example.invalid/review")
         );
         assert_eq!(commented.comment_ids, vec!["cmt-review"]);
+    }
+
+    #[test]
+    fn tracked_changes_round_trip_through_word900_odt_metadata() {
+        let created_at = DateTime::parse_from_rfc3339("2026-06-25T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut document = Document::new_untitled();
+        document.track_changes.recording = true;
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Before "),
+                Inline {
+                    text: "inserted".to_string(),
+                    marks: vec![InlineMark::Underline],
+                    link: Some("https://example.invalid/change".to_string()),
+                    comment_ids: Vec::new(),
+                    style: Default::default(),
+                    field: None,
+                    tracked_change: Some(TrackedChange {
+                        id: "chg-insert".to_string(),
+                        kind: TrackedChangeKind::Insertion,
+                        author: "Local User".to_string(),
+                        created_at,
+                    }),
+                },
+                Inline {
+                    text: " deleted".to_string(),
+                    marks: vec![InlineMark::Strikethrough],
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: Default::default(),
+                    field: None,
+                    tracked_change: Some(TrackedChange {
+                        id: "chg-delete".to_string(),
+                        kind: TrackedChangeKind::Deletion,
+                        author: "Local User".to_string(),
+                        created_at,
+                    }),
+                },
+            ],
+        })];
+
+        let bytes = write_odt_bytes(&document).expect("write should succeed");
+        let content_xml = content_xml_from_package(&bytes);
+        assert!(content_xml.contains("word900:track-changes-recording=\"true\""));
+        assert!(content_xml.contains("word900:change-id=\"chg-insert\""));
+        assert!(content_xml.contains("word900:change-kind=\"insertion\""));
+        assert!(content_xml.contains("word900:change-id=\"chg-delete\""));
+        assert!(content_xml.contains("word900:change-kind=\"deletion\""));
+        assert!(content_xml.contains("word900:change-author=\"Local User\""));
+
+        let parsed = read_odt_bytes(&bytes).expect("read should succeed");
+        assert!(parsed.track_changes.recording);
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a paragraph");
+        };
+        let inserted = paragraph
+            .inlines
+            .iter()
+            .find(|inline| inline.text == "inserted")
+            .expect("inserted inline should parse");
+        let inserted_change = inserted
+            .tracked_change
+            .as_ref()
+            .expect("inserted change metadata should parse");
+        assert_eq!(inserted_change.kind, TrackedChangeKind::Insertion);
+        assert_eq!(inserted_change.author, "Local User");
+        assert_eq!(inserted_change.created_at, created_at);
+        assert_eq!(
+            inserted.link.as_deref(),
+            Some("https://example.invalid/change")
+        );
+        assert_eq!(inserted.marks, vec![InlineMark::Underline]);
+
+        let deleted = paragraph
+            .inlines
+            .iter()
+            .find(|inline| inline.text == " deleted")
+            .expect("deleted inline should parse");
+        assert_eq!(
+            deleted.tracked_change.as_ref().map(|change| change.kind),
+            Some(TrackedChangeKind::Deletion)
+        );
+        assert_eq!(deleted.marks, vec![InlineMark::Strikethrough]);
+    }
+
+    #[test]
+    fn non_word900_tracked_change_attributes_are_ignored() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:evil="urn:example:evil"
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              office:version="1.3">
+              <office:body>
+                <office:text evil:track-changes-recording="true">
+                  <text:p>Before <text:span evil:change-id="chg-evil" evil:change-kind="deletion" evil:change-author="External User" evil:change-created-at="2026-06-25T12:00:00Z">keep</text:span></text:p>
+                </office:text>
+              </office:body>
+            </office:document-content>"#;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        assert!(!parsed.track_changes.recording);
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a paragraph");
+        };
+        assert!(paragraph
+            .inlines
+            .iter()
+            .all(|inline| inline.tracked_change.is_none()));
+    }
+
+    #[test]
+    fn malformed_word900_tracked_change_metadata_is_ignored() {
+        let content = r#"<?xml version="1.0" encoding="UTF-8"?>
+            <office:document-content
+              xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+              xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+              xmlns:word900="urn:900labs:900word:metadata"
+              office:version="1.3">
+              <office:body>
+                <office:text word900:track-changes-recording="true">
+                  <text:p>Before <text:span word900:change-id="chg-bad" word900:change-kind="deletion" word900:change-created-at="not-a-date">keep</text:span></text:p>
+                </office:text>
+              </office:body>
+            </office:document-content>"#;
+
+        let parsed = read_odt_bytes(&test_package_with_content(content)).expect("package parses");
+
+        assert!(parsed.track_changes.recording);
+        assert!(parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "odt_unsafe_tracked_change"));
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("first block should be a paragraph");
+        };
+        assert!(paragraph
+            .inlines
+            .iter()
+            .all(|inline| inline.tracked_change.is_none()));
     }
 
     #[test]
@@ -3573,6 +3843,7 @@ mod tests {
                     comment_ids: Vec::new(),
                     style: Default::default(),
                     field: None,
+                    tracked_change: None,
                 }],
             }),
         ];
@@ -3742,6 +4013,7 @@ mod tests {
                         comment_ids: Vec::new(),
                         style: Default::default(),
                         field: None,
+                        tracked_change: None,
                     },
                     Inline {
                         text: "linked text".to_string(),
@@ -3750,6 +4022,7 @@ mod tests {
                         comment_ids: Vec::new(),
                         style: Default::default(),
                         field: None,
+                        tracked_change: None,
                     },
                 ],
             }),

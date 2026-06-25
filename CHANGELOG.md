@@ -23,3 +23,4 @@ All notable changes to 900Word are tracked here.
 - Editor viewport controls for Draft/Page Layout, Fit Width/100%/custom zoom, and simple show/hide rulers without adding document metadata or deterministic pagination claims.
 - Keyboard shortcut polish with tested command normalization, guarded form-field behavior, visible shortcut hints, replace focus, Cmd/Ctrl+Y redo, and PDF export shortcut routing through the existing export path flow.
 - Comments MVP with bounded local comment threads, privacy-safe `Local User` author defaulting, inline text anchors, a compact comments sidebar, resolve/reopen/delete controls, visible editor markers, and 900Word-authored ODT annotation round-trip support.
+- Track Changes MVP with local Record changes state, visible text insertion/deletion marks, individual and bulk accept/reject controls, privacy-safe `Local User` authorship, timestamps, and 900Word-authored ODT round-trip support through `word900` metadata.

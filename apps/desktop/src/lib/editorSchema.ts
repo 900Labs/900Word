@@ -1,5 +1,5 @@
 import { Schema, type MarkSpec, type NodeSpec } from 'prosemirror-model';
-import { sanitizeCommentId } from './documentProjection';
+import { sanitizeCommentId, sanitizeTrackedChangeId } from './documentProjection';
 import { sanitizeBookmarkId, sanitizeEditorHref } from './editorSecurity';
 
 const nodes: Record<string, NodeSpec> = {
@@ -475,6 +475,74 @@ const marks: Record<string, MarkSpec> = {
       const id = sanitizeCommentId(String(mark.attrs.id)) ?? '';
       return ['span', { class: 'comment-marker', 'data-comment-id': id }, 0];
     }
+  },
+  trackedChange: {
+    excludes: '',
+    attrs: {
+      id: {
+        validate(value: unknown) {
+          if (typeof value !== 'string' || !sanitizeTrackedChangeId(value)) {
+            throw new RangeError('unsupported tracked change id');
+          }
+        }
+      },
+      kind: {
+        validate(value: unknown) {
+          if (value !== 'insertion' && value !== 'deletion') {
+            throw new RangeError('unsupported tracked change kind');
+          }
+        }
+      },
+      author: {
+        default: 'Local User',
+        validate(value: unknown) {
+          if (typeof value !== 'string' || !safeLocalAuthor(value)) {
+            throw new RangeError('unsupported tracked change author');
+          }
+        }
+      },
+      createdAt: {
+        validate(value: unknown) {
+          if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) {
+            throw new RangeError('unsupported tracked change timestamp');
+          }
+        }
+      }
+    },
+    inclusive: false,
+    parseDOM: [
+      {
+        tag: 'span[data-tracked-change-id]',
+        getAttrs(node) {
+          const id = sanitizeTrackedChangeId(node.getAttribute('data-tracked-change-id') ?? '');
+          const kind = trackedChangeKindAttr(node.getAttribute('data-tracked-change-kind'));
+          const author = safeLocalAuthor(node.getAttribute('data-tracked-change-author') ?? '')
+            ? node.getAttribute('data-tracked-change-author')
+            : 'Local User';
+          const createdAt = node.getAttribute('data-tracked-change-created-at') ?? '';
+          return id && kind && Number.isFinite(Date.parse(createdAt))
+            ? { id, kind, author, createdAt }
+            : false;
+        }
+      }
+    ],
+    toDOM(mark) {
+      const id = sanitizeTrackedChangeId(String(mark.attrs.id)) ?? '';
+      const kind = trackedChangeKindAttr(mark.attrs.kind) ?? 'insertion';
+      const author = safeLocalAuthor(String(mark.attrs.author ?? '')) ? String(mark.attrs.author) : 'Local User';
+      const createdAt = Number.isFinite(Date.parse(String(mark.attrs.createdAt))) ? String(mark.attrs.createdAt) : new Date(0).toISOString();
+      return [
+        'span',
+        {
+          class: `tracked-change tracked-${kind}`,
+          'data-tracked-change-id': id,
+          'data-tracked-change-kind': kind,
+          'data-tracked-change-author': author,
+          'data-tracked-change-created-at': createdAt
+        },
+        0
+      ];
+    }
   }
 };
 
@@ -496,7 +564,8 @@ export const supportedMarkTypes = [
   'subscript',
   'textStyle',
   'link',
-  'comment'
+  'comment',
+  'trackedChange'
 ] as const;
 
 function numberAttr(node: Element, name: string): number | null {
@@ -664,4 +733,13 @@ function safeImageSrc(value: string): boolean {
 
 function safeTextStyleValue(value: string): boolean {
   return /^[A-Za-z0-9 ,.'"-]{1,80}$/.test(value);
+}
+
+function trackedChangeKindAttr(value: unknown): 'insertion' | 'deletion' | null {
+  return value === 'insertion' || value === 'deletion' ? value : null;
+}
+
+function safeLocalAuthor(value: string): boolean {
+  const trimmed = value.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return trimmed.length > 0 && Array.from(trimmed).length <= 80;
 }

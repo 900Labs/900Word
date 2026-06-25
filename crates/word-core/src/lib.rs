@@ -8,6 +8,8 @@ use uuid::Uuid;
 pub struct Document {
     pub id: Uuid,
     pub meta: DocumentMeta,
+    #[serde(default, skip_serializing_if = "TrackChangesState::is_default")]
+    pub track_changes: TrackChangesState,
     pub sections: Vec<Section>,
     pub styles: BTreeMap<StyleId, Style>,
     pub lists: BTreeMap<String, ListDefinition>,
@@ -22,6 +24,7 @@ impl Document {
         Self {
             id: Uuid::new_v4(),
             meta: DocumentMeta::new("Untitled Document"),
+            track_changes: TrackChangesState::default(),
             sections: vec![Section::default()],
             styles: default_styles(),
             lists: default_list_definitions(),
@@ -170,6 +173,29 @@ impl Document {
                 Ok(())
             }
             DocumentCommand::UpdateStyle { style } => self.register_style(style),
+            DocumentCommand::SetTrackChangesRecording { enabled } => {
+                self.track_changes.recording = enabled;
+                self.touch();
+                Ok(())
+            }
+            DocumentCommand::AcceptTrackedChange { id } => {
+                self.resolve_tracked_change(&id, TrackedChangeResolution::Accept)
+            }
+            DocumentCommand::RejectTrackedChange { id } => {
+                self.resolve_tracked_change(&id, TrackedChangeResolution::Reject)
+            }
+            DocumentCommand::AcceptAllTrackedChanges => {
+                if self.resolve_all_tracked_changes(TrackedChangeResolution::Accept) {
+                    self.touch();
+                }
+                Ok(())
+            }
+            DocumentCommand::RejectAllTrackedChanges => {
+                if self.resolve_all_tracked_changes(TrackedChangeResolution::Reject) {
+                    self.touch();
+                }
+                Ok(())
+            }
             DocumentCommand::AddComment { id, author, body } => {
                 let id = validate_comment_id(&id)?;
                 if self.comments.contains_key(&id) {
@@ -218,6 +244,35 @@ impl Document {
         }
     }
 
+    fn resolve_tracked_change(
+        &mut self,
+        id: &str,
+        resolution: TrackedChangeResolution,
+    ) -> Result<(), DocumentError> {
+        let id = validate_tracked_change_id(id)?;
+        let mut changed = false;
+        for section in &mut self.sections {
+            changed |= resolve_tracked_change_in_blocks(&mut section.blocks, &id, resolution);
+        }
+        if !changed {
+            return Err(DocumentError::TrackedChangeNotFound { id });
+        }
+        self.prune_unanchored_comments();
+        self.touch();
+        Ok(())
+    }
+
+    fn resolve_all_tracked_changes(&mut self, resolution: TrackedChangeResolution) -> bool {
+        let mut changed = false;
+        for section in &mut self.sections {
+            changed |= resolve_all_tracked_changes_in_blocks(&mut section.blocks, resolution);
+        }
+        if changed {
+            self.prune_unanchored_comments();
+        }
+        changed
+    }
+
     fn touch(&mut self) {
         self.meta.modified_at = Utc::now();
     }
@@ -261,10 +316,24 @@ impl DocumentMeta {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TrackChangesState {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recording: bool,
+}
+
+impl TrackChangesState {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 pub const DEFAULT_COMMENT_AUTHOR: &str = "Local User";
+pub const DEFAULT_TRACKED_CHANGE_AUTHOR: &str = "Local User";
 pub const MAX_COMMENT_ID_LEN: usize = 64;
 pub const MAX_COMMENT_BODY_CHARS: usize = 2_000;
 pub const MAX_COMMENT_AUTHOR_CHARS: usize = 80;
+pub const MAX_TRACKED_CHANGE_ID_LEN: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentThread {
@@ -275,6 +344,32 @@ pub struct CommentThread {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub resolved: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedChange {
+    pub id: String,
+    pub kind: TrackedChangeKind,
+    pub author: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackedChangeKind {
+    Insertion,
+    Deletion,
+}
+
+impl TrackedChange {
+    pub fn new(kind: TrackedChangeKind) -> Self {
+        Self {
+            id: format!("chg-{}", Uuid::new_v4().simple()),
+            kind,
+            author: DEFAULT_TRACKED_CHANGE_AUTHOR.to_string(),
+            created_at: Utc::now(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -575,6 +670,8 @@ pub struct Inline {
     pub style: InlineStyle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<PageField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_change: Option<TrackedChange>,
 }
 
 impl Inline {
@@ -586,6 +683,7 @@ impl Inline {
             comment_ids: Vec::new(),
             style: InlineStyle::default(),
             field: None,
+            tracked_change: None,
         }
     }
 
@@ -597,6 +695,7 @@ impl Inline {
             comment_ids: Vec::new(),
             style: InlineStyle::default(),
             field: Some(field),
+            tracked_change: None,
         }
     }
 
@@ -864,6 +963,17 @@ pub enum DocumentCommand {
     UpdateStyle {
         style: Style,
     },
+    SetTrackChangesRecording {
+        enabled: bool,
+    },
+    AcceptTrackedChange {
+        id: String,
+    },
+    RejectTrackedChange {
+        id: String,
+    },
+    AcceptAllTrackedChanges,
+    RejectAllTrackedChanges,
     AddComment {
         id: String,
         author: Option<String>,
@@ -966,6 +1076,16 @@ pub enum DocumentError {
     CommentNotFound { id: String },
     #[error("comment {id} has no selected text anchor")]
     CommentNotAnchored { id: String },
+    #[error("invalid tracked change id")]
+    InvalidTrackedChangeId,
+    #[error("tracked change {id} was not found")]
+    TrackedChangeNotFound { id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackedChangeResolution {
+    Accept,
+    Reject,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -995,6 +1115,24 @@ pub fn validate_comment_id(value: &str) -> Result<String, DocumentError> {
         Ok(trimmed.to_string())
     } else {
         Err(DocumentError::InvalidCommentId)
+    }
+}
+
+pub fn validate_tracked_change_id(value: &str) -> Result<String, DocumentError> {
+    let trimmed = value.trim();
+    let Some(suffix) = trimmed.strip_prefix("chg-") else {
+        return Err(DocumentError::InvalidTrackedChangeId);
+    };
+    if trimmed.len() > MAX_TRACKED_CHANGE_ID_LEN || suffix.is_empty() {
+        return Err(DocumentError::InvalidTrackedChangeId);
+    }
+    if suffix
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        Ok(trimmed.to_string())
+    } else {
+        Err(DocumentError::InvalidTrackedChangeId)
     }
 }
 
@@ -1033,8 +1171,8 @@ pub fn normalize_comment_author(value: Option<&str>) -> Result<String, DocumentE
 
 fn normalize_comment_anchors_in_block(block: &mut Block) {
     match block {
-        Block::Paragraph(paragraph) => normalize_comment_anchors_in_inlines(&mut paragraph.inlines),
-        Block::Heading(heading) => normalize_comment_anchors_in_inlines(&mut heading.inlines),
+        Block::Paragraph(paragraph) => normalize_inline_metadata(&mut paragraph.inlines),
+        Block::Heading(heading) => normalize_inline_metadata(&mut heading.inlines),
         Block::List(list) => {
             for item in &mut list.items {
                 for block in &mut item.blocks {
@@ -1055,13 +1193,149 @@ fn normalize_comment_anchors_in_block(block: &mut Block) {
     }
 }
 
-fn normalize_comment_anchors_in_inlines(inlines: &mut [Inline]) {
+fn normalize_inline_metadata(inlines: &mut [Inline]) {
     for inline in inlines {
         let mut seen = BTreeSet::new();
         inline
             .comment_ids
             .retain(|id| validate_comment_id(id).is_ok() && seen.insert(id.clone()));
+        if let Some(change) = inline.tracked_change.as_mut() {
+            if validate_tracked_change_id(&change.id).is_err() {
+                inline.tracked_change = None;
+                continue;
+            }
+            change.author = normalize_comment_author(Some(&change.author))
+                .unwrap_or_else(|_| DEFAULT_TRACKED_CHANGE_AUTHOR.to_string());
+        }
     }
+}
+
+fn resolve_tracked_change_in_blocks(
+    blocks: &mut [Block],
+    change_id: &str,
+    resolution: TrackedChangeResolution,
+) -> bool {
+    let mut changed = false;
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                changed |= resolve_tracked_change_in_inlines(
+                    &mut paragraph.inlines,
+                    change_id,
+                    resolution,
+                );
+            }
+            Block::Heading(heading) => {
+                changed |=
+                    resolve_tracked_change_in_inlines(&mut heading.inlines, change_id, resolution);
+            }
+            Block::List(list) => {
+                for item in &mut list.items {
+                    changed |=
+                        resolve_tracked_change_in_blocks(&mut item.blocks, change_id, resolution);
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        changed |= resolve_tracked_change_in_blocks(
+                            &mut cell.blocks,
+                            change_id,
+                            resolution,
+                        );
+                    }
+                }
+            }
+            Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+    changed
+}
+
+fn resolve_all_tracked_changes_in_blocks(
+    blocks: &mut [Block],
+    resolution: TrackedChangeResolution,
+) -> bool {
+    let mut changed = false;
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                changed |=
+                    resolve_all_tracked_changes_in_inlines(&mut paragraph.inlines, resolution);
+            }
+            Block::Heading(heading) => {
+                changed |= resolve_all_tracked_changes_in_inlines(&mut heading.inlines, resolution);
+            }
+            Block::List(list) => {
+                for item in &mut list.items {
+                    changed |= resolve_all_tracked_changes_in_blocks(&mut item.blocks, resolution);
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        changed |=
+                            resolve_all_tracked_changes_in_blocks(&mut cell.blocks, resolution);
+                    }
+                }
+            }
+            Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+    changed
+}
+
+fn resolve_tracked_change_in_inlines(
+    inlines: &mut Vec<Inline>,
+    change_id: &str,
+    resolution: TrackedChangeResolution,
+) -> bool {
+    resolve_tracked_changes_in_inlines(inlines, resolution, |change| change.id == change_id)
+}
+
+fn resolve_all_tracked_changes_in_inlines(
+    inlines: &mut Vec<Inline>,
+    resolution: TrackedChangeResolution,
+) -> bool {
+    resolve_tracked_changes_in_inlines(inlines, resolution, |_| true)
+}
+
+fn resolve_tracked_changes_in_inlines<F>(
+    inlines: &mut Vec<Inline>,
+    resolution: TrackedChangeResolution,
+    mut matches_change: F,
+) -> bool
+where
+    F: FnMut(&TrackedChange) -> bool,
+{
+    let mut changed = false;
+    let mut next = Vec::with_capacity(inlines.len());
+    for mut inline in std::mem::take(inlines) {
+        let Some(change) = inline.tracked_change.clone() else {
+            next.push(inline);
+            continue;
+        };
+        if !matches_change(&change) {
+            next.push(inline);
+            continue;
+        }
+
+        changed = true;
+        let remove_text = matches!(
+            (resolution, change.kind),
+            (TrackedChangeResolution::Accept, TrackedChangeKind::Deletion)
+                | (
+                    TrackedChangeResolution::Reject,
+                    TrackedChangeKind::Insertion
+                )
+        );
+        if !remove_text {
+            inline.tracked_change = None;
+            next.push(inline);
+        }
+    }
+    *inlines = next;
+    changed
 }
 
 fn remove_comment_anchors_from_blocks(blocks: &mut [Block], comment_id: &str) {
@@ -1300,6 +1574,233 @@ mod tests {
     }
 
     #[test]
+    fn track_changes_recording_toggle_is_document_state() {
+        let mut document = Document::new_untitled();
+
+        document
+            .apply_command(DocumentCommand::SetTrackChangesRecording { enabled: true })
+            .expect("recording should enable");
+        assert!(document.track_changes.recording);
+
+        document
+            .apply_command(DocumentCommand::SetTrackChangesRecording { enabled: false })
+            .expect("recording should disable");
+        assert!(!document.track_changes.recording);
+    }
+
+    #[test]
+    fn tracked_change_accept_and_reject_individual_changes() {
+        let created_at = DateTime::parse_from_rfc3339("2026-06-25T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let insertion = TrackedChange {
+            id: "chg-insert".to_string(),
+            kind: TrackedChangeKind::Insertion,
+            author: DEFAULT_TRACKED_CHANGE_AUTHOR.to_string(),
+            created_at,
+        };
+        let deletion = TrackedChange {
+            id: "chg-delete".to_string(),
+            kind: TrackedChangeKind::Deletion,
+            author: DEFAULT_TRACKED_CHANGE_AUTHOR.to_string(),
+            created_at,
+        };
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Keep "),
+                Inline {
+                    text: "added".to_string(),
+                    marks: Vec::new(),
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: Default::default(),
+                    field: None,
+                    tracked_change: Some(insertion.clone()),
+                },
+                Inline {
+                    text: " removed".to_string(),
+                    marks: Vec::new(),
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: Default::default(),
+                    field: None,
+                    tracked_change: Some(deletion.clone()),
+                },
+            ],
+        })];
+
+        document
+            .apply_command(DocumentCommand::AcceptTrackedChange {
+                id: insertion.id.clone(),
+            })
+            .expect("insertion should accept");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("block should remain a paragraph");
+        };
+        assert_eq!(paragraph.inlines[1].text, "added");
+        assert_eq!(paragraph.inlines[1].tracked_change, None);
+        assert!(paragraph.inlines.iter().any(|inline| inline
+            .tracked_change
+            .as_ref()
+            .map(|change| &change.id)
+            == Some(&deletion.id)));
+
+        document
+            .apply_command(DocumentCommand::RejectTrackedChange {
+                id: deletion.id.clone(),
+            })
+            .expect("deletion should reject");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("block should remain a paragraph");
+        };
+        assert_eq!(
+            paragraph
+                .inlines
+                .iter()
+                .map(|inline| inline.text.as_str())
+                .collect::<String>(),
+            "Keep added removed"
+        );
+        assert!(paragraph
+            .inlines
+            .iter()
+            .all(|inline| inline.tracked_change.is_none()));
+    }
+
+    #[test]
+    fn tracked_change_accept_all_and_reject_all_cleanup_text_and_comments() {
+        let created_at = DateTime::parse_from_rfc3339("2026-06-25T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut reject_document = Document::new_untitled();
+        reject_document.comments.insert(
+            "cmt-insert".to_string(),
+            CommentThread {
+                id: "cmt-insert".to_string(),
+                author: DEFAULT_COMMENT_AUTHOR.to_string(),
+                body: "Inserted range".to_string(),
+                created_at,
+                updated_at: created_at,
+                resolved: false,
+            },
+        );
+        reject_document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Before "),
+                Inline {
+                    text: "inserted".to_string(),
+                    marks: Vec::new(),
+                    link: None,
+                    comment_ids: vec!["cmt-insert".to_string()],
+                    style: Default::default(),
+                    field: None,
+                    tracked_change: Some(TrackedChange {
+                        id: "chg-insert-all".to_string(),
+                        kind: TrackedChangeKind::Insertion,
+                        author: DEFAULT_TRACKED_CHANGE_AUTHOR.to_string(),
+                        created_at,
+                    }),
+                },
+                Inline {
+                    text: " deleted".to_string(),
+                    marks: Vec::new(),
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: Default::default(),
+                    field: None,
+                    tracked_change: Some(TrackedChange {
+                        id: "chg-delete-all".to_string(),
+                        kind: TrackedChangeKind::Deletion,
+                        author: DEFAULT_TRACKED_CHANGE_AUTHOR.to_string(),
+                        created_at,
+                    }),
+                },
+            ],
+        })];
+
+        reject_document
+            .apply_command(DocumentCommand::RejectAllTrackedChanges)
+            .expect("reject all should resolve");
+        let Block::Paragraph(paragraph) = &reject_document.sections[0].blocks[0] else {
+            panic!("block should remain a paragraph");
+        };
+        assert_eq!(
+            paragraph
+                .inlines
+                .iter()
+                .map(|inline| inline.text.as_str())
+                .collect::<String>(),
+            "Before  deleted"
+        );
+        assert!(reject_document.comments.is_empty());
+
+        let mut accept_document = reject_document.clone();
+        accept_document.comments.clear();
+        accept_document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![
+                Inline::text("Before "),
+                Inline {
+                    text: "inserted".to_string(),
+                    marks: Vec::new(),
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: Default::default(),
+                    field: None,
+                    tracked_change: Some(TrackedChange {
+                        id: "chg-insert-all".to_string(),
+                        kind: TrackedChangeKind::Insertion,
+                        author: DEFAULT_TRACKED_CHANGE_AUTHOR.to_string(),
+                        created_at,
+                    }),
+                },
+                Inline {
+                    text: " deleted".to_string(),
+                    marks: Vec::new(),
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: Default::default(),
+                    field: None,
+                    tracked_change: Some(TrackedChange {
+                        id: "chg-delete-all".to_string(),
+                        kind: TrackedChangeKind::Deletion,
+                        author: DEFAULT_TRACKED_CHANGE_AUTHOR.to_string(),
+                        created_at,
+                    }),
+                },
+            ],
+        })];
+
+        accept_document
+            .apply_command(DocumentCommand::AcceptAllTrackedChanges)
+            .expect("accept all should resolve");
+        let Block::Paragraph(paragraph) = &accept_document.sections[0].blocks[0] else {
+            panic!("block should remain a paragraph");
+        };
+        assert_eq!(
+            paragraph
+                .inlines
+                .iter()
+                .map(|inline| inline.text.as_str())
+                .collect::<String>(),
+            "Before inserted"
+        );
+        assert!(paragraph
+            .inlines
+            .iter()
+            .all(|inline| inline.tracked_change.is_none()));
+    }
+
+    #[test]
     fn read_only_page_region_rejects_command_update() {
         let mut document = Document::new_untitled();
         document.sections[0].page_regions.footer.read_only = true;
@@ -1512,6 +2013,7 @@ mod tests {
                 comment_ids: vec!["cmt-1234".to_string()],
                 style: Default::default(),
                 field: None,
+                tracked_change: None,
             }],
         })];
 
@@ -1603,6 +2105,7 @@ mod tests {
                 comment_ids: vec!["cmt-review".to_string()],
                 style: Default::default(),
                 field: None,
+                tracked_change: None,
             }],
         })];
 
@@ -1655,6 +2158,7 @@ mod tests {
                 comment_ids: vec!["cmt-delete-me".to_string()],
                 style: Default::default(),
                 field: None,
+                tracked_change: None,
             }],
         })];
         document

@@ -13,6 +13,8 @@ import {
   insertTableTransaction,
   mapSpellIssuesToEditorRanges,
   pastePlainTextAsBlocksTransaction,
+  recordSelectedDeletionTransaction,
+  recordTextInsertionTransaction,
   removeEditorCommentTransaction,
   removeEditorLinkTransaction,
   removeEditorBlockBookmarkTransaction,
@@ -400,6 +402,104 @@ describe('findEditorDocMatches', () => {
     expect(transaction).toBeDefined();
     const nextState = state.apply(transaction!);
     expect(nextState.doc.firstChild?.firstChild?.marks.map((mark) => mark.attrs.id)).toEqual(['cmt-keep']);
+  });
+
+  it('records inserted text with a tracked insertion mark', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [{ type: 'paragraph', attrs: { style: 'body' } }]
+    });
+    const state = EditorState.create({ doc });
+
+    const transaction = recordTextInsertionTransaction(state, 'Hello', { from: 1, to: 1, empty: true });
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    const firstText = nextState.doc.firstChild?.firstChild;
+    expect(firstText?.text).toBe('Hello');
+    const tracked = firstText?.marks.find((mark) => mark.type.name === 'trackedChange');
+    expect(tracked?.attrs.kind).toBe('insertion');
+    expect(tracked?.attrs.author).toBe('Local User');
+    expect(String(tracked?.attrs.id)).toMatch(/^chg-[A-Za-z0-9_-]+$/);
+  });
+
+  it('marks selected text as a tracked deletion instead of removing it', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Keep this text' }]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, 6, 10))
+    );
+
+    const transaction = recordSelectedDeletionTransaction(state);
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.textContent).toBe('Keep this text');
+    const changed = nextState.doc.firstChild?.child(1);
+    expect(changed?.text).toBe('this');
+    const tracked = changed?.marks.find((mark) => mark.type.name === 'trackedChange');
+    expect(tracked?.attrs.kind).toBe('deletion');
+  });
+
+  it('records whitespace-only selected text as a tracked deletion', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Keep  text' }]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, 5, 7))
+    );
+
+    const transaction = recordSelectedDeletionTransaction(state);
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.textContent).toBe('Keep  text');
+    const changed = nextState.doc.firstChild?.child(1);
+    expect(changed?.text).toBe('  ');
+    expect(changed?.marks.find((mark) => mark.type.name === 'trackedChange')?.attrs.kind).toBe('deletion');
+  });
+
+  it('keeps replacement text after the tracked deleted selection', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: { style: 'body' },
+          content: [{ type: 'text', text: 'Keep old text' }]
+        }
+      ]
+    });
+    const state = EditorState.create({ doc }).apply(
+      EditorState.create({ doc }).tr.setSelection(TextSelection.create(doc, 6, 9))
+    );
+
+    const transaction = recordTextInsertionTransaction(state, 'new');
+
+    expect(transaction).toBeDefined();
+    const nextState = state.apply(transaction!);
+    expect(nextState.doc.textContent).toBe('Keep oldnew text');
+    const deleted = nextState.doc.firstChild?.child(1);
+    const inserted = nextState.doc.firstChild?.child(2);
+    expect(deleted?.text).toBe('old');
+    expect(deleted?.marks.find((mark) => mark.type.name === 'trackedChange')?.attrs.kind).toBe('deletion');
+    expect(inserted?.text).toBe('new');
+    expect(inserted?.marks.find((mark) => mark.type.name === 'trackedChange')?.attrs.kind).toBe('insertion');
   });
 
   it('rejects unsafe link marks from toolbar transactions', () => {

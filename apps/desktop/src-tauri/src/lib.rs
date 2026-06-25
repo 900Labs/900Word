@@ -1826,6 +1826,26 @@ mod tests {
     }
 
     #[test]
+    fn track_changes_privacy_and_format_docs_state_boundaries() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let privacy = std::fs::read_to_string(manifest_dir.join("../../../docs/PRIVACY.md"))
+            .expect("privacy doc must be readable");
+        let privacy_model =
+            std::fs::read_to_string(manifest_dir.join("../../../docs/PRIVACY_MODEL.md"))
+                .expect("privacy model doc must be readable");
+        let file_formats =
+            std::fs::read_to_string(manifest_dir.join("../../../docs/FILE_FORMATS.md"))
+                .expect("file formats doc must be readable");
+
+        assert!(privacy.contains("Tracked changes can reveal edit history and deleted text"));
+        assert!(privacy_model.contains("The default author string is `Local User`"));
+        assert!(privacy_model.contains("no operating-system username"));
+        assert!(file_formats.contains("900Word-authored text-only tracked changes"));
+        assert!(file_formats.contains("`word900` metadata"));
+        assert!(file_formats.contains("DOCX track changes"));
+    }
+
+    #[test]
     fn default_capability_keeps_shell_access_out_of_core() {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let capability = std::fs::read_to_string(manifest_dir.join("capabilities/default.json"))
