@@ -591,3 +591,11 @@ Status: complete.
 - Ignore falsy `w:pageBreakBefore` values and nested paragraph flags such as table-cell page-break-before with generic warnings.
 - Keep export on the existing generated explicit `w:br w:type="page"` run shape for local `PageBreak` blocks.
 - Keep hidden Word layout fidelity, deterministic pagination, complex section semantics, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
+
+## Sprint 063: DOCX Generic Font-Family Interoperability
+
+Status: complete.
+
+- Import allowlisted DOCX `w:rFonts` values into existing generic 900Word inline font-family IDs: `system-ui`, `serif`, `sans-serif`, and `monospace`.
+- Export valid 900Word-authored generic inline font families as generated static DOCX `w:rFonts` values.
+- Ignore arbitrary source font names, embedded fonts, theme fonts, complex script font attributes, exact font fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies.

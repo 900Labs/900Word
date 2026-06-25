@@ -60,6 +60,7 @@ const MAX_DOCX_FIRST_LINE_INDENT_MM: i16 = 100;
 const MIN_DOCX_LINE_SPACING_PER_MILLE: u16 = 500;
 const MAX_DOCX_LINE_SPACING_PER_MILLE: u16 = 3000;
 const SUPPORTED_DOCX_INLINE_FONT_SIZES_PT: &[u16] = &[9, 10, 11, 12, 14, 16, 18, 24, 32];
+const DOCX_RUN_FONT_ATTRIBUTES: &[&[u8]] = &[b"ascii", b"hAnsi", b"eastAsia"];
 const IMPORTED_DOCX_REVISION_AUTHOR: &str = "External Reviewer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2578,6 +2579,42 @@ fn docx_run_font_size_pt(start: &BytesStart<'_>, name: &str) -> Result<Option<u1
     }
 }
 
+fn docx_run_font_family(
+    start: &BytesStart<'_>,
+    name: &str,
+) -> Result<Option<&'static str>, DocxError> {
+    for attr in DOCX_RUN_FONT_ATTRIBUTES {
+        if let Some(value) = attr_value(start, attr, name)? {
+            if let Some(family) = docx_import_font_family(&value) {
+                return Ok(Some(family));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn docx_import_font_family(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "aptos" | "calibri" | "segoe ui" | "system-ui" => Some("system-ui"),
+        "arial" | "helvetica" | "liberation sans" | "sans-serif" => Some("sans-serif"),
+        "times new roman" | "georgia" | "liberation serif" | "serif" => Some("serif"),
+        "courier new" | "consolas" | "menlo" | "monaco" | "liberation mono" | "monospace" => {
+            Some("monospace")
+        }
+        _ => None,
+    }
+}
+
+fn docx_export_font_family(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "system-ui" => Some("Aptos"),
+        "sans-serif" => Some("Arial"),
+        "serif" => Some("Times New Roman"),
+        "monospace" => Some("Courier New"),
+        _ => None,
+    }
+}
+
 fn docx_run_text_color(start: &BytesStart<'_>, name: &str) -> Result<Option<String>, DocxError> {
     if attr_value(start, b"themeColor", name)?.is_some() {
         return Ok(None);
@@ -4080,6 +4117,17 @@ fn parse_run_properties(
                 if let Some(font_size) = docx_run_font_size_pt(&start, name)? {
                     properties.style.font_size_pt = Some(font_size);
                 }
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"rFonts" => {
+                if let Some(font_family) = docx_run_font_family(&start, name)? {
+                    properties.style.font_family = Some(font_family.to_string());
+                }
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"rFonts" => {
+                if let Some(font_family) = docx_run_font_family(&start, name)? {
+                    properties.style.font_family = Some(font_family.to_string());
+                }
+                skip_element(reader, b"rFonts", name)?;
             }
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"color" =>
@@ -6108,6 +6156,18 @@ fn render_run_properties_xml(inline: &Inline, output: &mut String) {
         } else if marks.contains(&InlineMark::Subscript) {
             output.push_str("<w:vertAlign w:val=\"subscript\"/>");
         }
+        if let Some(font_family) = inline
+            .style
+            .font_family
+            .as_deref()
+            .and_then(docx_export_font_family)
+        {
+            output.push_str("<w:rFonts w:ascii=\"");
+            output.push_str(font_family);
+            output.push_str("\" w:hAnsi=\"");
+            output.push_str(font_family);
+            output.push_str("\"/>");
+        }
         if let Some(font_size) = inline
             .style
             .font_size_pt
@@ -6143,8 +6203,13 @@ fn render_run_properties_xml(inline: &Inline, output: &mut String) {
 
 fn has_exportable_docx_inline_style(style: &InlineStyle) -> bool {
     style
-        .font_size_pt
-        .is_some_and(|value| SUPPORTED_DOCX_INLINE_FONT_SIZES_PT.contains(&value))
+        .font_family
+        .as_deref()
+        .and_then(docx_export_font_family)
+        .is_some()
+        || style
+            .font_size_pt
+            .is_some_and(|value| SUPPORTED_DOCX_INLINE_FONT_SIZES_PT.contains(&value))
         || style
             .text_color
             .as_deref()
@@ -7297,8 +7362,8 @@ mod tests {
             r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
 <w:body>
   <w:p>
-    <w:r><w:rPr><w:strike/><w:vertAlign w:val="superscript"/><w:sz w:val="28"/><w:color w:val="1F2937"/><w:highlight w:val="yellow"/></w:rPr><w:t>Styled</w:t></w:r>
-    <w:r><w:rPr><w:dstrike/><w:vertAlign w:val="subscript"/><w:sz w:val="18"/><w:color w:val="0066CC"/><w:highlight w:val="cyan"/></w:rPr><w:t> small</w:t></w:r>
+    <w:r><w:rPr><w:strike/><w:vertAlign w:val="superscript"/><w:rFonts w:ascii="Times New Roman"/><w:sz w:val="28"/><w:color w:val="1F2937"/><w:highlight w:val="yellow"/></w:rPr><w:t>Styled</w:t></w:r>
+    <w:r><w:rPr><w:dstrike/><w:vertAlign w:val="subscript"/><w:rFonts w:ascii="Arial"/><w:sz w:val="18"/><w:color w:val="0066CC"/><w:highlight w:val="cyan"/></w:rPr><w:t> small</w:t></w:r>
   </w:p>
 </w:body></w:document>"##,
             None,
@@ -7317,7 +7382,7 @@ mod tests {
         assert_eq!(
             paragraph.inlines[0].style,
             InlineStyle {
-                font_family: None,
+                font_family: Some("serif".to_string()),
                 font_size_pt: Some(14),
                 text_color: Some("#1f2937".to_string()),
                 highlight_color: Some("#fff3bf".to_string()),
@@ -7326,6 +7391,10 @@ mod tests {
         assert_eq!(
             paragraph.inlines[1].marks,
             vec![InlineMark::Strikethrough, InlineMark::Subscript]
+        );
+        assert_eq!(
+            paragraph.inlines[1].style.font_family.as_deref(),
+            Some("sans-serif")
         );
         assert_eq!(paragraph.inlines[1].style.font_size_pt, Some(9));
         assert_eq!(
@@ -7344,7 +7413,7 @@ mod tests {
             r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
 <w:body>
   <w:p>
-    <w:r><w:rPr><w:strike w:val="false"/><w:vertAlign w:val="baseline"/><w:sz w:val="27"/><w:color w:val="auto"/><w:highlight w:val="red"/></w:rPr><w:t>Unsupported</w:t></w:r>
+    <w:r><w:rPr><w:strike w:val="false"/><w:vertAlign w:val="baseline"/><w:rFonts w:ascii="Private Font"/><w:sz w:val="27"/><w:color w:val="auto"/><w:highlight w:val="red"/></w:rPr><w:t>Unsupported</w:t></w:r>
     <w:r><w:rPr><w:color w:val="1F2937" w:themeColor="accent1"/><w:highlight w:val="darkYellow"/></w:rPr><w:t> themed</w:t></w:r>
   </w:p>
 </w:body></w:document>"##,
@@ -7361,6 +7430,73 @@ mod tests {
         assert_eq!(paragraph.inlines[0].text, "Unsupported themed");
         assert!(paragraph.inlines[0].marks.is_empty());
         assert!(paragraph.inlines[0].style.is_default());
+    }
+
+    #[test]
+    fn skips_nested_content_inside_started_docx_run_fonts() {
+        let bytes = synthetic_docx(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r>
+      <w:rPr>
+        <w:rFonts w:ascii="Courier New"><w:sz w:val="28"/></w:rFonts>
+      </w:rPr>
+      <w:t>Code</w:t>
+    </w:r>
+  </w:p>
+</w:body></w:document>"##,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("started run fonts should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(
+            paragraph.inlines[0].style.font_family.as_deref(),
+            Some("monospace")
+        );
+        assert_eq!(paragraph.inlines[0].style.font_size_pt, None);
+    }
+
+    #[test]
+    fn imports_docx_run_fonts_from_supported_attributes_with_precedence() {
+        let bytes = synthetic_docx(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r><w:rPr><w:rFonts w:hAnsi="Arial"/></w:rPr><w:t>Sans</w:t></w:r>
+    <w:r><w:rPr><w:rFonts w:eastAsia="Courier New"/></w:rPr><w:t> Mono</w:t></w:r>
+    <w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Arial"/></w:rPr><w:t> Serif</w:t></w:r>
+    <w:r><w:rPr><w:rFonts w:cs="Arial"/></w:rPr><w:t> Ignored</w:t></w:r>
+  </w:p>
+</w:body></w:document>"##,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("run fonts should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+
+        assert_eq!(paragraph.inlines.len(), 4);
+        assert_eq!(
+            paragraph.inlines[0].style.font_family.as_deref(),
+            Some("sans-serif")
+        );
+        assert_eq!(
+            paragraph.inlines[1].style.font_family.as_deref(),
+            Some("monospace")
+        );
+        assert_eq!(
+            paragraph.inlines[2].style.font_family.as_deref(),
+            Some("serif")
+        );
+        assert_eq!(paragraph.inlines[3].style.font_family, None);
     }
 
     #[test]
@@ -9232,7 +9368,9 @@ mod tests {
         assert!(document_xml.contains(r#"<w:color w:val="0066CC"/>"#));
         assert!(document_xml.contains(r#"<w:highlight w:val="yellow"/>"#));
         assert!(document_xml.contains(r#"<w:highlight w:val="cyan"/>"#));
-        assert!(!document_xml.contains("w:rFonts"));
+        assert!(document_xml
+            .contains(r#"<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>"#));
+        assert!(!document_xml.contains("w:cs="));
 
         let parsed = read_docx_bytes(&bytes).expect("formatted inline text should import");
         let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
@@ -9249,7 +9387,10 @@ mod tests {
                 InlineMark::Superscript,
             ]
         );
-        assert_eq!(paragraph.inlines[0].style.font_family, None);
+        assert_eq!(
+            paragraph.inlines[0].style.font_family.as_deref(),
+            Some("serif")
+        );
         assert_eq!(paragraph.inlines[0].style.font_size_pt, Some(14));
         assert_eq!(
             paragraph.inlines[0].style.text_color.as_deref(),
