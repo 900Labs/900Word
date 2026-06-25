@@ -465,3 +465,13 @@ Status: complete.
 - Pad simple one-cell-short rows with editable empty cells while falling back to existing paragraph paste for out-of-bounds or too-irregular tabular text.
 - Keep list paste priority, native partial replacement paste behavior, `.odt` as canonical saved format, and `word-core` table sync unchanged.
 - Keep rich spreadsheet paste, formulas, merged cells, table sizing, HTML clipboard import, external spreadsheet parser dependencies, network behavior, telemetry, accounts, and cloud sync out of scope.
+
+## Sprint 050: JPEG Import Metadata Stripping MVP
+
+Status: complete.
+
+- Strip APP0-APP15 and COM marker segments from accepted local JPEG/JPG image imports before embedding the bytes in `word-core` document assets.
+- Keep SOI/EOI, structural image segments, scan headers, and entropy-coded image data intact when the JPEG marker structure is accepted.
+- Reject malformed or ambiguous metadata-bearing JPEGs with the existing generic unsupported-image error instead of storing partially rewritten bytes.
+- Preserve PNG, GIF, and WebP import behavior, `.odt` as canonical saved format, source path/filename omission, and the existing 8 MiB import limit.
+- Keep JPEG decoding, EXIF interpretation/selective preservation, compression, downsampling, resizing, crop/rotation, broad malformed-JPEG recovery, network behavior, telemetry, accounts, cloud sync, and heavy image-processing dependencies out of scope.

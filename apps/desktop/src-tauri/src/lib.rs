@@ -1244,7 +1244,7 @@ fn read_validated_image(path: &Path) -> Result<(&'static str, &'static str, Vec<
         return Err(IMAGE_TOO_LARGE_ERROR.to_string());
     }
 
-    let bytes = fs::read(path).map_err(safe_io_error)?;
+    let mut bytes = fs::read(path).map_err(safe_io_error)?;
     if bytes.is_empty() {
         return Err("image file is unsupported".to_string());
     }
@@ -1256,8 +1256,124 @@ fn read_validated_image(path: &Path) -> Result<(&'static str, &'static str, Vec<
     if detected_media_type != expected_media_type {
         return Err("image file is unsupported".to_string());
     }
+    if detected_media_type == "image/jpeg" {
+        bytes = strip_jpeg_import_metadata(&bytes)
+            .ok_or_else(|| "image file is unsupported".to_string())?;
+        if bytes.len() as u64 > MAX_IMAGE_BYTES {
+            return Err(IMAGE_TOO_LARGE_ERROR.to_string());
+        }
+    }
 
     Ok((extension, detected_media_type, bytes))
+}
+
+fn strip_jpeg_import_metadata(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.starts_with(b"\xff\xd8") {
+        return None;
+    }
+
+    let mut sanitized = vec![0xff, 0xd8];
+    let mut index = 2;
+    let mut saw_scan = false;
+    loop {
+        if index >= bytes.len() || bytes[index] != 0xff {
+            return None;
+        }
+        while index < bytes.len() && bytes[index] == 0xff {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            return None;
+        }
+        let marker = bytes[index];
+        index += 1;
+
+        if marker == 0x00 || marker == 0xd8 {
+            return None;
+        }
+        if marker == 0xd9 {
+            sanitized.extend_from_slice(&[0xff, marker]);
+            return (saw_scan && index == bytes.len()).then_some(sanitized);
+        }
+        if is_jpeg_import_metadata_marker(marker) {
+            if saw_scan {
+                return None;
+            }
+            index = jpeg_segment_end(bytes, index)?;
+            continue;
+        }
+        if is_jpeg_import_marker_without_payload(marker) {
+            if !saw_scan && (0xd0..=0xd7).contains(&marker) {
+                return None;
+            }
+            sanitized.extend_from_slice(&[0xff, marker]);
+            continue;
+        }
+
+        let segment_end = jpeg_segment_end(bytes, index)?;
+        sanitized.extend_from_slice(&[0xff, marker]);
+        sanitized.extend_from_slice(&bytes[index..segment_end]);
+        index = segment_end;
+
+        if marker == 0xda {
+            saw_scan = true;
+            index = copy_jpeg_scan_data_until_marker(bytes, index, &mut sanitized)?;
+        }
+    }
+}
+
+fn jpeg_segment_end(bytes: &[u8], length_index: usize) -> Option<usize> {
+    if length_index + 2 > bytes.len() {
+        return None;
+    }
+    let segment_length =
+        u16::from_be_bytes([bytes[length_index], bytes[length_index + 1]]) as usize;
+    if segment_length < 2 {
+        return None;
+    }
+    let segment_end = length_index.checked_add(segment_length)?;
+    if segment_end > bytes.len() {
+        return None;
+    }
+    Some(segment_end)
+}
+
+fn copy_jpeg_scan_data_until_marker(
+    bytes: &[u8],
+    scan_start: usize,
+    sanitized: &mut Vec<u8>,
+) -> Option<usize> {
+    let mut index = scan_start;
+    while index < bytes.len() {
+        if bytes[index] != 0xff {
+            index += 1;
+            continue;
+        }
+        let marker_start = index;
+        let mut marker_index = index + 1;
+        while marker_index < bytes.len() && bytes[marker_index] == 0xff {
+            marker_index += 1;
+        }
+        if marker_index >= bytes.len() {
+            return None;
+        }
+        let marker = bytes[marker_index];
+        if marker == 0x00 || (0xd0..=0xd7).contains(&marker) {
+            index = marker_index + 1;
+            continue;
+        }
+        sanitized.extend_from_slice(&bytes[scan_start..marker_start]);
+        return Some(marker_start);
+    }
+    None
+}
+
+fn is_jpeg_import_marker_without_payload(marker: u8) -> bool {
+    marker == 0x01 || (0xd0..=0xd9).contains(&marker)
+}
+
+fn is_jpeg_import_metadata_marker(marker: u8) -> bool {
+    (0xe0..=0xef).contains(&marker) || marker == 0xfe
 }
 
 fn image_extension(path: &Path) -> Result<&'static str, String> {
@@ -2006,6 +2122,102 @@ mod tests {
         let serialized = serde_json::to_string(&document).expect("document should serialize");
         assert!(!serialized.contains("private-client-logo"));
         assert!(!serialized.contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn image_import_strips_jpeg_metadata_payload_and_updates_byte_len() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("private-client-photo.jpg");
+        let private_exif = b"PRIVATE-EXIF local/user/photo.jpg";
+        let private_comment = b"PRIVATE-COMMENT camera serial";
+        let jpeg = jpeg_with_metadata_segment(
+            &jpeg_with_metadata_segment(&tiny_jpeg(), 0xe1, private_exif),
+            0xfe,
+            private_comment,
+        );
+        std::fs::write(&image_path, jpeg).expect("jpeg should write");
+        let mut session = DocumentSession::default();
+
+        let document = import_image_into_session(&mut session, &image_path, Some(0), Some(1))
+            .expect("metadata-bearing jpeg should import");
+
+        let Block::Image(image) = &document.sections[0].blocks[1] else {
+            panic!("inserted block should be an image");
+        };
+        assert!(image.asset_id.ends_with(".jpg"));
+        let asset = document
+            .assets
+            .get(&image.asset_id)
+            .expect("asset should be embedded");
+        assert_eq!(asset.media_type, "image/jpeg");
+        assert_eq!(asset.byte_len, tiny_jpeg().len());
+        assert_eq!(asset.bytes, tiny_jpeg());
+        assert!(!asset
+            .bytes
+            .windows(private_exif.len())
+            .any(|window| window == private_exif));
+        assert!(!asset
+            .bytes
+            .windows(private_comment.len())
+            .any(|window| window == private_comment));
+
+        let serialized = serde_json::to_string(&document).expect("document should serialize");
+        assert!(!serialized.contains("private-client-photo"));
+        assert!(!serialized.contains(dir.path().to_string_lossy().as_ref()));
+        assert!(!serialized.contains("PRIVATE-EXIF"));
+        assert!(!serialized.contains("PRIVATE-COMMENT"));
+    }
+
+    #[test]
+    fn image_import_accepts_safe_tiny_jpeg_without_metadata() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("local.jpeg");
+        std::fs::write(&image_path, tiny_jpeg()).expect("jpeg should write");
+
+        let (extension, media_type, bytes) =
+            read_validated_image(&image_path).expect("safe jpeg should import");
+
+        assert_eq!(extension, "jpg");
+        assert_eq!(media_type, "image/jpeg");
+        assert_eq!(bytes, tiny_jpeg());
+    }
+
+    #[test]
+    fn image_import_rejects_malformed_metadata_jpeg_without_private_leak() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("private-client-photo.jpg");
+        let private_payload = b"PRIVATE-EXIF local/user/photo.jpg";
+        let mut malformed = vec![0xff, 0xd8, 0xff, 0xe1, 0x00, 0x20];
+        malformed.extend_from_slice(private_payload);
+        std::fs::write(&image_path, malformed).expect("malformed jpeg should write");
+
+        let err = read_validated_image(&image_path).expect_err("malformed jpeg should fail");
+
+        assert_eq!(err, "image file is unsupported");
+        assert!(!err.contains("PRIVATE-EXIF"));
+        assert!(!err.contains("private-client-photo"));
+        assert!(!err.contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn image_import_rejects_post_scan_jpeg_metadata_without_private_leak() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let image_path = dir.path().join("private-client-photo.jpg");
+        let private_payload = b"PRIVATE-COMMENT camera serial";
+        let mut jpeg = tiny_jpeg();
+        jpeg.truncate(jpeg.len() - 2);
+        jpeg.extend_from_slice(&[0xff, 0xfe]);
+        jpeg.extend_from_slice(&(private_payload.len() as u16 + 2).to_be_bytes());
+        jpeg.extend_from_slice(private_payload);
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+        std::fs::write(&image_path, jpeg).expect("jpeg should write");
+
+        let err = read_validated_image(&image_path).expect_err("post-scan metadata should fail");
+
+        assert_eq!(err, "image file is unsupported");
+        assert!(!err.contains("PRIVATE-COMMENT"));
+        assert!(!err.contains("private-client-photo"));
+        assert!(!err.contains(dir.path().to_string_lossy().as_ref()));
     }
 
     #[test]
@@ -3362,5 +3574,28 @@ mod tests {
             b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
             0x00, 0x1f, 0x15, 0xc4, 0x89,
         ]
+    }
+
+    fn tiny_jpeg() -> Vec<u8> {
+        vec![
+            0xff, 0xd8, 0xff, 0xdb, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00,
+            0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00,
+            0x00, 0x3f, 0x00, 0x11, 0x22, 0xff, 0x00, 0x33, 0xff, 0xd9,
+        ]
+    }
+
+    fn jpeg_with_metadata_segment(jpeg: &[u8], marker: u8, payload: &[u8]) -> Vec<u8> {
+        assert!(jpeg.starts_with(b"\xff\xd8"));
+        assert!((0xe0..=0xef).contains(&marker) || marker == 0xfe);
+        let segment_length = payload.len() + 2;
+        assert!(segment_length <= u16::MAX as usize);
+
+        let mut output = Vec::with_capacity(jpeg.len() + payload.len() + 4);
+        output.extend_from_slice(&jpeg[..2]);
+        output.extend_from_slice(&[0xff, marker]);
+        output.extend_from_slice(&(segment_length as u16).to_be_bytes());
+        output.extend_from_slice(payload);
+        output.extend_from_slice(&jpeg[2..]);
+        output
     }
 }

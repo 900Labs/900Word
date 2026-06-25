@@ -49,6 +49,7 @@ All notable changes to 900Word are tracked here.
 - Local user dictionary removal MVP under Settings with user-only remove actions, bundled dictionary protection, app-data-only Hunspell pair deletion, personal word preservation, active dictionary fallback, generic errors, and no paths, filenames, network behavior, telemetry, plugin dictionaries, or document metadata changes.
 - Table Cell Styling MVP with durable bounded cell background, per-cell text alignment, and border visible/hidden metadata in `word-core`, compact contextual editor controls, 900Word-authored ODT `word900` preservation, and sanitized HTML/print/PDF projection without table layout engine, merged cells, formulas, network behavior, telemetry, accounts, or cloud sync.
 - Plain-Text Tabular Paste MVP that turns bounded simple TSV clipboard text into supported editable ProseMirror tables, pads one-cell-short rows with editable empty cells, and falls back to existing paragraph/list paste for out-of-bounds or irregular input without adding spreadsheet parsing, telemetry, network behavior, accounts, or cloud sync.
+- JPEG Import Metadata Stripping MVP that removes APP0-APP15 and COM marker payloads from accepted local JPEG/JPG imports before embedding document assets, without decoding, recompressing, resizing, downsampling, adding heavy image dependencies, or changing PNG/GIF/WebP import behavior.
 
 ### Fixed
 
