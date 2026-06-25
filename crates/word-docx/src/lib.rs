@@ -6,10 +6,10 @@ use std::io::{Cursor, Read, Write};
 use thiserror::Error;
 use word_core::{
     normalize_comment_author, sanitize_bookmark_id, validate_comment_body, validate_comment_id,
-    AssetRef, Block, CommentThread, Document, DocumentWarning, Heading, ImageBlock,
-    ImagePresentation, Inline, InlineMark, ListBlock, ListItem, PageField, PageRegion,
+    validate_tracked_change_id, AssetRef, Block, CommentThread, Document, DocumentWarning, Heading,
+    ImageBlock, ImagePresentation, Inline, InlineMark, ListBlock, ListItem, PageField, PageRegion,
     PageRegionBlock, PageRegionParagraph, PageRegions, Paragraph, StyleId, Table, TableCell,
-    TableRow,
+    TableRow, TrackedChange, TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -39,6 +39,8 @@ const MAX_DOCX_IMAGE_PARTS: usize = 64;
 const MAX_DOCX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_DOCX_COMMENT_PARTS: usize = 4;
 const MAX_DOCX_COMMENTS: usize = 128;
+const MAX_DOCX_REVISIONS: usize = 512;
+const IMPORTED_DOCX_REVISION_AUTHOR: &str = "External Reviewer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageLimits {
@@ -175,6 +177,12 @@ struct DocxImportContext<'a> {
     comments: &'a ImportedDocxComments,
 }
 
+struct DocxBodyParseState<'a> {
+    warnings: &'a mut WarningSink,
+    anchored_comment_ids: &'a mut BTreeSet<String>,
+    revisions: &'a mut RevisionImportState,
+}
+
 #[derive(Debug, Clone, Default)]
 struct DocxImageExports {
     parts: Vec<DocxImageExport>,
@@ -229,6 +237,17 @@ struct DocxCommentExport {
     author: String,
     body: String,
     created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DocxRevisionExports {
+    ids: BTreeMap<String, u32>,
+}
+
+impl DocxRevisionExports {
+    fn numeric_id(&self, local_id: &str) -> Option<u32> {
+        self.ids.get(local_id).copied()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -323,6 +342,40 @@ impl RunProperties {
             marks.push(InlineMark::Underline);
         }
         marks
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct RevisionImportState {
+    imported: usize,
+}
+
+impl RevisionImportState {
+    fn tracked_change(
+        &mut self,
+        start: &BytesStart<'_>,
+        kind: TrackedChangeKind,
+        warnings: &mut WarningSink,
+        name: &str,
+    ) -> Result<Option<TrackedChange>, DocxError> {
+        if self.imported >= MAX_DOCX_REVISIONS {
+            warnings.warn(
+                "docx_revisions_over_limit",
+                "Excess DOCX tracked changes were imported as visible text",
+            );
+            return Ok(None);
+        }
+
+        self.imported += 1;
+        Ok(Some(TrackedChange {
+            id: next_imported_docx_tracked_change_id(self.imported),
+            kind,
+            author: safe_imported_docx_revision_author(
+                attr_value(start, b"author", name)?.as_deref(),
+                warnings,
+            ),
+            created_at: safe_docx_revision_timestamp(attr_value(start, b"date", name)?),
+        }))
     }
 }
 
@@ -589,6 +642,7 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     let page_region_exports = collect_page_region_exports(document, next_rel_id);
     let next_rel_id = next_rel_id + page_region_exports.parts.len();
     let comment_exports = collect_docx_comment_exports(document, next_rel_id);
+    let revision_exports = collect_docx_revision_exports(document);
     let compressed = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let cursor = Cursor::new(Vec::new());
     let mut writer = ZipWriter::new(cursor);
@@ -609,6 +663,7 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
             &page_region_exports,
             &image_exports,
             &comment_exports,
+            &revision_exports,
         )
         .as_bytes(),
     )?;
@@ -1251,70 +1306,74 @@ fn parse_document_xml(
     let mut parsed = Vec::new();
     let mut page_regions = PageRegions::default();
     let mut anchored_comment_ids = BTreeSet::new();
+    let mut revision_state = RevisionImportState::default();
     let mut in_body = false;
+    let context = DocxImportContext {
+        rels,
+        images: imported_images,
+        comments: imported_comments,
+    };
 
-    loop {
-        match reader
-            .read_event()
-            .map_err(|err| xml_error(DOCUMENT_XML, err))?
-        {
-            Event::Start(start) if local_name(start.name().as_ref()) == b"body" => {
-                in_body = true;
-            }
-            Event::End(end) if local_name(end.name().as_ref()) == b"body" => break,
-            Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"p" => {
-                let blocks = parse_paragraph(
-                    &mut reader,
-                    rels,
-                    imported_images,
-                    imported_comments,
-                    numbering,
-                    warnings,
-                    &mut anchored_comment_ids,
-                )?;
-                for block in blocks {
-                    push_parsed_block(&mut parsed, block);
+    {
+        let mut state = DocxBodyParseState {
+            warnings,
+            anchored_comment_ids: &mut anchored_comment_ids,
+            revisions: &mut revision_state,
+        };
+
+        loop {
+            match reader
+                .read_event()
+                .map_err(|err| xml_error(DOCUMENT_XML, err))?
+            {
+                Event::Start(start) if local_name(start.name().as_ref()) == b"body" => {
+                    in_body = true;
                 }
+                Event::End(end) if local_name(end.name().as_ref()) == b"body" => break,
+                Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"p" => {
+                    let blocks = parse_paragraph(&mut reader, &context, numbering, &mut state)?;
+                    for block in blocks {
+                        push_parsed_block(&mut parsed, block);
+                    }
+                }
+                Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"tbl" => {
+                    let table = parse_table(&mut reader, &context, numbering, &mut state)?;
+                    push_parsed_block(
+                        &mut parsed,
+                        ParsedBlock {
+                            block: Block::Table(table),
+                            list_marker: None,
+                        },
+                    );
+                }
+                Event::Start(start)
+                    if in_body && local_name(start.name().as_ref()) == b"sectPr" =>
+                {
+                    let references = parse_section_properties(&mut reader, state.warnings)?;
+                    page_regions = build_page_regions(
+                        &references,
+                        rels,
+                        page_region_part_xml,
+                        state.warnings,
+                    )?;
+                }
+                Event::Empty(_) if in_body => {
+                    state.warnings.warn(
+                        "docx_unsupported_body_content",
+                        "Unsupported DOCX body content was ignored during import",
+                    );
+                }
+                Event::Start(start) if in_body => {
+                    state.warnings.warn(
+                        "docx_unsupported_body_content",
+                        "Unsupported DOCX body content was ignored during import",
+                    );
+                    let end = local_name(start.name().as_ref()).to_vec();
+                    skip_element(&mut reader, &end, DOCUMENT_XML)?;
+                }
+                Event::Eof => break,
+                _ => {}
             }
-            Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"tbl" => {
-                let table = parse_table(
-                    &mut reader,
-                    rels,
-                    imported_images,
-                    imported_comments,
-                    numbering,
-                    warnings,
-                    &mut anchored_comment_ids,
-                )?;
-                push_parsed_block(
-                    &mut parsed,
-                    ParsedBlock {
-                        block: Block::Table(table),
-                        list_marker: None,
-                    },
-                );
-            }
-            Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"sectPr" => {
-                let references = parse_section_properties(&mut reader, warnings)?;
-                page_regions =
-                    build_page_regions(&references, rels, page_region_part_xml, warnings)?;
-            }
-            Event::Empty(_) if in_body => {
-                warnings.warn(
-                    "docx_unsupported_body_content",
-                    "Unsupported DOCX body content was ignored during import",
-                );
-            }
-            Event::Start(start) if in_body => {
-                warnings.warn(
-                    "docx_unsupported_body_content",
-                    "Unsupported DOCX body content was ignored during import",
-                );
-                let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(&mut reader, &end, DOCUMENT_XML)?;
-            }
-            Event::Eof => break,
-            _ => {}
         }
     }
 
@@ -1489,12 +1548,9 @@ fn parse_referenced_page_region(
 
 fn parse_table(
     reader: &mut Reader<&[u8]>,
-    rels: &RelationshipMap,
-    imported_images: &ImportedDocxImages,
-    imported_comments: &ImportedDocxComments,
+    context: &DocxImportContext<'_>,
     numbering: &NumberingMap,
-    warnings: &mut WarningSink,
-    anchored_comment_ids: &mut BTreeSet<String>,
+    state: &mut DocxBodyParseState<'_>,
 ) -> Result<Table, DocxError> {
     let mut rows = Vec::new();
     loop {
@@ -1503,15 +1559,7 @@ fn parse_table(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"tr" => {
-                rows.push(parse_table_row(
-                    reader,
-                    rels,
-                    imported_images,
-                    imported_comments,
-                    numbering,
-                    warnings,
-                    anchored_comment_ids,
-                )?);
+                rows.push(parse_table_row(reader, context, numbering, state)?);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tbl" => break,
             Event::Start(start) => {
@@ -1527,12 +1575,9 @@ fn parse_table(
 
 fn parse_table_row(
     reader: &mut Reader<&[u8]>,
-    rels: &RelationshipMap,
-    imported_images: &ImportedDocxImages,
-    imported_comments: &ImportedDocxComments,
+    context: &DocxImportContext<'_>,
     numbering: &NumberingMap,
-    warnings: &mut WarningSink,
-    anchored_comment_ids: &mut BTreeSet<String>,
+    state: &mut DocxBodyParseState<'_>,
 ) -> Result<TableRow, DocxError> {
     let mut cells = Vec::new();
     loop {
@@ -1541,15 +1586,10 @@ fn parse_table_row(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"tc" => {
-                cells.push(parse_table_cell(
-                    reader,
-                    rels,
-                    imported_images,
-                    imported_comments,
-                    numbering,
-                    warnings,
-                    anchored_comment_ids,
-                )?);
+                cells.push(parse_table_cell(reader, context, numbering, state)?);
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"trPr" => {
+                skip_element_with_revision_warning(reader, b"trPr", DOCUMENT_XML, state.warnings)?;
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"tr" => break,
             Event::Start(start) => {
@@ -1565,12 +1605,9 @@ fn parse_table_row(
 
 fn parse_table_cell(
     reader: &mut Reader<&[u8]>,
-    rels: &RelationshipMap,
-    imported_images: &ImportedDocxImages,
-    imported_comments: &ImportedDocxComments,
+    context: &DocxImportContext<'_>,
     numbering: &NumberingMap,
-    warnings: &mut WarningSink,
-    anchored_comment_ids: &mut BTreeSet<String>,
+    state: &mut DocxBodyParseState<'_>,
 ) -> Result<TableCell, DocxError> {
     let mut parsed = Vec::new();
     loop {
@@ -1579,33 +1616,17 @@ fn parse_table_cell(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"p" => {
-                let blocks = parse_paragraph(
-                    reader,
-                    rels,
-                    imported_images,
-                    imported_comments,
-                    numbering,
-                    warnings,
-                    anchored_comment_ids,
-                )?;
+                let blocks = parse_paragraph(reader, context, numbering, state)?;
                 for block in blocks {
                     push_parsed_block(&mut parsed, block);
                 }
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"tbl" => {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_nested_table_degraded",
                     "Nested DOCX tables were imported as plain visible text",
                 );
-                let table = parse_table(
-                    reader,
-                    rels,
-                    imported_images,
-                    imported_comments,
-                    numbering,
-                    warnings,
-                    anchored_comment_ids,
-                )?;
+                let table = parse_table(reader, context, numbering, state)?;
                 push_parsed_block(
                     &mut parsed,
                     ParsedBlock {
@@ -1614,9 +1635,12 @@ fn parse_table_cell(
                     },
                 );
             }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"tcPr" => {
+                skip_element_with_revision_warning(reader, b"tcPr", DOCUMENT_XML, state.warnings)?;
+            }
             Event::End(end) if local_name(end.name().as_ref()) == b"tc" => break,
             Event::Empty(_) => {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_unsupported_table_content",
                     "Unsupported DOCX table content was ignored during import",
                 );
@@ -1741,21 +1765,13 @@ fn parse_page_region_paragraph(
 
 fn parse_paragraph(
     reader: &mut Reader<&[u8]>,
-    rels: &RelationshipMap,
-    imported_images: &ImportedDocxImages,
-    imported_comments: &ImportedDocxComments,
+    context: &DocxImportContext<'_>,
     numbering: &NumberingMap,
-    warnings: &mut WarningSink,
-    anchored_comment_ids: &mut BTreeSet<String>,
+    state: &mut DocxBodyParseState<'_>,
 ) -> Result<Vec<ParsedBlock>, DocxError> {
     let mut properties = ParagraphProperties::default();
     let mut content = Vec::new();
     let mut comment_state = CommentImportState::default();
-    let context = DocxImportContext {
-        rels,
-        images: imported_images,
-        comments: imported_comments,
-    };
 
     loop {
         match reader
@@ -1763,46 +1779,91 @@ fn parse_paragraph(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"pPr" => {
-                properties = parse_paragraph_properties(reader, numbering, warnings)?;
+                properties = parse_paragraph_properties(reader, numbering, state.warnings)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
                 let run = parse_paragraph_run(
                     reader,
                     None,
-                    &context,
+                    context,
                     &mut comment_state,
-                    warnings,
+                    state.warnings,
                     DOCUMENT_XML,
+                    None,
                 )?;
                 append_paragraph_content(&mut content, run);
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"hyperlink" => {
-                let link = hyperlink_ref(&start, rels, warnings)?;
+                let link = hyperlink_ref(&start, context.rels, state.warnings)?;
                 let run = parse_hyperlink(
                     reader,
                     link,
-                    &context,
+                    context,
                     &mut comment_state,
-                    warnings,
+                    state.warnings,
+                    DOCUMENT_XML,
+                    None,
+                )?;
+                append_paragraph_content(&mut content, run);
+            }
+            Event::Start(start)
+                if docx_tracked_change_kind(local_name(start.name().as_ref())).is_some() =>
+            {
+                let kind = docx_tracked_change_kind(local_name(start.name().as_ref()))
+                    .expect("revision kind checked above");
+                let run = parse_revision_container(
+                    reader,
+                    &start,
+                    kind,
+                    context,
+                    &mut comment_state,
+                    state,
                     DOCUMENT_XML,
                 )?;
                 append_paragraph_content(&mut content, run);
             }
+            Event::Empty(start)
+                if docx_tracked_change_kind(local_name(start.name().as_ref())).is_some() =>
+            {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+            }
+            Event::Start(start)
+                if is_unsupported_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                let text = read_visible_text_fallback(reader, &end, DOCUMENT_XML)?;
+                push_plain_visible_text(&mut content, text);
+            }
+            Event::Empty(start)
+                if is_unsupported_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+            }
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"commentRangeStart" =>
             {
-                comment_state.start_range(&start, imported_comments, warnings)?;
+                comment_state.start_range(&start, context.comments, state.warnings)?;
             }
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"commentRangeEnd" =>
             {
-                comment_state.end_range(&start, warnings)?;
+                comment_state.end_range(&start, state.warnings)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
                 let field = page_field_from_instruction(
                     attr_value(&start, b"instr", DOCUMENT_XML)?.as_deref(),
                 );
-                let run = parse_simple_field(reader, field, warnings, DOCUMENT_XML)?;
+                let run = parse_simple_field(reader, field, state.warnings, DOCUMENT_XML)?;
                 append_inline_content(&mut content, run);
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
@@ -1811,7 +1872,7 @@ fn parse_paragraph(
                 ) {
                     content.push(ParagraphContent::Inline(Box::new(Inline::field(field))));
                 } else {
-                    warnings.warn(
+                    state.warnings.warn(
                         "docx_field_degraded",
                         "Unsupported DOCX fields were imported as visible text when available",
                     );
@@ -1823,7 +1884,7 @@ fn parse_paragraph(
                     b"drawing" | b"object" | b"pict"
                 ) =>
             {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_media_ignored",
                     "Unsupported DOCX media content was ignored during import",
                 );
@@ -1832,13 +1893,13 @@ fn parse_paragraph(
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"p" => break,
             Event::Empty(_) => {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_unsupported_paragraph_content",
                     "Unsupported DOCX paragraph content was ignored during import",
                 );
             }
             Event::Start(start) => {
-                warnings.warn(
+                state.warnings.warn(
                     "docx_unsupported_paragraph_content",
                     "Unsupported DOCX paragraph content was ignored during import",
                 );
@@ -1850,7 +1911,7 @@ fn parse_paragraph(
         }
     }
 
-    comment_state.finish_paragraph(anchored_comment_ids, warnings);
+    comment_state.finish_paragraph(state.anchored_comment_ids, state.warnings);
     Ok(paragraph_content_to_blocks(content, &properties))
 }
 
@@ -1878,6 +1939,24 @@ fn parse_paragraph_properties(
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"numPr" => {}
             Event::End(end) if local_name(end.name().as_ref()) == b"pPr" => break,
+            Event::Start(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCUMENT_XML)?;
+            }
+            Event::Empty(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+            }
             Event::Start(start) => {
                 let end = local_name(start.name().as_ref()).to_vec();
                 skip_element(reader, &end, DOCUMENT_XML)?;
@@ -1914,6 +1993,24 @@ fn parse_num_properties(
                     .map(|value| value.saturating_add(1).clamp(1, 9));
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"numPr" => break,
+            Event::Start(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, DOCUMENT_XML)?;
+            }
+            Event::Empty(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+            }
             Event::Start(start) => {
                 let end = local_name(start.name().as_ref()).to_vec();
                 skip_element(reader, &end, DOCUMENT_XML)?;
@@ -1946,6 +2043,7 @@ fn parse_hyperlink(
     comment_state: &mut CommentImportState,
     warnings: &mut WarningSink,
     name: &str,
+    tracked_change: Option<&TrackedChange>,
 ) -> Result<Vec<ParagraphContent>, DocxError> {
     let mut content = Vec::new();
     loop {
@@ -1958,8 +2056,31 @@ fn parse_hyperlink(
                     comment_state,
                     warnings,
                     name,
+                    tracked_change,
                 )?;
                 append_paragraph_content(&mut content, run);
+            }
+            Event::Start(start)
+                if docx_tracked_change_kind(local_name(start.name().as_ref())).is_some() =>
+            {
+                warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                let text = read_visible_text_fallback(reader, &end, name)?;
+                push_plain_visible_text(&mut content, text);
+            }
+            Event::Start(start)
+                if is_unsupported_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                let text = read_visible_text_fallback(reader, &end, name)?;
+                push_plain_visible_text(&mut content, text);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"hyperlink" => break,
             Event::Start(start) => {
@@ -1980,6 +2101,7 @@ fn parse_paragraph_run(
     comment_state: &mut CommentImportState,
     warnings: &mut WarningSink,
     name: &str,
+    tracked_change: Option<&TrackedChange>,
 ) -> Result<Vec<ParagraphContent>, DocxError> {
     let mut properties = RunProperties::default();
     let mut text = String::new();
@@ -1988,10 +2110,13 @@ fn parse_paragraph_run(
     loop {
         match reader.read_event().map_err(|err| xml_error(name, err))? {
             Event::Start(start) if local_name(start.name().as_ref()) == b"rPr" => {
-                properties = parse_run_properties(reader, name)?;
+                properties = parse_run_properties(reader, name, warnings)?;
             }
-            Event::Start(start) if local_name(start.name().as_ref()) == b"t" => {
-                text.push_str(&read_text_element(reader, b"t", name)?);
+            Event::Start(start)
+                if matches!(local_name(start.name().as_ref()), b"t" | b"delText") =>
+            {
+                let end = local_name(start.name().as_ref()).to_vec();
+                text.push_str(&read_text_element(reader, &end, name)?);
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"tab" => {
                 text.push('\t');
@@ -2006,6 +2131,7 @@ fn parse_paragraph_run(
                     &properties,
                     link.clone(),
                     Some(comment_state),
+                    tracked_change,
                 );
                 if let Some(image) =
                     parse_drawing(reader, context.rels, context.images, warnings, name)?
@@ -2095,6 +2221,7 @@ fn parse_paragraph_run(
         &properties,
         link,
         Some(comment_state),
+        tracked_change,
     );
     Ok(content)
 }
@@ -2176,12 +2303,134 @@ fn image_alt_text(start: &BytesStart<'_>, name: &str) -> Result<Option<String>, 
         .filter(|value| !value.is_empty()))
 }
 
+fn parse_revision_container(
+    reader: &mut Reader<&[u8]>,
+    start: &BytesStart<'_>,
+    kind: TrackedChangeKind,
+    context: &DocxImportContext<'_>,
+    comment_state: &mut CommentImportState,
+    state: &mut DocxBodyParseState<'_>,
+    name: &str,
+) -> Result<Vec<ParagraphContent>, DocxError> {
+    let end_name = local_name(start.name().as_ref()).to_vec();
+    let tracked_change = state
+        .revisions
+        .tracked_change(start, kind, state.warnings, name)?;
+    let mut content = Vec::new();
+
+    loop {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
+            Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
+                let run = parse_paragraph_run(
+                    reader,
+                    None,
+                    context,
+                    comment_state,
+                    state.warnings,
+                    name,
+                    tracked_change.as_ref(),
+                )?;
+                append_paragraph_content(&mut content, run);
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"hyperlink" => {
+                let link = hyperlink_ref(&start, context.rels, state.warnings)?;
+                let run = parse_hyperlink(
+                    reader,
+                    link,
+                    context,
+                    comment_state,
+                    state.warnings,
+                    name,
+                    tracked_change.as_ref(),
+                )?;
+                append_paragraph_content(&mut content, run);
+            }
+            Event::Start(start)
+                if docx_tracked_change_kind(local_name(start.name().as_ref())).is_some()
+                    || is_unsupported_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                let text = read_visible_text_fallback(reader, &end, name)?;
+                push_plain_visible_text(&mut content, text);
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                let text = read_visible_text_fallback(reader, &end, name)?;
+                push_plain_visible_text(&mut content, text);
+            }
+            Event::Empty(start)
+                if docx_tracked_change_kind(local_name(start.name().as_ref())).is_some()
+                    || is_unsupported_docx_revision_markup(local_name(start.name().as_ref()))
+                    || local_name(start.name().as_ref()) == b"fldSimple" =>
+            {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+            }
+            Event::Start(start)
+                if matches!(
+                    local_name(start.name().as_ref()),
+                    b"drawing" | b"object" | b"pict"
+                ) =>
+            {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, name)?;
+            }
+            Event::Empty(start)
+                if matches!(
+                    local_name(start.name().as_ref()),
+                    b"drawing" | b"object" | b"pict"
+                ) =>
+            {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+            }
+            Event::End(end) if local_name(end.name().as_ref()) == end_name.as_slice() => break,
+            Event::Start(start) => {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                let text = read_visible_text_fallback(reader, &end, name)?;
+                push_plain_visible_text(&mut content, text);
+            }
+            Event::Empty(_) => {
+                state.warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    Ok(content)
+}
+
 fn flush_run_text_content(
     content: &mut Vec<ParagraphContent>,
     text: &mut String,
     properties: &RunProperties,
     link: Option<String>,
     comment_state: Option<&mut CommentImportState>,
+    tracked_change: Option<&TrackedChange>,
 ) {
     if text.is_empty() {
         return;
@@ -2200,7 +2449,7 @@ fn flush_run_text_content(
         style: Default::default(),
         field: None,
         note_reference: None,
-        tracked_change: None,
+        tracked_change: tracked_change.cloned(),
     })));
 }
 
@@ -2216,10 +2465,13 @@ fn parse_run(
     loop {
         match reader.read_event().map_err(|err| xml_error(name, err))? {
             Event::Start(start) if local_name(start.name().as_ref()) == b"rPr" => {
-                properties = parse_run_properties(reader, name)?;
+                properties = parse_run_properties(reader, name, warnings)?;
             }
-            Event::Start(start) if local_name(start.name().as_ref()) == b"t" => {
-                text.push_str(&read_text_element(reader, b"t", name)?);
+            Event::Start(start)
+                if matches!(local_name(start.name().as_ref()), b"t" | b"delText") =>
+            {
+                let end = local_name(start.name().as_ref()).to_vec();
+                text.push_str(&read_text_element(reader, &end, name)?);
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"tab" => {
                 text.push('\t');
@@ -2321,6 +2573,7 @@ fn parse_run(
 fn parse_run_properties(
     reader: &mut Reader<&[u8]>,
     name: &str,
+    warnings: &mut WarningSink,
 ) -> Result<RunProperties, DocxError> {
     let mut properties = RunProperties::default();
     loop {
@@ -2341,6 +2594,24 @@ fn parse_run_properties(
                 properties.underline = attr_value(&start, b"val", name)?.as_deref() != Some("none");
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"rPr" => break,
+            Event::Start(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+                let end = local_name(start.name().as_ref()).to_vec();
+                skip_element(reader, &end, name)?;
+            }
+            Event::Empty(start)
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
+            {
+                warnings.warn(
+                    "docx_revision_markup_degraded",
+                    "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                );
+            }
             Event::Start(start) => {
                 let end = local_name(start.name().as_ref()).to_vec();
                 skip_element(reader, &end, name)?;
@@ -2634,11 +2905,92 @@ fn read_text_element(
     Ok(value)
 }
 
+fn read_visible_text_fallback(
+    reader: &mut Reader<&[u8]>,
+    _end_name: &[u8],
+    name: &str,
+) -> Result<String, DocxError> {
+    let mut value = String::new();
+    let mut depth = 1_usize;
+    loop {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
+            Event::Start(start)
+                if matches!(local_name(start.name().as_ref()), b"t" | b"delText") =>
+            {
+                let end = local_name(start.name().as_ref()).to_vec();
+                value.push_str(&read_text_element(reader, &end, name)?);
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"tab" => {
+                value.push('\t');
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"br" => {
+                value.push('\n');
+            }
+            Event::Start(_) => depth += 1,
+            Event::End(_) => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(value)
+}
+
+fn push_plain_visible_text(content: &mut Vec<ParagraphContent>, text: String) {
+    if text.is_empty() {
+        return;
+    }
+    content.push(ParagraphContent::Inline(Box::new(Inline::text(text))));
+}
+
 fn skip_element(reader: &mut Reader<&[u8]>, _end_name: &[u8], name: &str) -> Result<(), DocxError> {
     let mut depth = 1_usize;
     loop {
         match reader.read_event().map_err(|err| xml_error(name, err))? {
             Event::Start(_) => depth += 1,
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn skip_element_with_revision_warning(
+    reader: &mut Reader<&[u8]>,
+    _end_name: &[u8],
+    name: &str,
+    warnings: &mut WarningSink,
+) -> Result<(), DocxError> {
+    let mut depth = 1_usize;
+    loop {
+        match reader.read_event().map_err(|err| xml_error(name, err))? {
+            Event::Start(start) => {
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) {
+                    warnings.warn(
+                        "docx_revision_markup_degraded",
+                        "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                    );
+                }
+                depth += 1;
+            }
+            Event::Empty(start) => {
+                if is_any_docx_revision_markup(local_name(start.name().as_ref())) {
+                    warnings.warn(
+                        "docx_revision_markup_degraded",
+                        "Unsupported DOCX tracked-change markup was imported as visible text when available",
+                    );
+                }
+            }
             Event::End(_) => {
                 depth -= 1;
                 if depth == 0 {
@@ -2671,6 +3023,112 @@ fn truthy_word_bool(start: &BytesStart<'_>, name: &str) -> Result<bool, DocxErro
         attr_value(start, b"val", name)?.as_deref(),
         Some("0" | "false" | "off")
     ))
+}
+
+fn docx_tracked_change_kind(name: &[u8]) -> Option<TrackedChangeKind> {
+    match name {
+        b"ins" => Some(TrackedChangeKind::Insertion),
+        b"del" => Some(TrackedChangeKind::Deletion),
+        _ => None,
+    }
+}
+
+fn is_any_docx_revision_markup(name: &[u8]) -> bool {
+    docx_tracked_change_kind(name).is_some() || is_unsupported_docx_revision_markup(name)
+}
+
+fn is_unsupported_docx_revision_markup(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"moveFrom"
+            | b"moveTo"
+            | b"moveFromRangeStart"
+            | b"moveFromRangeEnd"
+            | b"moveToRangeStart"
+            | b"moveToRangeEnd"
+            | b"moveFromRun"
+            | b"moveToRun"
+            | b"rPrChange"
+            | b"pPrChange"
+            | b"tblPrChange"
+            | b"trPrChange"
+            | b"tcPrChange"
+            | b"sectPrChange"
+            | b"numberingChange"
+            | b"customXmlInsRangeStart"
+            | b"customXmlInsRangeEnd"
+            | b"customXmlDelRangeStart"
+            | b"customXmlDelRangeEnd"
+            | b"customXmlMoveFromRangeStart"
+            | b"customXmlMoveFromRangeEnd"
+            | b"customXmlMoveToRangeStart"
+            | b"customXmlMoveToRangeEnd"
+    )
+}
+
+fn next_imported_docx_tracked_change_id(index: usize) -> String {
+    let candidate = format!("chg-docx-change-{index}");
+    validate_tracked_change_id(&candidate).unwrap_or(candidate)
+}
+
+fn safe_imported_docx_revision_author(
+    raw_author: Option<&str>,
+    warnings: &mut WarningSink,
+) -> String {
+    let Some(raw_author) = raw_author.map(str::trim).filter(|value| !value.is_empty()) else {
+        return IMPORTED_DOCX_REVISION_AUTHOR.to_string();
+    };
+    let Ok(author) = normalize_comment_author(Some(raw_author)) else {
+        warnings.warn(
+            "docx_revision_metadata_degraded",
+            "Unsupported DOCX tracked-change metadata was replaced during import",
+        );
+        return IMPORTED_DOCX_REVISION_AUTHOR.to_string();
+    };
+    if author_looks_private(&author) {
+        warnings.warn(
+            "docx_revision_metadata_degraded",
+            "Unsupported DOCX tracked-change metadata was replaced during import",
+        );
+        IMPORTED_DOCX_REVISION_AUTHOR.to_string()
+    } else {
+        author
+    }
+}
+
+fn safe_docx_revision_timestamp(raw_date: Option<String>) -> DateTime<Utc> {
+    raw_date
+        .as_deref()
+        .map(str::trim)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(epoch_utc)
+}
+
+fn epoch_utc() -> DateTime<Utc> {
+    DateTime::<Utc>::from(std::time::UNIX_EPOCH)
+}
+
+fn safe_exported_revision_author(author: &str) -> String {
+    let Ok(author) = normalize_comment_author(Some(author)) else {
+        return DEFAULT_TRACKED_CHANGE_AUTHOR.to_string();
+    };
+    if author_looks_private(&author) {
+        DEFAULT_TRACKED_CHANGE_AUTHOR.to_string()
+    } else {
+        author
+    }
+}
+
+fn author_looks_private(author: &str) -> bool {
+    let trimmed = author.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+        || trimmed.contains('@')
+        || lower.contains("://")
+        || lower.ends_with(".local")
 }
 
 fn empty_paragraph_block() -> Block {
@@ -2823,6 +3281,7 @@ fn render_document_xml(
     page_regions: &DocxPageRegionExports,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    revisions: &DocxRevisionExports,
 ) -> String {
     let mut output = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -2832,7 +3291,7 @@ fn render_document_xml(
 
     for section in &document.sections {
         for block in &section.blocks {
-            render_block_xml(block, hyperlinks, images, comments, &mut output);
+            render_block_xml(block, hyperlinks, images, comments, revisions, &mut output);
         }
     }
 
@@ -2913,6 +3372,7 @@ fn render_page_region_block_xml(block: &PageRegionBlock, output: &mut String) {
                 &paragraph.inlines,
                 &HyperlinkIds::default(),
                 &DocxCommentExports::default(),
+                &DocxRevisionExports::default(),
                 output,
             );
             output.push_str("</w:p>");
@@ -2925,19 +3385,25 @@ fn render_block_xml(
     hyperlinks: &HyperlinkIds,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
     match block {
         Block::Paragraph(paragraph) => {
-            render_paragraph_xml(paragraph, None, hyperlinks, comments, output)
+            render_paragraph_xml(paragraph, None, hyperlinks, comments, revisions, output)
         }
-        Block::Heading(heading) => render_heading_xml(heading, hyperlinks, comments, output),
-        Block::List(list) => render_list_xml(list, hyperlinks, images, comments, output),
-        Block::Table(table) => render_table_xml(table, hyperlinks, images, comments, output),
+        Block::Heading(heading) => {
+            render_heading_xml(heading, hyperlinks, comments, revisions, output)
+        }
+        Block::List(list) => render_list_xml(list, hyperlinks, images, comments, revisions, output),
+        Block::Table(table) => {
+            render_table_xml(table, hyperlinks, images, comments, revisions, output)
+        }
         Block::TableOfContents(table_of_contents) => render_fallback_paragraph(
             &table_of_contents_text(table_of_contents),
             hyperlinks,
             comments,
+            revisions,
             output,
         ),
         Block::Image(image) => {
@@ -2949,13 +3415,20 @@ fn render_block_xml(
                     .as_deref()
                     .filter(|value| !value.trim().is_empty())
                 {
-                    render_fallback_paragraph(caption.trim(), hyperlinks, comments, output);
+                    render_fallback_paragraph(
+                        caption.trim(),
+                        hyperlinks,
+                        comments,
+                        revisions,
+                        output,
+                    );
                 }
             } else {
                 render_fallback_paragraph(
                     &image_fallback_text(image),
                     hyperlinks,
                     comments,
+                    revisions,
                     output,
                 );
             }
@@ -3042,12 +3515,13 @@ fn render_heading_xml(
     heading: &Heading,
     hyperlinks: &HyperlinkIds,
     comments: &DocxCommentExports,
+    revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
     output.push_str("<w:p><w:pPr><w:pStyle w:val=\"Heading");
     output.push_str(&heading.level.clamp(1, 3).to_string());
     output.push_str("\"/></w:pPr>");
-    render_inlines_xml(&heading.inlines, hyperlinks, comments, output);
+    render_inlines_xml(&heading.inlines, hyperlinks, comments, revisions, output);
     output.push_str("</w:p>");
 }
 
@@ -3056,6 +3530,7 @@ fn render_paragraph_xml(
     list_marker: Option<ListMarker>,
     hyperlinks: &HyperlinkIds,
     comments: &DocxCommentExports,
+    revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
     output.push_str("<w:p>");
@@ -3066,7 +3541,7 @@ fn render_paragraph_xml(
         output.push_str(if marker.ordered { "2" } else { "1" });
         output.push_str("\"/></w:numPr></w:pPr>");
     }
-    render_inlines_xml(&paragraph.inlines, hyperlinks, comments, output);
+    render_inlines_xml(&paragraph.inlines, hyperlinks, comments, revisions, output);
     output.push_str("</w:p>");
 }
 
@@ -3075,6 +3550,7 @@ fn render_list_xml(
     hyperlinks: &HyperlinkIds,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
     let ordered = list.definition_id == "900w-ordered";
@@ -3089,6 +3565,7 @@ fn render_list_xml(
                     }),
                     hyperlinks,
                     comments,
+                    revisions,
                     output,
                 ),
                 Block::Heading(heading) => {
@@ -3106,6 +3583,7 @@ fn render_list_xml(
                         }),
                         hyperlinks,
                         comments,
+                        revisions,
                         output,
                     );
                 }
@@ -3114,9 +3592,16 @@ fn render_list_xml(
                     hyperlinks,
                     images,
                     comments,
+                    revisions,
                     output,
                 ),
-                _ => render_fallback_paragraph(&block_text(block), hyperlinks, comments, output),
+                _ => render_fallback_paragraph(
+                    &block_text(block),
+                    hyperlinks,
+                    comments,
+                    revisions,
+                    output,
+                ),
             }
         }
     }
@@ -3127,6 +3612,7 @@ fn render_table_xml(
     hyperlinks: &HyperlinkIds,
     images: &DocxImageExports,
     comments: &DocxCommentExports,
+    revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
     output.push_str("<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/></w:tblPr>");
@@ -3139,26 +3625,28 @@ fn render_table_xml(
             } else {
                 for block in &cell.blocks {
                     match block {
-                        Block::Paragraph(paragraph) => {
-                            render_paragraph_xml(paragraph, None, hyperlinks, comments, output)
-                        }
+                        Block::Paragraph(paragraph) => render_paragraph_xml(
+                            paragraph, None, hyperlinks, comments, revisions, output,
+                        ),
                         Block::Heading(heading) => {
-                            render_heading_xml(heading, hyperlinks, comments, output)
+                            render_heading_xml(heading, hyperlinks, comments, revisions, output)
                         }
                         Block::List(list) => {
-                            render_list_xml(list, hyperlinks, images, comments, output)
+                            render_list_xml(list, hyperlinks, images, comments, revisions, output)
                         }
                         Block::Image(image) => render_block_xml(
                             &Block::Image(image.clone()),
                             hyperlinks,
                             images,
                             comments,
+                            revisions,
                             output,
                         ),
                         _ => render_fallback_paragraph(
                             &block_text(block),
                             hyperlinks,
                             comments,
+                            revisions,
                             output,
                         ),
                     }
@@ -3175,6 +3663,7 @@ fn render_fallback_paragraph(
     text: &str,
     hyperlinks: &HyperlinkIds,
     comments: &DocxCommentExports,
+    revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
     render_paragraph_xml(
@@ -3191,6 +3680,7 @@ fn render_fallback_paragraph(
         None,
         hyperlinks,
         comments,
+        revisions,
         output,
     );
 }
@@ -3199,6 +3689,7 @@ fn render_inlines_xml(
     inlines: &[Inline],
     hyperlinks: &HyperlinkIds,
     comments: &DocxCommentExports,
+    revisions: &DocxRevisionExports,
     output: &mut String,
 ) {
     if inlines.is_empty() {
@@ -3221,7 +3712,7 @@ fn render_inlines_xml(
                 output.push_str("<w:hyperlink w:anchor=\"");
                 output.push_str(&escape_xml(anchor));
                 output.push_str("\">");
-                render_run_xml(inline, output);
+                render_inline_xml(inline, revisions, output);
                 output.push_str("</w:hyperlink>");
                 render_comment_range_ends_xml(
                     &comment_ids_exiting(&current_comment_ids, &next_comment_ids),
@@ -3235,7 +3726,7 @@ fn render_inlines_xml(
                 output.push_str("<w:hyperlink r:id=\"");
                 output.push_str(&escape_xml(id));
                 output.push_str("\" w:history=\"1\">");
-                render_run_xml(inline, output);
+                render_inline_xml(inline, revisions, output);
                 output.push_str("</w:hyperlink>");
                 render_comment_range_ends_xml(
                     &comment_ids_exiting(&current_comment_ids, &next_comment_ids),
@@ -3246,7 +3737,7 @@ fn render_inlines_xml(
                 continue;
             }
         }
-        render_run_xml(inline, output);
+        render_inline_xml(inline, revisions, output);
         render_comment_range_ends_xml(
             &comment_ids_exiting(&current_comment_ids, &next_comment_ids),
             comments,
@@ -3302,7 +3793,51 @@ fn render_comment_range_ends_xml(
     }
 }
 
-fn render_run_xml(inline: &Inline, output: &mut String) {
+fn render_inline_xml(inline: &Inline, revisions: &DocxRevisionExports, output: &mut String) {
+    if let Some(change) = exportable_docx_revision_change(inline) {
+        if let Some(numeric_id) = revisions.numeric_id(&change.id) {
+            render_tracked_change_xml(inline, change, numeric_id, output);
+            return;
+        }
+    }
+    render_run_xml_with_text_element(inline, "t", output);
+}
+
+fn render_tracked_change_xml(
+    inline: &Inline,
+    change: &TrackedChange,
+    numeric_id: u32,
+    output: &mut String,
+) {
+    let element = match change.kind {
+        TrackedChangeKind::Insertion => "ins",
+        TrackedChangeKind::Deletion => "del",
+    };
+    output.push_str("<w:");
+    output.push_str(element);
+    output.push_str(" w:id=\"");
+    output.push_str(&numeric_id.to_string());
+    output.push_str("\" w:author=\"");
+    output.push_str(&escape_xml(&safe_exported_revision_author(&change.author)));
+    output.push_str("\" w:date=\"");
+    output.push_str(&escape_xml(
+        &change.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+    ));
+    output.push_str("\">");
+    render_run_xml_with_text_element(
+        inline,
+        match change.kind {
+            TrackedChangeKind::Insertion => "t",
+            TrackedChangeKind::Deletion => "delText",
+        },
+        output,
+    );
+    output.push_str("</w:");
+    output.push_str(element);
+    output.push('>');
+}
+
+fn render_run_xml_with_text_element(inline: &Inline, text_element: &str, output: &mut String) {
     if let Some(field) = inline.field {
         output.push_str("<w:fldSimple w:instr=\"");
         output.push_str(match field {
@@ -3313,7 +3848,7 @@ fn render_run_xml(inline: &Inline, output: &mut String) {
         output.push_str("\">");
         let mut fallback = Inline::text(field.fallback_text());
         fallback.marks = inline.marks.clone();
-        render_run_xml(&fallback, output);
+        render_run_xml_with_text_element(&fallback, text_element, output);
         output.push_str("</w:fldSimple>");
         return;
     }
@@ -3339,27 +3874,31 @@ fn render_run_xml(inline: &Inline, output: &mut String) {
     for ch in inline.text.chars() {
         match ch {
             '\n' => {
-                flush_text_run(&mut text_buffer, output);
+                flush_text_run(&mut text_buffer, text_element, output);
                 output.push_str("<w:br/>");
             }
             '\t' => {
-                flush_text_run(&mut text_buffer, output);
+                flush_text_run(&mut text_buffer, text_element, output);
                 output.push_str("<w:tab/>");
             }
             _ => text_buffer.push(ch),
         }
     }
-    flush_text_run(&mut text_buffer, output);
+    flush_text_run(&mut text_buffer, text_element, output);
     output.push_str("</w:r>");
 }
 
-fn flush_text_run(text: &mut String, output: &mut String) {
+fn flush_text_run(text: &mut String, text_element: &str, output: &mut String) {
     if text.is_empty() {
         return;
     }
-    output.push_str("<w:t xml:space=\"preserve\">");
+    output.push_str("<w:");
+    output.push_str(text_element);
+    output.push_str(" xml:space=\"preserve\">");
     output.push_str(&escape_xml(text));
-    output.push_str("</w:t>");
+    output.push_str("</w:");
+    output.push_str(text_element);
+    output.push('>');
     text.clear();
 }
 
@@ -3554,6 +4093,63 @@ fn collect_docx_comment_exports(document: &Document, first_rel_id: usize) -> Doc
     }
 }
 
+fn collect_docx_revision_exports(document: &Document) -> DocxRevisionExports {
+    let mut ids = BTreeMap::new();
+    for section in &document.sections {
+        collect_docx_revision_exports_from_blocks(&section.blocks, &mut ids);
+    }
+    DocxRevisionExports { ids }
+}
+
+fn collect_docx_revision_exports_from_blocks(blocks: &[Block], ids: &mut BTreeMap<String, u32>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                collect_docx_revision_exports_from_inlines(&paragraph.inlines, ids)
+            }
+            Block::Heading(heading) => {
+                collect_docx_revision_exports_from_inlines(&heading.inlines, ids)
+            }
+            Block::List(list) => {
+                for item in &list.items {
+                    collect_docx_revision_exports_from_blocks(&item.blocks, ids);
+                }
+            }
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_docx_revision_exports_from_blocks(&cell.blocks, ids);
+                    }
+                }
+            }
+            Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
+        }
+    }
+}
+
+fn collect_docx_revision_exports_from_inlines(inlines: &[Inline], ids: &mut BTreeMap<String, u32>) {
+    for inline in inlines {
+        let Some(change) = exportable_docx_revision_change(inline) else {
+            continue;
+        };
+        if !ids.contains_key(&change.id) {
+            ids.insert(change.id.clone(), ids.len() as u32);
+        }
+    }
+}
+
+fn exportable_docx_revision_change(inline: &Inline) -> Option<&TrackedChange> {
+    let change = inline.tracked_change.as_ref()?;
+    if inline.text.is_empty()
+        || inline.field.is_some()
+        || inline.note_reference.is_some()
+        || validate_tracked_change_id(&change.id).is_err()
+    {
+        return None;
+    }
+    Some(change)
+}
+
 fn collect_exportable_comment_anchor_ids(document: &Document) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut ids = Vec::new();
@@ -3697,6 +4293,9 @@ fn collect_external_hyperlinks_from_blocks(blocks: &[Block], links: &mut BTreeSe
 
 fn collect_external_hyperlinks_from_inlines(inlines: &[Inline], links: &mut BTreeSet<String>) {
     for inline in inlines {
+        if inline.tracked_change.is_some() {
+            continue;
+        }
         if let Some(href) = inline.link.as_deref().and_then(sanitize_text_href) {
             if !href.starts_with('#') {
                 links.insert(href);
@@ -4570,6 +5169,298 @@ mod tests {
     }
 
     #[test]
+    fn imports_simple_docx_insertions_and_deletions_as_tracked_changes() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:p><w:r><w:t>Before </w:t></w:r><w:ins w:id="999/private" w:author="Reviewer" w:date="2026-06-25T10:00:00Z"><w:r><w:t>new</w:t></w:r></w:ins><w:r><w:t> </w:t></w:r><w:del w:id="1000" w:author="Editor" w:date="2026-06-25T11:00:00Z"><w:r><w:delText>old</w:delText></w:r></w:del></w:p></w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("tracked revisions should import");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+
+        assert_eq!(paragraph.inlines.len(), 4);
+        assert_eq!(paragraph.inlines[1].text, "new");
+        let insertion = paragraph.inlines[1]
+            .tracked_change
+            .as_ref()
+            .expect("inserted text should be tracked");
+        assert_eq!(insertion.id, "chg-docx-change-1");
+        assert_eq!(insertion.kind, TrackedChangeKind::Insertion);
+        assert_eq!(insertion.author, "Reviewer");
+        assert_eq!(
+            insertion.created_at,
+            DateTime::parse_from_rfc3339("2026-06-25T10:00:00Z")
+                .expect("date should parse")
+                .with_timezone(&Utc)
+        );
+
+        assert_eq!(paragraph.inlines[3].text, "old");
+        let deletion = paragraph.inlines[3]
+            .tracked_change
+            .as_ref()
+            .expect("deleted text should be tracked");
+        assert_eq!(deletion.id, "chg-docx-change-2");
+        assert_eq!(deletion.kind, TrackedChangeKind::Deletion);
+        assert_eq!(deletion.author, "Editor");
+    }
+
+    #[test]
+    fn imports_docx_revisions_inside_lists_and_table_cells() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="7"/></w:numPr></w:pPr><w:ins w:author="Reviewer"><w:r><w:t>List item</w:t></w:r></w:ins></w:p>
+  <w:tbl><w:tr><w:tc><w:p><w:del w:author="Reviewer"><w:r><w:delText>Cell text</w:delText></w:r></w:del></w:p></w:tc></w:tr></w:tbl>
+</w:body></w:document>"#,
+            None,
+            Some(
+                r#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:abstractNum w:abstractNumId="4"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl></w:abstractNum>
+<w:num w:numId="7"><w:abstractNumId w:val="4"/></w:num>
+</w:numbering>"#,
+            ),
+        );
+
+        let document = read_docx_bytes(&bytes).expect("nested tracked revisions should import");
+
+        let Block::List(list) = &document.sections[0].blocks[0] else {
+            panic!("list expected");
+        };
+        let Block::Paragraph(list_paragraph) = &list.items[0].blocks[0] else {
+            panic!("list paragraph expected");
+        };
+        assert_eq!(
+            list_paragraph.inlines[0]
+                .tracked_change
+                .as_ref()
+                .map(|change| change.kind),
+            Some(TrackedChangeKind::Insertion)
+        );
+
+        let Block::Table(table) = &document.sections[0].blocks[1] else {
+            panic!("table expected");
+        };
+        let Block::Paragraph(cell_paragraph) = &table.rows[0].cells[0].blocks[0] else {
+            panic!("cell paragraph expected");
+        };
+        assert_eq!(
+            cell_paragraph.inlines[0]
+                .tracked_change
+                .as_ref()
+                .map(|change| change.kind),
+            Some(TrackedChangeKind::Deletion)
+        );
+    }
+
+    #[test]
+    fn imports_nested_and_unsupported_docx_revisions_as_visible_fallback_text() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:p><w:ins w:author="Reviewer"><w:r><w:t>Outer </w:t></w:r><w:del w:author="Reviewer"><w:r><w:delText>nested</w:delText></w:r></w:del></w:ins><w:moveFrom><w:r><w:t> moved</w:t></w:r></w:moveFrom></w:p></w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("unsupported revisions should degrade");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+
+        assert_eq!(paragraph.inlines[0].text, "Outer ");
+        assert_eq!(
+            paragraph.inlines[0]
+                .tracked_change
+                .as_ref()
+                .map(|change| change.kind),
+            Some(TrackedChangeKind::Insertion)
+        );
+        assert_eq!(paragraph.inlines[1].text, "nested");
+        assert!(paragraph.inlines[1].tracked_change.is_none());
+        assert_eq!(paragraph.inlines[2].text, " moved");
+        assert!(paragraph.inlines[2].tracked_change.is_none());
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_revision_markup_degraded"));
+        assert_docx_revision_warnings_are_generic(&document);
+    }
+
+    #[test]
+    fn imports_docx_revision_authors_and_dates_with_privacy_safe_fallbacks() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body><w:p><w:ins w:id="C:/placeholder/raw-id" w:author="C:/placeholder/reviewer" w:date="not-a-date"><w:r><w:t>private author</w:t></w:r></w:ins></w:p></w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("unsafe revision metadata should degrade");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        let change = paragraph.inlines[0]
+            .tracked_change
+            .as_ref()
+            .expect("revision should still import");
+
+        assert_eq!(change.id, "chg-docx-change-1");
+        assert_eq!(change.author, IMPORTED_DOCX_REVISION_AUTHOR);
+        assert_eq!(change.created_at, epoch_utc());
+        assert!(!change.id.contains("Users"));
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_revision_metadata_degraded"));
+        assert_docx_revision_warnings_are_generic(&document);
+    }
+
+    #[test]
+    fn imports_excess_docx_revisions_as_visible_untracked_text() {
+        let mut body = String::new();
+        for index in 0..=MAX_DOCX_REVISIONS {
+            body.push_str("<w:ins w:author=\"Reviewer\"><w:r><w:t>");
+            body.push_str(&format!("change-{index}"));
+            body.push_str("</w:t></w:r></w:ins>");
+        }
+        let document_xml = format!(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p>{body}</w:p></w:body></w:document>"#
+        );
+        let bytes = synthetic_docx(&document_xml, None, None);
+
+        let document = read_docx_bytes(&bytes).expect("over-limit revisions should degrade");
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+
+        assert_eq!(paragraph.inlines.len(), MAX_DOCX_REVISIONS + 1);
+        assert!(paragraph.inlines[..MAX_DOCX_REVISIONS]
+            .iter()
+            .all(|inline| inline.tracked_change.is_some()));
+        let fallback = &paragraph.inlines[MAX_DOCX_REVISIONS];
+        assert_eq!(fallback.text, format!("change-{MAX_DOCX_REVISIONS}"));
+        assert!(fallback.tracked_change.is_none());
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_revisions_over_limit"));
+        assert_docx_revision_warnings_are_generic(&document);
+    }
+
+    #[test]
+    fn exports_docx_tracked_insertions_and_deletions_with_revision_markup() {
+        let created_at = DateTime::parse_from_rfc3339("2026-06-25T10:00:00Z")
+            .expect("date should parse")
+            .with_timezone(&Utc);
+        let mut inserted = Inline::text("new");
+        inserted.tracked_change = Some(TrackedChange {
+            id: "chg-insert".to_string(),
+            kind: TrackedChangeKind::Insertion,
+            author: "Reviewer".to_string(),
+            created_at,
+        });
+        let mut deleted = Inline::text("old");
+        deleted.tracked_change = Some(TrackedChange {
+            id: "chg-delete".to_string(),
+            kind: TrackedChangeKind::Deletion,
+            author: "Editor".to_string(),
+            created_at,
+        });
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: ParagraphFormat::default(),
+            inlines: vec![
+                Inline::text("Before "),
+                inserted,
+                Inline::text(" "),
+                deleted,
+            ],
+        })];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write tracked revisions");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+
+        assert!(document_xml
+            .contains(r#"<w:ins w:id="0" w:author="Reviewer" w:date="2026-06-25T10:00:00Z">"#));
+        assert!(document_xml
+            .contains(r#"<w:del w:id="1" w:author="Editor" w:date="2026-06-25T10:00:00Z">"#));
+        assert!(document_xml.contains(r#"<w:t xml:space="preserve">new</w:t>"#));
+        assert!(document_xml.contains(r#"<w:delText xml:space="preserve">old</w:delText>"#));
+
+        let parsed = read_docx_bytes(&bytes).expect("written tracked revisions should import");
+        let Block::Paragraph(paragraph) = &parsed.sections[0].blocks[0] else {
+            panic!("paragraph expected");
+        };
+        assert_eq!(
+            paragraph.inlines[1]
+                .tracked_change
+                .as_ref()
+                .map(|change| change.kind),
+            Some(TrackedChangeKind::Insertion)
+        );
+        assert_eq!(
+            paragraph.inlines[3]
+                .tracked_change
+                .as_ref()
+                .map(|change| change.kind),
+            Some(TrackedChangeKind::Deletion)
+        );
+    }
+
+    #[test]
+    fn skips_docx_comment_export_for_inline_that_is_also_tracked_change() {
+        let created_at = DateTime::parse_from_rfc3339("2026-06-25T10:00:00Z")
+            .expect("date should parse")
+            .with_timezone(&Utc);
+        let mut inline = Inline::text("commented change");
+        inline.comment_ids = vec!["cmt-review".to_string()];
+        inline.tracked_change = Some(TrackedChange {
+            id: "chg-private-author".to_string(),
+            kind: TrackedChangeKind::Insertion,
+            author: "C:/placeholder/local-author".to_string(),
+            created_at,
+        });
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: ParagraphFormat::default(),
+            inlines: vec![inline],
+        })];
+        document.comments.insert(
+            "cmt-review".to_string(),
+            CommentThread {
+                id: "cmt-review".to_string(),
+                author: "Reviewer".to_string(),
+                body: "Review note".to_string(),
+                created_at,
+                updated_at: created_at,
+                resolved: false,
+            },
+        );
+
+        let bytes = write_docx_bytes(&document)
+            .expect("docx should write tracked revision without comment export");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+        let mut archive =
+            ZipArchive::new(Cursor::new(bytes.as_slice())).expect("written docx should open");
+
+        assert!(document_xml.contains(r#"<w:ins w:id="0" w:author="Local User""#));
+        assert!(!document_xml.contains("C:/placeholder"));
+        assert!(!document_xml.contains("commentRangeStart"));
+        assert!(matches!(
+            archive.by_name("word/comments.xml"),
+            Err(zip::result::ZipError::FileNotFound)
+        ));
+    }
+
+    #[test]
     fn imports_synthetic_docx_header_footer_text_and_page_fields() {
         let bytes = synthetic_docx_with_parts(
             r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -5418,6 +6309,19 @@ mod tests {
         }
     }
 
+    fn assert_docx_revision_warnings_are_generic(document: &Document) {
+        for warning in &document.warnings {
+            assert!(!warning.message.contains("private"));
+            assert!(!warning.message.contains("Private"));
+            assert!(!warning.message.contains("C:/"));
+            assert!(!warning.message.contains("placeholder"));
+            assert!(!warning.message.contains("example.invalid"));
+            assert!(!warning.message.contains("raw-id"));
+            assert!(!warning.message.contains("moveFrom"));
+            assert!(!warning.message.contains("delText"));
+        }
+    }
+
     fn assert_docx_image_warnings_are_generic(document: &Document) {
         for warning in &document.warnings {
             assert!(!warning.message.contains("private"));
@@ -5427,6 +6331,17 @@ mod tests {
             assert!(!warning.message.contains("example.invalid"));
             assert!(!warning.message.contains("C:/"));
         }
+    }
+
+    fn read_zip_text_part(bytes: &[u8], name: &str) -> String {
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).expect("written docx should open");
+        let mut xml = String::new();
+        archive
+            .by_name(name)
+            .expect("text part should exist")
+            .read_to_string(&mut xml)
+            .expect("text part should read");
+        xml
     }
 
     fn synthetic_docx(

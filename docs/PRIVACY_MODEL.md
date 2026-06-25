@@ -48,6 +48,8 @@ Sprint 034 DOCX image import/export uses only local package image relationships 
 
 Sprint 035 DOCX comments import/export uses only local package comments relationships and preflighted `word/comments.xml` or `word/comments*.xml` parts. Accepted imported comments receive generated local `word-core` comment IDs and attach only to supported visible inline text ranges. Unsafe, remote, missing, malformed, duplicate, unanchored, threaded/reply, unsupported, or over-limit comments produce generic warnings without package entry names, relationship targets, local paths, private filenames, usernames, hostnames, or comment body text. Exported DOCX comments use generated numeric DOCX IDs, a generated `word/comments.xml` part, and generated relationship metadata; they do not include source paths, account data, telemetry identifiers, remote references, OS usernames, or hostnames. DOCX resolved-state fidelity remains deferred.
 
+Sprint 039 DOCX tracked changes import/export uses only local `word/document.xml` revision wrappers that already passed package preflight. Accepted imported `w:ins` and `w:del` text revisions receive generated local `word-core` tracked-change IDs and attach only to supported visible inline text in body paragraphs, list items, or table cells. Safe bounded DOCX author strings may be preserved after sanitization, while path-like, account-like, hostname-like, missing, malformed, or over-limit author/date metadata falls back to generic local-safe values. Unsupported, nested, malformed, over-limit, move, formatting-only, property, table-row, image, field, comment-as-change, or otherwise unsupported review markup produces generic warnings and visible text fallback where text is available. Exported DOCX revision IDs are generated numeric values and exported authors/dates come only from sanitized local tracked-change metadata; source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, and hostnames are not emitted.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
@@ -87,6 +89,8 @@ Sprint 033 DOCX export adds simple generated header/footer XML parts only when `
 Sprint 034 DOCX export embeds only valid allowlisted image assets already present in the local document model. Exported image relationship targets and media part names are generated and do not use source filenames, local paths, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, or private build metadata.
 
 Sprint 035 DOCX export writes only simple anchored comments already present in the local document model. Exported comment part names, relationship IDs, and numeric comment IDs are generated and do not use source filenames, local paths, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, or private build metadata.
+
+Sprint 039 DOCX export writes only simple text-only tracked insertions/deletions already present in the local document model. Exported revision IDs are generated numeric values, and unsafe local author strings fall back to `Local User`. The export path does not use source filenames, local paths, usernames, hostnames, account identifiers, telemetry identifiers, remote resources, custom XML, macros, embedded objects, compare/merge metadata, or private build metadata.
 
 ## Network
 

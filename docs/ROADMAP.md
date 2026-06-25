@@ -363,3 +363,12 @@ Status: complete.
 - Bound JPEG embedding to 32 images per generated PDF, 8 MiB per embedded JPEG, 8192 px per side, 20,000,000 pixels, and grayscale/RGB component counts.
 - Preserve page size, margins, image alignment, bounded scale metadata, and page-range selection behavior without adding a heavy PDF or image-processing dependency.
 - Keep ODT canonical and keep PNG/GIF/WebP PDF embedding, progressive JPEG embedding, JPEG decoding, downsampling/recompression, crop/rotation, EXIF interpretation/selective preservation, color-management precision, rich PDF image metadata, remote fetching, telemetry, accounts, cloud behavior, and full layout fidelity deferred.
+
+## Sprint 039: DOCX Tracked Changes MVP
+
+Status: complete.
+
+- Extend the conversion-only DOCX boundary to import simple `w:ins` and `w:del` text revisions in body paragraphs, list items, and table cells into existing `word-core` inline tracked changes.
+- Generate safe local tracked-change IDs on import, sanitize bounded author metadata, and use safe deterministic fallback metadata when DOCX revision authors or dates are unsafe.
+- Export 900Word-authored text-only insertions/deletions as simple generated `w:ins` and `w:del` / `w:delText` markup with numeric DOCX revision IDs.
+- Keep ODT canonical and keep formatting-only changes, table/image changes, move changes, resolved state, compare/merge, full Word review fidelity, telemetry, accounts, cloud behavior, external converters, heavyweight dependencies, and full DOCX fidelity deferred.
