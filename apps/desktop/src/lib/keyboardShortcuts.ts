@@ -21,6 +21,7 @@ export type GlobalShortcutCommand =
   | 'numberedList'
   | 'increaseIndent'
   | 'decreaseIndent'
+  | 'insertComment'
   | 'exportPdf';
 
 export interface KeyboardShortcutEventLike {
@@ -66,6 +67,7 @@ const commandLabelDescriptors: Record<Exclude<GlobalShortcutCommand, 'redo' | 'r
   numberedList: { primary: true, shift: true, key: '7' },
   increaseIndent: { primary: true, key: ']' },
   decreaseIndent: { primary: true, key: '[' },
+  insertComment: { primary: true, alt: true, key: 'M' },
   exportPdf: { primary: true, shift: true, key: 'E' }
 };
 
@@ -178,6 +180,7 @@ function identifyShortcutCommand(event: KeyboardShortcutEventLike): GlobalShortc
   if (primary && !alt && !shift && (key === '[' || event.code === 'BracketLeft')) return 'decreaseIndent';
   if (primary && !alt && !shift && (key === ']' || event.code === 'BracketRight')) return 'increaseIndent';
   if (primary && !alt && !shift && key === 'k') return 'insertLink';
+  if (primary && alt && !shift && (key === 'm' || event.code === 'KeyM')) return 'insertComment';
   if (primary && !alt && shift && key === 'e') return 'exportPdf';
 
   return null;

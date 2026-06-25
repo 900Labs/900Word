@@ -4496,6 +4496,7 @@ dependencies = [
 name = "word-odf"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "quick-xml",
  "tempfile",
  "thiserror 1.0.69",

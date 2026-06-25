@@ -4,6 +4,7 @@ export interface Inline {
   text: string;
   marks?: string[];
   link?: string | null;
+  comment_ids?: string[];
   style?: InlineStyle;
   field?: PageField | null;
 }
@@ -116,6 +117,15 @@ export interface AssetRef {
   original_name?: string | null;
 }
 
+export interface CommentThread {
+  id: string;
+  author: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+  resolved?: boolean;
+}
+
 export type TableCellEditableBlock = ParagraphBlock | HeadingBlock | ListBlock;
 export type EditableBlock = ParagraphBlock | HeadingBlock | ListBlock | TableBlock | ImageBlock;
 export type Block = EditableBlock | { type: string; value?: unknown };
@@ -160,6 +170,7 @@ export interface DocumentState {
   styles?: Record<string, DocumentStyle>;
   lists?: Record<string, ListDefinition>;
   assets?: Record<string, AssetRef>;
+  comments?: Record<string, CommentThread>;
   sections: Array<{
     blocks: Block[];
     page?: PageSetup;
@@ -326,6 +337,21 @@ export type DocumentCommand =
   | {
       type: 'update_style';
       style: DocumentStyle;
+    }
+  | {
+      type: 'add_comment';
+      id: string;
+      author?: string | null;
+      body: string;
+    }
+  | {
+      type: 'set_comment_resolved';
+      id: string;
+      resolved: boolean;
+    }
+  | {
+      type: 'delete_comment';
+      id: string;
     };
 
 export const pageFieldTokens: Record<PageField, string> = {
@@ -861,6 +887,7 @@ function base64FromBytes(bytes: number[]): string {
 function editorTextToInline(textNode: EditorTextNode): Inline {
   const marks: string[] = [];
   let link: string | null = null;
+  const commentIds: string[] = [];
   const style: InlineStyle = {};
   for (const mark of textNode.marks ?? []) {
     const mapped = mapEditorMark(mark.type);
@@ -869,6 +896,12 @@ function editorTextToInline(textNode: EditorTextNode): Inline {
     }
     if (mark.type === 'link' && mark.attrs?.href) {
       link = sanitizeEditorHref(String(mark.attrs.href)) ?? null;
+    }
+    if (mark.type === 'comment' && typeof mark.attrs?.id === 'string') {
+      const commentId = sanitizeCommentId(mark.attrs.id);
+      if (commentId && !commentIds.includes(commentId)) {
+        commentIds.push(commentId);
+      }
     }
     if (mark.type === 'textStyle') {
       if (typeof mark.attrs?.fontFamily === 'string') {
@@ -891,6 +924,9 @@ function editorTextToInline(textNode: EditorTextNode): Inline {
     marks,
     link
   };
+  if (commentIds.length > 0) {
+    inline.comment_ids = commentIds;
+  }
   if (!inlineStyleIsEmpty(style)) {
     inline.style = style;
   }
@@ -909,6 +945,12 @@ function inlineToEditorText(inline: Inline): EditorTextNode {
     const href = sanitizeEditorHref(inline.link);
     if (href) {
       marks.push({ type: 'link', attrs: { href } });
+    }
+  }
+  for (const commentId of inline.comment_ids ?? []) {
+    const id = sanitizeCommentId(commentId);
+    if (id) {
+      marks.push({ type: 'comment', attrs: { id } });
     }
   }
   if (inline.style && !inlineStyleIsEmpty(inline.style)) {
@@ -1299,6 +1341,15 @@ function inlineStyleIsEmpty(style: InlineStyle): boolean {
     !style.text_color &&
     !style.highlight_color
   );
+}
+
+export function sanitizeCommentId(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 64 || !trimmed.startsWith('cmt-')) {
+    return null;
+  }
+  const suffix = trimmed.slice(4);
+  return /^[A-Za-z0-9_-]+$/.test(suffix) ? trimmed : null;
 }
 
 function clampListLevel(level: number): number {

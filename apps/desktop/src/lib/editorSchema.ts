@@ -1,4 +1,5 @@
 import { Schema, type MarkSpec, type NodeSpec } from 'prosemirror-model';
+import { sanitizeCommentId } from './documentProjection';
 import { sanitizeBookmarkId, sanitizeEditorHref } from './editorSecurity';
 
 const nodes: Record<string, NodeSpec> = {
@@ -448,6 +449,32 @@ const marks: Record<string, MarkSpec> = {
     toDOM(node) {
       return ['a', { href: sanitizeEditorHref(String(node.attrs.href)) ?? '', rel: 'noreferrer' }, 0];
     }
+  },
+  comment: {
+    excludes: '',
+    attrs: {
+      id: {
+        validate(value: unknown) {
+          if (typeof value !== 'string' || !sanitizeCommentId(value)) {
+            throw new RangeError('unsupported comment id');
+          }
+        }
+      }
+    },
+    inclusive: false,
+    parseDOM: [
+      {
+        tag: 'span[data-comment-id]',
+        getAttrs(node) {
+          const id = sanitizeCommentId(node.getAttribute('data-comment-id') ?? '');
+          return id ? { id } : false;
+        }
+      }
+    ],
+    toDOM(mark) {
+      const id = sanitizeCommentId(String(mark.attrs.id)) ?? '';
+      return ['span', { class: 'comment-marker', 'data-comment-id': id }, 0];
+    }
   }
 };
 
@@ -468,7 +495,8 @@ export const supportedMarkTypes = [
   'superscript',
   'subscript',
   'textStyle',
-  'link'
+  'link',
+  'comment'
 ] as const;
 
 function numberAttr(node: Element, name: string): number | null {

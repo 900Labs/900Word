@@ -185,3 +185,14 @@ Status: complete.
 - Preserve existing authoring and file shortcuts while adding replace, redo via Cmd/Ctrl+Y, and Export PDF handling through the existing export path flow.
 - Surface shortcut hints in File menu commands, export controls, and toolbar tooltips.
 - Keep comments, custom shortcut preferences, telemetry, dependencies, file-format changes, and model changes deferred.
+
+## Sprint 022: Comments MVP
+
+Status: complete.
+
+- Add bounded durable local comment threads to `word-core` with inline selected-text anchors.
+- Add desktop comments sidebar controls for add, jump, resolve/reopen, and delete.
+- Preserve comment marks through ProseMirror projection alongside formatting, links, and direct text style metadata.
+- Save and reopen 900Word-authored comments in ODT using ODF annotation elements with `word900` metadata for local ID and resolved state.
+- Add an Insert Comment shortcut that opens the comments panel and focuses the comment body.
+- Keep thread replies, multiple authors, comment search, full external ODT annotation compatibility, DOCX comments, and PDF annotation export deferred.
