@@ -651,10 +651,14 @@
   }
 
   async function saveSettings() {
-    settings = await invoke<Settings>('update_settings', {
-      settings
-    });
-    status = tr('settingsUpdated');
+    try {
+      settings = await invoke<Settings>('update_settings', {
+        settings
+      });
+      status = tr('settingsUpdated');
+    } catch (error) {
+      setStatusFromError(error);
+    }
   }
 
   async function exportText() {

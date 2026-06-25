@@ -19,7 +19,7 @@ Add a narrow offline dictionary manager under Settings so users can inspect inst
 
 ## Compatibility Boundary
 
-- This sprint does not add dictionary downloads, remote dictionary lookup, cloud sync, accounts, telemetry, plugin runtime behavior, native file-picker install flows, or persistent settings storage changes.
+- This sprint does not add dictionary downloads, remote dictionary lookup, cloud sync, accounts, telemetry, plugin runtime behavior, native file-picker install flows, or settings-file format changes beyond the active language tag field later persisted by Sprint 043.
 - User dictionaries are still discovered only through the existing local app-data dictionary folder boundary.
 - Missing selected dictionaries still fall back to the bundled English bootstrap dictionary during spell checks.
 
@@ -28,7 +28,6 @@ Add a narrow offline dictionary manager under Settings so users can inspect inst
 - Dictionary install/import UX.
 - Rich personal dictionary word management.
 - Full Hunspell affix expansion and reviewed full-size bundled dictionaries.
-- Persistent settings storage across app launches.
 
 ## Verification
 

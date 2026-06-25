@@ -31,7 +31,6 @@ Add lightweight local accessibility and low-resource controls that make 900Word 
 
 ## Deferred
 
-- Persistent settings storage across app launches.
 - Per-control density presets beyond the larger toolbar mode.
 - Full browser-level accessibility automation for every mode combination.
 - Measured low-end hardware benchmarks and hard resource thresholds.

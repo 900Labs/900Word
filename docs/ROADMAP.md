@@ -240,7 +240,7 @@ Status: complete.
 - Add typed-input transforms for sentence capitalization, smart quotes, double-hyphen em dashes, and a small allowlisted typo replacement map.
 - Add simple `- ` and `1. ` list triggers at the start of an otherwise empty top-level paragraph.
 - Keep transforms deterministic, bounded to collapsed typed input, and avoid URL-like tokens.
-- Keep imported-document cleanup, rich autocorrect dictionaries, locale-specific quote styles, persistent settings storage, and smart typing while track-changes recording deferred.
+- Keep imported-document cleanup, rich autocorrect dictionaries, locale-specific quote styles, and smart typing while track-changes recording deferred.
 
 ## Sprint 027: Expanded Stats Panel MVP
 
@@ -399,3 +399,12 @@ Status: complete.
 - Show installed dictionary display name, language tag, bundled/user source type, license, and generic no-local-path source label.
 - Show explicit offline/local-only status and a graceful fallback message when the selected dictionary is unavailable.
 - Keep downloads, remote dictionary lookup, cloud sync, telemetry, accounts, plugin runtime behavior, and dictionary install/import UX deferred.
+
+## Sprint 043: Persistent Settings MVP
+
+Status: complete.
+
+- Persist sanitized local app settings under the existing app-data boundary using private atomic writes where supported.
+- Force telemetry off on every settings save/load and normalize language/UI locale values before storing or returning settings.
+- Fall back to sanitized defaults when the settings file is missing, malformed, unreadable, path-shaped, oversized, or otherwise unsafe.
+- Keep document paths, recent paths, filenames, document text, usernames, hostnames, account/cloud identity, telemetry identifiers, network state, cloud sync, plugin runtime behavior, import/export, and UI behavior changes out of scope.
