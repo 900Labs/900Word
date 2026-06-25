@@ -809,6 +809,14 @@ struct DocxRenderContext<'a> {
 enum ParagraphContent {
     Inline(Box<Inline>),
     Image(ImageBlock),
+    PageBreak,
+}
+
+#[derive(Clone, Copy)]
+struct ParagraphRunParseContext<'a> {
+    name: &'a str,
+    tracked_change: Option<&'a TrackedChange>,
+    allow_page_break_blocks: bool,
 }
 
 pub fn read_docx_bytes(bytes: &[u8]) -> Result<Document, DocxError> {
@@ -1997,7 +2005,8 @@ fn parse_document_xml(
                 }
                 Event::End(end) if local_name(end.name().as_ref()) == b"body" => break,
                 Event::Start(start) if in_body && local_name(start.name().as_ref()) == b"p" => {
-                    let blocks = parse_paragraph(&mut reader, context, numbering, &mut state)?;
+                    let blocks =
+                        parse_paragraph(&mut reader, context, numbering, &mut state, true)?;
                     for block in blocks {
                         push_parsed_block(&mut parsed, block);
                     }
@@ -2610,6 +2619,13 @@ fn docx_text_color_value(color: &str) -> Option<String> {
     docx_hex_color(color.strip_prefix('#')?).map(|value| value[1..].to_ascii_uppercase())
 }
 
+fn is_docx_page_break(start: &BytesStart<'_>, name: &str) -> Result<bool, DocxError> {
+    Ok(attr_value(start, b"type", name)?
+        .as_deref()
+        .map(|value| value.eq_ignore_ascii_case("page"))
+        .unwrap_or(false))
+}
+
 fn parse_docx_i32_attr(start: &BytesStart<'_>, attr: &[u8]) -> Result<Option<i32>, DocxError> {
     let Some(value) = attr_value(start, attr, DOCUMENT_XML)? else {
         return Ok(None);
@@ -2671,7 +2687,7 @@ fn parse_table_cell(
             .map_err(|err| xml_error(DOCUMENT_XML, err))?
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"p" => {
-                let blocks = parse_paragraph(reader, context, numbering, state)?;
+                let blocks = parse_paragraph(reader, context, numbering, state, false)?;
                 for block in blocks {
                     push_parsed_block(&mut parsed, block);
                 }
@@ -2937,6 +2953,7 @@ fn parse_paragraph(
     context: &DocxImportContext<'_>,
     numbering: &NumberingMap,
     state: &mut DocxBodyParseState<'_>,
+    allow_page_break_blocks: bool,
 ) -> Result<Vec<ParsedBlock>, DocxError> {
     let mut properties = ParagraphProperties::default();
     let mut content = Vec::new();
@@ -2981,8 +2998,11 @@ fn parse_paragraph(
                     context,
                     &mut comment_state,
                     state,
-                    DOCUMENT_XML,
-                    None,
+                    ParagraphRunParseContext {
+                        name: DOCUMENT_XML,
+                        tracked_change: None,
+                        allow_page_break_blocks,
+                    },
                 )?;
                 append_paragraph_content(&mut content, run);
             }
@@ -2994,8 +3014,11 @@ fn parse_paragraph(
                     context,
                     &mut comment_state,
                     state,
-                    DOCUMENT_XML,
-                    None,
+                    ParagraphRunParseContext {
+                        name: DOCUMENT_XML,
+                        tracked_change: None,
+                        allow_page_break_blocks,
+                    },
                 )?;
                 append_paragraph_content(&mut content, run);
             }
@@ -3334,12 +3357,14 @@ fn parse_hyperlink(
     context: &DocxImportContext<'_>,
     comment_state: &mut CommentImportState,
     state: &mut DocxBodyParseState<'_>,
-    name: &str,
-    tracked_change: Option<&TrackedChange>,
+    parse_context: ParagraphRunParseContext<'_>,
 ) -> Result<Vec<ParagraphContent>, DocxError> {
     let mut content = Vec::new();
     loop {
-        match reader.read_event().map_err(|err| xml_error(name, err))? {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(parse_context.name, err))?
+        {
             Event::Start(start) if local_name(start.name().as_ref()) == b"r" => {
                 let run = parse_paragraph_run(
                     reader,
@@ -3347,8 +3372,7 @@ fn parse_hyperlink(
                     context,
                     comment_state,
                     state,
-                    name,
-                    tracked_change,
+                    parse_context,
                 )?;
                 append_paragraph_content(&mut content, run);
             }
@@ -3360,7 +3384,7 @@ fn parse_hyperlink(
                     "Unsupported DOCX tracked-change markup was imported as visible text when available",
                 );
                 let end = local_name(start.name().as_ref()).to_vec();
-                let text = read_visible_text_fallback(reader, &end, name)?;
+                let text = read_visible_text_fallback(reader, &end, parse_context.name)?;
                 push_plain_visible_text(&mut content, text);
             }
             Event::Start(start)
@@ -3371,13 +3395,13 @@ fn parse_hyperlink(
                     "Unsupported DOCX tracked-change markup was imported as visible text when available",
                 );
                 let end = local_name(start.name().as_ref()).to_vec();
-                let text = read_visible_text_fallback(reader, &end, name)?;
+                let text = read_visible_text_fallback(reader, &end, parse_context.name)?;
                 push_plain_visible_text(&mut content, text);
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"hyperlink" => break,
             Event::Start(start) => {
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, name)?;
+                skip_element(reader, &end, parse_context.name)?;
             }
             Event::Eof => break,
             _ => {}
@@ -3392,29 +3416,80 @@ fn parse_paragraph_run(
     context: &DocxImportContext<'_>,
     comment_state: &mut CommentImportState,
     state: &mut DocxBodyParseState<'_>,
-    name: &str,
-    tracked_change: Option<&TrackedChange>,
+    parse_context: ParagraphRunParseContext<'_>,
 ) -> Result<Vec<ParagraphContent>, DocxError> {
     let mut properties = RunProperties::default();
     let mut text = String::new();
     let mut content = Vec::new();
 
     loop {
-        match reader.read_event().map_err(|err| xml_error(name, err))? {
+        match reader
+            .read_event()
+            .map_err(|err| xml_error(parse_context.name, err))?
+        {
             Event::Start(start) if local_name(start.name().as_ref()) == b"rPr" => {
-                properties = parse_run_properties(reader, name, state.warnings)?;
+                properties = parse_run_properties(reader, parse_context.name, state.warnings)?;
             }
             Event::Start(start)
                 if matches!(local_name(start.name().as_ref()), b"t" | b"delText") =>
             {
                 let end = local_name(start.name().as_ref()).to_vec();
-                text.push_str(&read_text_element(reader, &end, name)?);
+                text.push_str(&read_text_element(reader, &end, parse_context.name)?);
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"tab" => {
                 text.push('\t');
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"br" => {
-                text.push('\n');
+                if is_docx_page_break(&start, parse_context.name)? {
+                    if parse_context.allow_page_break_blocks
+                        && parse_context.tracked_change.is_none()
+                    {
+                        flush_run_text_content(
+                            &mut content,
+                            &mut text,
+                            &properties,
+                            link.clone(),
+                            Some(comment_state),
+                            parse_context.tracked_change,
+                        );
+                        content.push(ParagraphContent::PageBreak);
+                    } else {
+                        state.warnings.warn(
+                            "docx_page_break_degraded",
+                            "Unsupported DOCX page breaks were imported as visible spacing",
+                        );
+                        text.push('\n');
+                    }
+                } else {
+                    text.push('\n');
+                }
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"br" => {
+                let is_page_break = is_docx_page_break(&start, parse_context.name)?;
+                skip_element(reader, b"br", parse_context.name)?;
+                if is_page_break {
+                    if parse_context.allow_page_break_blocks
+                        && parse_context.tracked_change.is_none()
+                    {
+                        flush_run_text_content(
+                            &mut content,
+                            &mut text,
+                            &properties,
+                            link.clone(),
+                            Some(comment_state),
+                            parse_context.tracked_change,
+                        );
+                        content.push(ParagraphContent::PageBreak);
+                    } else {
+                        state.warnings.warn(
+                            "docx_page_break_degraded",
+                            "Unsupported DOCX page breaks were imported as visible spacing",
+                        );
+                        text.push('\n');
+                    }
+                } else {
+                    text.push('\n');
+                }
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"drawing" => {
                 flush_run_text_content(
@@ -3423,11 +3498,15 @@ fn parse_paragraph_run(
                     &properties,
                     link.clone(),
                     Some(comment_state),
-                    tracked_change,
+                    parse_context.tracked_change,
                 );
-                if let Some(image) =
-                    parse_drawing(reader, context.rels, context.images, state.warnings, name)?
-                {
+                if let Some(image) = parse_drawing(
+                    reader,
+                    context.rels,
+                    context.images,
+                    state.warnings,
+                    parse_context.name,
+                )? {
                     content.push(ParagraphContent::Image(image));
                 }
             }
@@ -3453,7 +3532,7 @@ fn parse_paragraph_run(
                     "Unsupported DOCX media content was ignored during import",
                 );
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, name)?;
+                skip_element(reader, &end, parse_context.name)?;
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"commentReference" => {
                 comment_state.reference_marker(&start, context.comments, state.warnings)?;
@@ -3461,7 +3540,7 @@ fn parse_paragraph_run(
             Event::Start(start) if local_name(start.name().as_ref()) == b"commentReference" => {
                 comment_state.reference_marker(&start, context.comments, state.warnings)?;
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, name)?;
+                skip_element(reader, &end, parse_context.name)?;
             }
             Event::Empty(start)
                 if docx_note_reference_kind(local_name(start.name().as_ref())).is_some() =>
@@ -3472,7 +3551,7 @@ fn parse_paragraph_run(
                     &properties,
                     link.clone(),
                     Some(comment_state),
-                    tracked_change,
+                    parse_context.tracked_change,
                 );
                 let kind = docx_note_reference_kind(local_name(start.name().as_ref()))
                     .expect("note reference kind checked above");
@@ -3483,7 +3562,7 @@ fn parse_paragraph_run(
                     state,
                     &start,
                     kind,
-                    tracked_change.is_some(),
+                    parse_context.tracked_change.is_some(),
                 )?;
             }
             Event::Start(start)
@@ -3495,7 +3574,7 @@ fn parse_paragraph_run(
                     &properties,
                     link.clone(),
                     Some(comment_state),
-                    tracked_change,
+                    parse_context.tracked_change,
                 );
                 let kind = docx_note_reference_kind(local_name(start.name().as_ref()))
                     .expect("note reference kind checked above");
@@ -3506,10 +3585,10 @@ fn parse_paragraph_run(
                     state,
                     &start,
                     kind,
-                    tracked_change.is_some(),
+                    parse_context.tracked_change.is_some(),
                 )?;
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, name)?;
+                skip_element(reader, &end, parse_context.name)?;
             }
             Event::Empty(start)
                 if matches!(local_name(start.name().as_ref()), b"fldChar" | b"instrText") =>
@@ -3527,7 +3606,7 @@ fn parse_paragraph_run(
                     "Unsupported DOCX inline metadata was ignored during import",
                 );
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, name)?;
+                skip_element(reader, &end, parse_context.name)?;
             }
             Event::End(end) if local_name(end.name().as_ref()) == b"r" => break,
             Event::Empty(_) => {
@@ -3542,7 +3621,7 @@ fn parse_paragraph_run(
                     "Unsupported DOCX run content was ignored during import",
                 );
                 let end = local_name(start.name().as_ref()).to_vec();
-                skip_element(reader, &end, name)?;
+                skip_element(reader, &end, parse_context.name)?;
             }
             Event::Eof => break,
             _ => {}
@@ -3555,7 +3634,7 @@ fn parse_paragraph_run(
         &properties,
         link,
         Some(comment_state),
-        tracked_change,
+        parse_context.tracked_change,
     );
     Ok(content)
 }
@@ -3691,8 +3770,11 @@ fn parse_revision_container(
                     context,
                     comment_state,
                     state,
-                    name,
-                    tracked_change.as_ref(),
+                    ParagraphRunParseContext {
+                        name,
+                        tracked_change: tracked_change.as_ref(),
+                        allow_page_break_blocks: false,
+                    },
                 )?;
                 append_paragraph_content(&mut content, run);
             }
@@ -3704,8 +3786,11 @@ fn parse_revision_container(
                     context,
                     comment_state,
                     state,
-                    name,
-                    tracked_change.as_ref(),
+                    ParagraphRunParseContext {
+                        name,
+                        tracked_change: tracked_change.as_ref(),
+                        allow_page_break_blocks: false,
+                    },
                 )?;
                 append_paragraph_content(&mut content, run);
             }
@@ -4346,6 +4431,7 @@ fn append_paragraph_content(target: &mut Vec<ParagraphContent>, source: Vec<Para
                 }
             }
             ParagraphContent::Image(image) => target.push(ParagraphContent::Image(image)),
+            ParagraphContent::PageBreak => target.push(ParagraphContent::PageBreak),
         }
     }
 }
@@ -4363,6 +4449,16 @@ fn paragraph_content_to_blocks(
                 flush_paragraph_block(&mut blocks, &mut inlines, properties);
                 blocks.push(ParsedBlock {
                     block: Block::Image(image),
+                    list_marker: None,
+                    toc_role: None,
+                    counts_for_cell_alignment: false,
+                    paragraph_alignment: None,
+                });
+            }
+            ParagraphContent::PageBreak => {
+                flush_paragraph_block(&mut blocks, &mut inlines, properties);
+                blocks.push(ParsedBlock {
+                    block: Block::PageBreak,
                     list_marker: None,
                     toc_role: None,
                     counts_for_cell_alignment: false,
@@ -7480,6 +7576,119 @@ mod tests {
     }
 
     #[test]
+    fn imports_docx_page_break_runs_as_blocks() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r><w:t>Before break</w:t></w:r>
+    <w:r><w:br w:type="page"/></w:r>
+    <w:r><w:t>After break</w:t></w:r>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("page break should import");
+
+        assert_eq!(document.sections[0].blocks.len(), 3);
+        let Block::Paragraph(before) = &document.sections[0].blocks[0] else {
+            panic!("before paragraph should import");
+        };
+        assert_eq!(before.inlines[0].text, "Before break");
+        assert!(matches!(document.sections[0].blocks[1], Block::PageBreak));
+        let Block::Paragraph(after) = &document.sections[0].blocks[2] else {
+            panic!("after paragraph should import");
+        };
+        assert_eq!(after.inlines[0].text, "After break");
+    }
+
+    #[test]
+    fn keeps_docx_line_break_runs_as_inline_text() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:r><w:t>First</w:t><w:br/><w:t>Second</w:t></w:r>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("line break should import");
+
+        assert_eq!(document.sections[0].blocks.len(), 1);
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+        assert_eq!(paragraph.inlines[0].text, "First\nSecond");
+    }
+
+    #[test]
+    fn degrades_tracked_docx_page_break_runs_to_visible_spacing() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:p>
+    <w:ins w:id="1" w:author="Reviewer" w:date="2026-01-01T00:00:00Z">
+      <w:r><w:t>Before</w:t><w:br w:type="page"/><w:t>After</w:t></w:r>
+    </w:ins>
+  </w:p>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("tracked page break should degrade");
+
+        assert_eq!(document.sections[0].blocks.len(), 1);
+        let Block::Paragraph(paragraph) = &document.sections[0].blocks[0] else {
+            panic!("paragraph should import");
+        };
+        assert_eq!(paragraph.inlines[0].text, "Before\nAfter");
+        assert!(paragraph.inlines[0].tracked_change.is_some());
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_page_break_degraded"));
+    }
+
+    #[test]
+    fn degrades_table_cell_docx_page_break_runs_to_visible_spacing() {
+        let bytes = synthetic_docx(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+  <w:tbl>
+    <w:tr>
+      <w:tc>
+        <w:p><w:r><w:t>Cell before</w:t><w:br w:type="page"/><w:t>Cell after</w:t></w:r></w:p>
+      </w:tc>
+    </w:tr>
+  </w:tbl>
+</w:body></w:document>"#,
+            None,
+            None,
+        );
+
+        let document = read_docx_bytes(&bytes).expect("cell page break should degrade");
+
+        let Block::Table(table) = &document.sections[0].blocks[0] else {
+            panic!("table should import");
+        };
+        assert_eq!(table.rows[0].cells[0].blocks.len(), 1);
+        let Block::Paragraph(paragraph) = &table.rows[0].cells[0].blocks[0] else {
+            panic!("cell paragraph should import");
+        };
+        assert_eq!(paragraph.inlines[0].text, "Cell before\nCell after");
+        assert!(document
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "docx_page_break_degraded"));
+    }
+
+    #[test]
     fn imports_unsafe_hyperlinks_as_plain_text_with_warning() {
         let bytes = synthetic_docx(
             r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
@@ -8998,6 +9207,35 @@ mod tests {
 
         let parsed = read_docx_bytes(&bytes).expect("written page setup should import");
         assert_eq!(parsed.sections[0].page, expected_page);
+    }
+
+    #[test]
+    fn exports_and_imports_docx_page_break_blocks() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: StyleId::from("body"),
+                format: ParagraphFormat::default(),
+                inlines: vec![Inline::text("Before")],
+            }),
+            Block::PageBreak,
+            Block::Paragraph(Paragraph {
+                bookmark_id: None,
+                style: StyleId::from("body"),
+                format: ParagraphFormat::default(),
+                inlines: vec![Inline::text("After")],
+            }),
+        ];
+
+        let bytes = write_docx_bytes(&document).expect("docx should write page break");
+        validate_docx_package(&bytes, PackageLimits::default()).expect("written package validates");
+        let document_xml = read_zip_text_part(&bytes, DOCUMENT_XML);
+
+        assert!(document_xml.contains(r#"<w:br w:type="page"/>"#));
+
+        let parsed = read_docx_bytes(&bytes).expect("written page break should import");
+        assert!(matches!(parsed.sections[0].blocks[1], Block::PageBreak));
     }
 
     #[test]
