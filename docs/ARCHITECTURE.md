@@ -80,7 +80,7 @@ Package preflight enforces raw package size, entry count, entry size, expanded s
 
 ## DOCX Boundary
 
-`word-docx` owns bounded WordprocessingML package conversion. It covers paragraphs, Heading 1-3 paragraph styles, bold/italic/underline runs, safe `http`, `https`, `mailto`, and safe internal-fragment hyperlinks, contiguous simple lists, simple tables, and simple default/first-page headers and footers with page-number/page-count/date fields. It does not import media, comments, tracked changes, notes, even-page regions, complex fields, styles beyond heading detection, embedded objects, macros, custom XML, or full layout semantics. Unsupported structures are ignored, flattened to visible text where practical, or reported as generic document warnings.
+`word-docx` owns bounded WordprocessingML package conversion. It covers paragraphs, Heading 1-3 paragraph styles, bold/italic/underline runs, safe `http`, `https`, `mailto`, and safe internal-fragment hyperlinks, contiguous simple lists, simple tables, simple default/first-page headers and footers with page-number/page-count/date fields, safe embedded PNG/JPEG/GIF/WebP image media, and simple anchored comments. It does not import linked or remote media, threaded comment metadata, comment replies, resolved-state fidelity, tracked changes, notes, even-page regions, complex fields, styles beyond heading detection, embedded objects, macros, custom XML, or full layout semantics. Unsupported structures are ignored, flattened to visible text where practical, or reported as generic document warnings.
 
 ## Fixtures
 

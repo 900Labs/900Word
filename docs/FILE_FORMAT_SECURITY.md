@@ -37,8 +37,9 @@ All external files are untrusted.
 - Rejection of absolute paths, backslash paths, parent-directory traversal, symlink entries, encrypted entries, macro/executable-like entries, ActiveX, embedded object, script, and custom XML package areas.
 - Rejection of XML `DOCTYPE` and entity declarations before content import.
 - Required `word/document.xml` presence.
-- Relationship import limited to safe hyperlink targets, safe local header/footer targets under `word/`, and safe local image targets under `word/media/`. Unsupported external relationships are ignored with generic warnings and never fetched.
+- Relationship import limited to safe hyperlink targets, safe local header/footer targets under `word/`, safe local comments targets under `word/`, and safe local image targets under `word/media/`. Unsupported external relationships are ignored with generic warnings and never fetched.
 - Header/footer relationship targets are accepted only when they resolve to simple package paths for `word/header*.xml` or `word/footer*.xml` parts that have already passed package preflight. Unsafe, missing, remote, or unsupported targets are ignored with generic warnings.
+- Comments relationship targets are accepted only when they resolve to simple package paths for `word/comments.xml` or `word/comments*.xml` parts that have already passed package preflight. Unsafe, missing, remote, over-limit, malformed, unanchored, threaded/reply, or unsupported comment content is ignored with generic warnings and is not stored as hidden metadata.
 - Image relationship targets are accepted only when they resolve to simple package paths under `word/media/` with PNG, JPEG/JPG, GIF, or WebP extensions. Image bytes are read only after package preflight and must match the allowlisted magic bytes and declared media type. Unsafe, missing, remote, mismatched, or unsupported targets are ignored with generic warnings.
 - No remote media fetch, shell execution, external converter invocation, account lookup, or network behavior.
 
@@ -64,7 +65,7 @@ HTML export is generated from `word-core`, escapes document text, strips unsafe 
 
 PDF export is a minimal generated document for smoke testing and simple sharing. It contains no local paths, hostnames, usernames, embedded files, remote references, scripts, or macros. Non-ASCII text is degraded in the bootstrap PDF adapter until a font/layout strategy is accepted.
 
-DOCX export is a minimal generated package built from `word-core`. It contains no source local paths, hostnames, usernames, macros, scripts, ActiveX, custom XML, linked images, or remote images. External hyperlinks are emitted as ordinary DOCX hyperlink relationships only when their targets pass the local safe-link allowlist; 900Word does not open or prefetch them. Simple page-region exports generate only local header/footer XML parts and document relationships. Image exports embed only valid bounded allowlisted in-document asset bytes as generated `word/media/` parts with generated relationship targets.
+DOCX export is a minimal generated package built from `word-core`. It contains no source local paths, hostnames, usernames, macros, scripts, ActiveX, custom XML, linked images, or remote images. External hyperlinks are emitted as ordinary DOCX hyperlink relationships only when their targets pass the local safe-link allowlist; 900Word does not open or prefetch them. Simple page-region exports generate only local header/footer XML parts and document relationships. Image exports embed only valid bounded allowlisted in-document asset bytes as generated `word/media/` parts with generated relationship targets. Comment exports generate only `word/comments.xml`, a local document relationship, numeric DOCX comment IDs, and simple range/reference markers for valid anchored `word-core` comments.
 
 ## Dictionary Input Policy
 
