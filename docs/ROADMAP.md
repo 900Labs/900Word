@@ -408,3 +408,12 @@ Status: complete.
 - Force telemetry off on every settings save/load and normalize language/UI locale values before storing or returning settings.
 - Fall back to sanitized defaults when the settings file is missing, malformed, unreadable, path-shaped, oversized, or otherwise unsafe.
 - Keep document paths, recent paths, filenames, document text, usernames, hostnames, account/cloud identity, telemetry identifiers, network state, cloud sync, plugin runtime behavior, import/export, and UI behavior changes out of scope.
+
+## Sprint 044: Local Settings Reset MVP
+
+Status: complete.
+
+- Add a Settings reset command and button that restore sanitized local defaults through the existing app-data settings path.
+- Rewrite the local settings file with private atomic writes instead of deleting it, preserving owner-only permissions where supported.
+- Return telemetry-disabled defaults to the frontend and show localized English/Spanish reset status text.
+- Keep settings import/export, cloud sync, accounts, telemetry, network behavior, plugin-managed settings, document metadata, recent-document persistence, and recovery locations out of scope.
