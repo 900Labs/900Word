@@ -35,6 +35,10 @@ Sprint 014 treats user-selected local images as untrusted input. The Rust deskto
 
 Sprint 015 image presentation metadata is bounded document metadata only: editable alt text, caption text, alignment, and scale percentage. ODT save/reopen preserves 900Word-authored values in the `urn:900labs:900word:metadata` namespace without adding remote image loading, local path references, source filenames, scripts, or executable content.
 
+## Recovery Snapshot Policy
+
+Sprint 029 recovery snapshots use validated opaque local tokens and generic summaries only. Autosave writes owner-only recovery files on Unix, bounds retention to 3 snapshots per document and 20 snapshots overall, and keeps legacy single-file recovery tokens recoverable without writing new snapshots in that shape. Symlinked recovery entries are ignored during listing and rejected during recovery open. Opening a recovery snapshot still passes through the normal ODT size and package validation path, and the recovered draft is dirty and unsaved rather than adopting the recovery file as a save target.
+
 ## HTML Import Policy
 
 HTML import must strip scripts, event handlers, unsafe CSS URLs, `javascript:`, unexpected `file:`, unsafe SVG, iframe, object, embed, and remote loads by default.

@@ -261,3 +261,14 @@ Status: complete.
 - Apply the controls through desktop UI classes and data attributes while keeping high contrast independent.
 - Make low-resource mode suppress nonessential automatic sidebar content and reduce decorative visual weight while preserving recovery, warnings, and explicit user-opened panels.
 - Keep the feature UI-only with no cloud, accounts, telemetry, network behavior, new document metadata, import/export format changes, private paths, filenames, usernames, or hostnames.
+
+## Sprint 029: Recovery Snapshots MVP
+
+Status: complete.
+
+- Replace single-file autosave recovery overwrites with versioned local recovery snapshots.
+- Use validated opaque recovery tokens and generic recovery labels without local paths, filenames, usernames, hostnames, source document names, or recovery locations.
+- Keep recovery files owner-only on Unix and keep recovered drafts dirty and unsaved.
+- Bound recovery retention to 3 snapshots per document and 20 snapshots overall.
+- Preserve list, recover, and discard compatibility for legacy single-file recovery tokens while writing only the new versioned snapshot shape.
+- Keep the feature local-only with no cloud, accounts, telemetry, network behavior, AI services, encryption claims, import/export changes, or document metadata changes.

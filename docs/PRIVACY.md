@@ -19,6 +19,8 @@ The desktop shell keeps telemetry off even when settings input attempts to enabl
 
 Sprint 004 backend tests verify that recent-document summaries use generic labels and opaque tokens instead of private paths or filenames, and that recovery tokens reject traversal or path-shaped input.
 
+Sprint 029 replaces single-file recovery overwrites with bounded versioned recovery snapshots. Snapshot tokens are validated opaque values, recovery labels stay generic, recovered drafts open dirty and unsaved, and discard only accepts the selected validated token. Retention is capped at 3 snapshots per document and 20 snapshots overall. The feature does not expose local paths, filenames, usernames, hostnames, source document names, recovery locations, telemetry, network calls, cloud sync, accounts, AI services, document-content logging, encryption claims, import/export changes, or new document metadata.
+
 Sprint 006 keeps dictionary discovery local. The app creates `{APP_DATA_DIR}/dictionaries` for user-provided Hunspell `.aff`/`.dic` pairs and does not expose that local path to frontend state, logs, docs examples, or release artifacts.
 
 Sprint 007 keeps exports local. TXT, HTML, and PDF export commands write only to user-entered paths after backend extension and traversal validation. Export status exposed to the frontend includes only the export format and byte length, not private filenames or local paths.
