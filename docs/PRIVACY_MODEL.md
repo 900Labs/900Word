@@ -86,6 +86,8 @@ Sprint 062 DOCX paragraph page-break-before import/export uses only direct parag
 
 Sprint 063 DOCX generic font-family import/export uses only direct `w:rFonts` values already present in preflighted DOCX XML or local `word-core` inline style. Accepted imported values are normalized to existing generic 900Word family IDs and never preserve arbitrary source font names. Unsupported, embedded, theme, complex-script-only, or otherwise out-of-model font metadata is ignored. Exported DOCX run font tags are generated from local generic family IDs and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
 
+Sprint 064 DOCX run shading import uses only direct `w:shd` run properties already present in preflighted DOCX XML. Accepted imported fills are normalized to the existing safe 900Word highlight palette, while pattern fills, theme fills, arbitrary colors, and broader Word run-style metadata are ignored. Export continues to use generated local highlight tags and does not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.

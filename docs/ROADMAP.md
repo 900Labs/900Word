@@ -599,3 +599,12 @@ Status: complete.
 - Import allowlisted DOCX `w:rFonts` values into existing generic 900Word inline font-family IDs: `system-ui`, `serif`, `sans-serif`, and `monospace`.
 - Export valid 900Word-authored generic inline font families as generated static DOCX `w:rFonts` values.
 - Ignore arbitrary source font names, embedded fonts, theme fonts, complex script font attributes, exact font fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies.
+
+## Sprint 064: DOCX Run Shading Interoperability
+
+Status: complete.
+
+- Import safe direct DOCX `w:shd` run fills into the existing bounded 900Word highlight palette.
+- Ignore pattern fills, theme fills, arbitrary colors, and broader Word run-style metadata.
+- Keep export on generated local `w:highlight` tags for 900Word-authored highlights rather than preserving source shading form.
+- Keep ODT canonical and keep full Word style fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
