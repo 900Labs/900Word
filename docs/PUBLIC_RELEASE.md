@@ -32,6 +32,16 @@ Before publishing binary artifacts:
 5. Search unpacked files for local paths, hostnames, secrets, debug files, and private sample content.
 6. Confirm no telemetry or unsolicited network calls during runtime smoke. Sprint 008 automates source/capability checks; packet-level runtime monitoring remains a manual release evidence item.
 
+## Compatibility Evidence
+
+Before making public compatibility claims:
+
+1. Run the [Compatibility Testing](COMPATIBILITY_TESTING.md) matrix for the claimed application and format.
+2. Use generated or sanitized placeholder documents only.
+3. Record application versions, generic OS version, commit SHA, artifact/run ID, result, and documented degradations.
+4. Keep exported files, screenshots, logs, and suite-specific recovery files out of Git.
+5. Treat any undocumented content loss, repair prompt, or private metadata exposure as release-blocking until fixed or documented as a known limitation.
+
 ## Documentation Scan
 
 Docs must use placeholders such as:

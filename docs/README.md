@@ -9,6 +9,7 @@ Start with the root [README](../README.md) for product overview and source-build
 - [Release Runbook](RELEASE.md)
 - [Branch Protection](BRANCH_PROTECTION.md)
 - [Performance Budget](PERFORMANCE_BUDGET.md)
+- [Compatibility Testing](COMPATIBILITY_TESTING.md)
 
 ## Product And Architecture
 

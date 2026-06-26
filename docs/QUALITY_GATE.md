@@ -40,3 +40,9 @@ Optional tools:
 - `npm audit --audit-level=high`
 
 If optional tools are unavailable locally, CI should install and run them.
+
+Manual compatibility evidence:
+
+- Use [Compatibility Testing](COMPATIBILITY_TESTING.md) before making public claims about Microsoft Word, Google Docs, LibreOffice, or ONLYOFFICE behavior.
+- Unit, golden, and package tests are required but are not enough to claim external office-suite compatibility.
+- Keep compatibility artifacts out of Git and use generated or sanitized placeholder documents only.
