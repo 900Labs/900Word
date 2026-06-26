@@ -68,6 +68,7 @@ All notable changes to 900Word are tracked here.
 - DOCX generated image caption interoperability, exporting 900Word image captions with a generated `Word900ImageCaption` style and importing that style back only when it immediately follows a supported image block.
 - DOCX image alignment interoperability, importing/exporting simple left/center/right paragraph alignment around single supported images as existing 900Word image alignment metadata while keeping floating, wrapping, anchoring, and full media layout fidelity deferred.
 - DOCX image alt-text interoperability, importing supported drawing `descr`/`title` metadata into existing 900Word image alt text and exporting local alt text on generated drawing metadata without preserving source image names or paths.
+- External office-suite compatibility testing matrix and release evidence policy for Microsoft Word, Google Docs, LibreOffice, and ONLYOFFICE claims using generated or sanitized placeholder documents only.
 
 ### Fixed
 

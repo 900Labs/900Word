@@ -642,3 +642,12 @@ Status: complete.
 - Import bounded DOCX drawing `descr`/`title` metadata from supported image drawings into existing 900Word image alt text.
 - Export 900Word-authored image alt text on generated DOCX drawing metadata for supported image blocks.
 - Keep source image names, relationship targets, local paths, linked/remote images, rich media metadata, arbitrary media layout fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
+
+## Sprint 069: Compatibility Test Matrix
+
+Status: complete.
+
+- Add a manual compatibility testing matrix for LibreOffice Writer, Microsoft Word, Google Docs, and ONLYOFFICE Desktop Editors.
+- Define generated/sanitized fixture requirements, privacy rules, accepted result values, and release evidence fields before making external-suite compatibility claims.
+- Wire compatibility evidence into quality, public release, and release runbook documentation.
+- Keep generated compatibility artifacts, screenshots, logs, local paths, private documents, telemetry, network behavior, accounts, cloud sync, and broad untested compatibility claims out of scope.

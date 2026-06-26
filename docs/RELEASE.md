@@ -25,6 +25,7 @@ Confirm:
 - Runtime offline source/capability scan passes.
 - SBOM exists at `target/sbom/900word-sbom.json`.
 - Public-release checklist passes.
+- Compatibility evidence is recorded for any claimed external office-suite behavior.
 
 For a binary package candidate, also confirm:
 
@@ -33,6 +34,7 @@ For a binary package candidate, also confirm:
 - Package artifact scan passed for each platform bundle.
 - Missing artifacts were treated as workflow failures.
 - Manual runtime network monitoring evidence is attached before publishing binary artifacts.
+- Compatibility testing uses generated or sanitized placeholder documents only and records application versions without local paths.
 
 ## Tag Flow
 
