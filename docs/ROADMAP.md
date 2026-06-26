@@ -634,3 +634,11 @@ Status: complete.
 - Import simple left/center/right DOCX paragraph `w:jc` alignment into existing 900Word image alignment metadata only when the paragraph contains exactly one supported image.
 - Export 900Word-authored left/center/right image alignment as generated paragraph `w:jc` around supported image blocks.
 - Keep mixed text/image paragraph alignment, justify alignment, floating, wrapping, anchoring, arbitrary media layout fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
+
+## Sprint 068: DOCX Image Alt-Text Interoperability
+
+Status: complete.
+
+- Import bounded DOCX drawing `descr`/`title` metadata from supported image drawings into existing 900Word image alt text.
+- Export 900Word-authored image alt text on generated DOCX drawing metadata for supported image blocks.
+- Keep source image names, relationship targets, local paths, linked/remote images, rich media metadata, arbitrary media layout fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.

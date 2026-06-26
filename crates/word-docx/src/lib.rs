@@ -5828,6 +5828,21 @@ fn render_image_xml(image: &ImageBlock, export: &DocxImageExport, output: &mut S
     output.push_str("\"/><wp:docPr id=\"");
     output.push_str(&doc_pr_id.to_string());
     output.push_str("\" name=\"900Word image\"");
+    render_image_alt_description_attr(image, output);
+    output.push_str("/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"");
+    output.push_str(&doc_pr_id.to_string());
+    output.push_str("\" name=\"900Word image\"");
+    render_image_alt_description_attr(image, output);
+    output.push_str("/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"");
+    output.push_str(&escape_xml(&export.rel_id));
+    output.push_str("\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"");
+    output.push_str(&extent.to_string());
+    output.push_str("\" cy=\"");
+    output.push_str(&extent.to_string());
+    output.push_str("\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>");
+}
+
+fn render_image_alt_description_attr(image: &ImageBlock, output: &mut String) {
     if let Some(alt) = image
         .alt_text
         .as_deref()
@@ -5838,17 +5853,6 @@ fn render_image_xml(image: &ImageBlock, export: &DocxImageExport, output: &mut S
         output.push_str(&escape_xml(alt));
         output.push('"');
     }
-    output.push_str("/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"");
-    output.push_str(&doc_pr_id.to_string());
-    output.push_str(
-        "\" name=\"900Word image\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"",
-    );
-    output.push_str(&escape_xml(&export.rel_id));
-    output.push_str("\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"");
-    output.push_str(&extent.to_string());
-    output.push_str("\" cy=\"");
-    output.push_str(&extent.to_string());
-    output.push_str("\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>");
 }
 
 fn image_alignment_to_paragraph_alignment(alignment: ImageAlignment) -> Option<ParagraphAlignment> {
@@ -10837,7 +10841,7 @@ mod tests {
                 scale_percent: 150,
                 caption: Some("Round-trip caption".to_string()),
             },
-            alt_text: Some("Alt text".to_string()),
+            alt_text: Some("Alt & text".to_string()),
         })];
 
         let bytes = write_docx_bytes(&document).expect("docx should write image");
@@ -10849,7 +10853,7 @@ mod tests {
             panic!("image should round-trip through docx converter");
         };
         assert_eq!(image.asset_id, "docx-image-1.png");
-        assert_eq!(image.alt_text.as_deref(), Some("Alt text"));
+        assert_eq!(image.alt_text.as_deref(), Some("Alt & text"));
         assert_eq!(image.presentation.alignment, ImageAlignment::Right);
         assert_eq!(image.presentation.scale_percent, 150);
         assert_eq!(
@@ -10863,6 +10867,29 @@ mod tests {
         assert_eq!(asset.media_type, "image/png");
         assert_eq!(asset.bytes, SAMPLE_PNG);
         assert_eq!(asset.original_name, None);
+    }
+
+    #[test]
+    fn imports_docx_image_alt_text_from_picture_metadata() {
+        let bytes = synthetic_docx_with_binary_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+<w:body><w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="Picture 1"/><a:graphic><a:graphicData><pic:pic><pic:nvPicPr><pic:cNvPr id="2" name="Picture 1" descr="Picture metadata alt"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rImg1"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>"#,
+            ),
+            None,
+            &[],
+            &[("word/media/image1.png", SAMPLE_PNG)],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("picture metadata alt text should import");
+        let Block::Image(image) = &document.sections[0].blocks[0] else {
+            panic!("image block expected");
+        };
+        assert_eq!(image.alt_text.as_deref(), Some("Picture metadata alt"));
+        assert_eq!(image.asset_id, "docx-image-1.png");
     }
 
     #[test]
@@ -11180,7 +11207,7 @@ mod tests {
                 caption: Some("Visible caption".to_string()),
                 ..ImagePresentation::default()
             },
-            alt_text: Some("Alt text".to_string()),
+            alt_text: Some("Alt & text".to_string()),
         })];
 
         let bytes = write_docx_bytes(&document).expect("docx should write image package");
@@ -11217,7 +11244,7 @@ mod tests {
         assert!(document_xml.contains("<w:drawing>"));
         assert!(document_xml.contains(r#"<w:jc w:val="center"/>"#));
         assert!(document_xml.contains("r:embed=\"rId3\""));
-        assert!(document_xml.contains("descr=\"Alt text\""));
+        assert_eq!(document_xml.matches(r#"descr="Alt &amp; text""#).count(), 2);
         assert!(document_xml.contains(r#"<w:pStyle w:val="Word900ImageCaption"/>"#));
         assert!(document_xml.contains("Visible caption"));
         assert_eq!(media, SAMPLE_PNG);
