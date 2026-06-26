@@ -94,6 +94,8 @@ Sprint 066 DOCX generated image caption import/export uses only visible local do
 
 Sprint 067 DOCX image alignment import/export uses only simple paragraph `w:jc` values already present in preflighted local DOCX XML or generated from local `word-core` image presentation metadata. Imported alignment is accepted only for paragraphs that contain exactly one supported image and map to left, center, or right. Mixed text/image paragraphs, justify alignment, floating, wrapping, anchoring, and rich media layout metadata are ignored. Exported paragraph alignment is generated from local image alignment metadata and does not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
 
+Sprint 068 DOCX image alt-text import/export uses only bounded drawing `descr` or `title` attributes already present in preflighted local DOCX XML or generated from local `word-core` image alt text. Imported values are normalized to existing local image alt text, and exported attributes are generated from local document content only. Source image names, relationship targets, local paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, rich media metadata, and private build metadata are not preserved.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
