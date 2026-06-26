@@ -1847,7 +1847,7 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
             output.push_str(&escape_html(&image.asset_id));
             output.push('"');
             output.push_str(&image_html_attrs(image));
-            output.push_str("\">");
+            output.push('>');
             if let Some(data_url) = image_data_url(document, &image.asset_id) {
                 output.push_str("<img src=\"");
                 output.push_str(&data_url);
@@ -4538,6 +4538,8 @@ mod tests {
         assert!(html.contains("data-align=\"center\""));
         assert!(html.contains("data-scale=\"75\""));
         assert!(html.contains("max-width:75%"));
+        assert!(html.contains("<figure data-asset=\"image-1.png\" data-align=\"center\" data-scale=\"75\" style=\"margin-left:auto;margin-right:auto;max-width:75%;\">"));
+        assert!(!html.contains("%;\"\">"));
         assert!(html.contains("<figcaption>Centered caption</figcaption>"));
         assert!(!html.contains("file://"));
         assert!(!html.contains("private"));

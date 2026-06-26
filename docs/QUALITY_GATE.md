@@ -44,5 +44,6 @@ If optional tools are unavailable locally, CI should install and run them.
 Manual compatibility evidence:
 
 - Use [Compatibility Testing](COMPATIBILITY_TESTING.md) before making public claims about Microsoft Word, Google Docs, LibreOffice, or ONLYOFFICE behavior.
+- Generate the broad placeholder sample with `cargo run -p word-fixtures --example generate_compatibility_artifacts -- target/compatibility` when preparing manual compatibility evidence.
 - Unit, golden, and package tests are required but are not enough to claim external office-suite compatibility.
 - Keep compatibility artifacts out of Git and use generated or sanitized placeholder documents only.
