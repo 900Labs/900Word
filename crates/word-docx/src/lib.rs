@@ -9,12 +9,12 @@ use word_core::{
     sanitize_table_cell_background_color, sanitize_table_column_widths, validate_comment_body,
     validate_comment_id, validate_note_body, validate_note_id, validate_note_reference,
     validate_tracked_change_id, AssetRef, Block, CommentThread, Document, DocumentWarning, Heading,
-    ImageBlock, ImagePresentation, Inline, InlineMark, InlineNoteReference, InlineStyle, ListBlock,
-    ListItem, Note, NoteKind, PageField, PageRegion, PageRegionBlock, PageRegionParagraph,
-    PageRegions, PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat, StyleId, Table,
-    TableCell, TableCellBorder, TableCellPresentation, TableOfContents, TableOfContentsEntry,
-    TableRow, TrackedChange, TrackedChangeKind, DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES,
-    MAX_TABLE_WIDTH_COLUMNS,
+    ImageAlignment, ImageBlock, ImagePresentation, Inline, InlineMark, InlineNoteReference,
+    InlineStyle, ListBlock, ListItem, Note, NoteKind, PageField, PageRegion, PageRegionBlock,
+    PageRegionParagraph, PageRegions, PageSetup, Paragraph, ParagraphAlignment, ParagraphFormat,
+    StyleId, Table, TableCell, TableCellBorder, TableCellPresentation, TableOfContents,
+    TableOfContentsEntry, TableRow, TrackedChange, TrackedChangeKind,
+    DEFAULT_TRACKED_CHANGE_AUTHOR, MAX_NOTES, MAX_TABLE_WIDTH_COLUMNS,
 };
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -451,6 +451,7 @@ struct ParagraphProperties {
     list_marker: Option<ListMarker>,
     generated_role: Option<GeneratedParagraphRole>,
     generated_caption_has_rich_content: bool,
+    image_alignment_has_rich_content: bool,
     bookmark_id: Option<String>,
     page_break_before: bool,
     format: ParagraphFormat,
@@ -816,7 +817,10 @@ struct DocxRenderContext<'a> {
 #[derive(Debug, Clone)]
 enum ParagraphContent {
     Inline(Box<Inline>),
-    Image(ImageBlock),
+    Image {
+        image: ImageBlock,
+        allow_alignment: bool,
+    },
     PageBreak,
 }
 
@@ -830,6 +834,12 @@ struct ParagraphRunParseContext<'a> {
 struct ParsedParagraphRun {
     content: Vec<ParagraphContent>,
     plain_text_only: bool,
+    image_alignment_safe: bool,
+}
+
+struct ParsedDrawing {
+    image: Option<ImageBlock>,
+    allow_paragraph_alignment: bool,
 }
 
 pub fn read_docx_bytes(bytes: &[u8]) -> Result<Document, DocxError> {
@@ -3059,15 +3069,18 @@ fn parse_paragraph(
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"bookmarkStart" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 apply_paragraph_bookmark(&mut properties, &start, state.warnings)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"bookmarkStart" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 apply_paragraph_bookmark(&mut properties, &start, state.warnings)?;
                 skip_element(reader, b"bookmarkStart", DOCUMENT_XML)?;
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"bookmarkEnd" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 if attr_value(&start, b"id", DOCUMENT_XML)?.is_none() {
                     state.warnings.warn(
                         "docx_bookmark_ignored",
@@ -3077,6 +3090,7 @@ fn parse_paragraph(
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"bookmarkEnd" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 if attr_value(&start, b"id", DOCUMENT_XML)?.is_none() {
                     state.warnings.warn(
                         "docx_bookmark_ignored",
@@ -3101,10 +3115,14 @@ fn parse_paragraph(
                 if !run.plain_text_only {
                     mark_generated_caption_rich(&mut properties);
                 }
+                if !run.image_alignment_safe {
+                    mark_image_alignment_rich(&mut properties);
+                }
                 append_paragraph_content(&mut content, run.content);
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"hyperlink" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 let link = hyperlink_ref(&start, context.rels, state.warnings)?;
                 let run = parse_hyperlink(
                     reader,
@@ -3124,6 +3142,7 @@ fn parse_paragraph(
                 if docx_tracked_change_kind(local_name(start.name().as_ref())).is_some() =>
             {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 let kind = docx_tracked_change_kind(local_name(start.name().as_ref()))
                     .expect("revision kind checked above");
                 let run = parse_revision_container(
@@ -3141,6 +3160,7 @@ fn parse_paragraph(
                 if docx_tracked_change_kind(local_name(start.name().as_ref())).is_some() =>
             {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 state.warnings.warn(
                     "docx_revision_markup_degraded",
                     "Unsupported DOCX tracked-change markup was imported as visible text when available",
@@ -3150,6 +3170,7 @@ fn parse_paragraph(
                 if is_unsupported_docx_revision_markup(local_name(start.name().as_ref())) =>
             {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 state.warnings.warn(
                     "docx_revision_markup_degraded",
                     "Unsupported DOCX tracked-change markup was imported as visible text when available",
@@ -3162,6 +3183,7 @@ fn parse_paragraph(
                 if is_unsupported_docx_revision_markup(local_name(start.name().as_ref())) =>
             {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 state.warnings.warn(
                     "docx_revision_markup_degraded",
                     "Unsupported DOCX tracked-change markup was imported as visible text when available",
@@ -3171,16 +3193,19 @@ fn parse_paragraph(
                 if local_name(start.name().as_ref()) == b"commentRangeStart" =>
             {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 comment_state.start_range(&start, context.comments, state.warnings)?;
             }
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"commentRangeEnd" =>
             {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 comment_state.end_range(&start, state.warnings)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 let field = page_field_from_instruction(
                     attr_value(&start, b"instr", DOCUMENT_XML)?.as_deref(),
                 );
@@ -3189,6 +3214,7 @@ fn parse_paragraph(
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"fldSimple" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 if let Some(field) = page_field_from_instruction(
                     attr_value(&start, b"instr", DOCUMENT_XML)?.as_deref(),
                 ) {
@@ -3207,6 +3233,7 @@ fn parse_paragraph(
                 ) =>
             {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 state.warnings.warn(
                     "docx_media_ignored",
                     "Unsupported DOCX media content was ignored during import",
@@ -3217,6 +3244,7 @@ fn parse_paragraph(
             Event::End(end) if local_name(end.name().as_ref()) == b"p" => break,
             Event::Empty(_) => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 state.warnings.warn(
                     "docx_unsupported_paragraph_content",
                     "Unsupported DOCX paragraph content was ignored during import",
@@ -3224,6 +3252,7 @@ fn parse_paragraph(
             }
             Event::Start(start) => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 state.warnings.warn(
                     "docx_unsupported_paragraph_content",
                     "Unsupported DOCX paragraph content was ignored during import",
@@ -3272,10 +3301,12 @@ fn parse_paragraph_properties(
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"numPr" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 properties.list_marker = parse_num_properties(reader, numbering, warnings)?;
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"numPr" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
             }
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"jc" =>
@@ -3286,28 +3317,34 @@ fn parse_paragraph_properties(
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"pageBreakBefore" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 properties.page_break_before = truthy_word_bool(&start, DOCUMENT_XML)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"pageBreakBefore" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 properties.page_break_before = truthy_word_bool(&start, DOCUMENT_XML)?;
                 skip_element(reader, b"pageBreakBefore", DOCUMENT_XML)?;
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"spacing" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 apply_docx_paragraph_spacing(&start, &mut properties.format)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"spacing" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 apply_docx_paragraph_spacing(&start, &mut properties.format)?;
                 skip_element(reader, b"spacing", DOCUMENT_XML)?;
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"ind" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 apply_docx_paragraph_indent(&start, &mut properties.format)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"ind" => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 apply_docx_paragraph_indent(&start, &mut properties.format)?;
                 skip_element(reader, b"ind", DOCUMENT_XML)?;
             }
@@ -3316,6 +3353,7 @@ fn parse_paragraph_properties(
                 if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
             {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 warnings.warn(
                     "docx_revision_markup_degraded",
                     "Unsupported DOCX tracked-change markup was imported as visible text when available",
@@ -3327,6 +3365,7 @@ fn parse_paragraph_properties(
                 if is_any_docx_revision_markup(local_name(start.name().as_ref())) =>
             {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 warnings.warn(
                     "docx_revision_markup_degraded",
                     "Unsupported DOCX tracked-change markup was imported as visible text when available",
@@ -3334,11 +3373,13 @@ fn parse_paragraph_properties(
             }
             Event::Start(start) => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
                 let end = local_name(start.name().as_ref()).to_vec();
                 skip_element(reader, &end, DOCUMENT_XML)?;
             }
             Event::Empty(_) => {
                 mark_generated_caption_rich(&mut properties);
+                mark_image_alignment_rich(&mut properties);
             }
             Event::Eof => break,
             _ => {}
@@ -3425,6 +3466,10 @@ fn apply_paragraph_bookmark(
 
 fn mark_generated_caption_rich(properties: &mut ParagraphProperties) {
     properties.generated_caption_has_rich_content = true;
+}
+
+fn mark_image_alignment_rich(properties: &mut ParagraphProperties) {
+    properties.image_alignment_has_rich_content = true;
 }
 
 fn parse_num_properties(
@@ -3565,6 +3610,7 @@ fn parse_paragraph_run(
     let mut text = String::new();
     let mut content = Vec::new();
     let mut plain_text_only = link.is_none() && parse_context.tracked_change.is_none();
+    let mut image_alignment_safe = link.is_none() && parse_context.tracked_change.is_none();
 
     loop {
         match reader
@@ -3573,6 +3619,7 @@ fn parse_paragraph_run(
         {
             Event::Start(start) if local_name(start.name().as_ref()) == b"rPr" => {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 properties = parse_run_properties(reader, parse_context.name, state.warnings)?;
             }
             Event::Start(start)
@@ -3582,14 +3629,17 @@ fn parse_paragraph_run(
                 if end == b"delText" && parse_context.tracked_change.is_none() {
                     plain_text_only = false;
                 }
+                image_alignment_safe = false;
                 text.push_str(&read_text_element(reader, &end, parse_context.name)?);
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"tab" => {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 text.push('\t');
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"br" => {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 if is_docx_page_break(&start, parse_context.name)? {
                     if parse_context.allow_page_break_blocks
                         && parse_context.tracked_change.is_none()
@@ -3613,6 +3663,7 @@ fn parse_paragraph_run(
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"br" => {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 let is_page_break = is_docx_page_break(&start, parse_context.name)?;
                 skip_element(reader, b"br", parse_context.name)?;
                 if is_page_break {
@@ -3646,18 +3697,27 @@ fn parse_paragraph_run(
                     Some(comment_state),
                     parse_context.tracked_change,
                 );
-                if let Some(image) = parse_drawing(
+                let drawing = parse_drawing(
                     reader,
                     context.rels,
                     context.images,
                     state.warnings,
                     parse_context.name,
-                )? {
-                    content.push(ParagraphContent::Image(image));
+                )?;
+                let allow_alignment = drawing.allow_paragraph_alignment;
+                if drawing.image.is_none() || !allow_alignment {
+                    image_alignment_safe = false;
+                }
+                if let Some(image) = drawing.image {
+                    content.push(ParagraphContent::Image {
+                        image,
+                        allow_alignment,
+                    });
                 }
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"drawing" => {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 state.warnings.warn(
                     "docx_image_reference_ignored",
                     "Unsupported DOCX image references were ignored during import",
@@ -3667,6 +3727,7 @@ fn parse_paragraph_run(
                 if matches!(local_name(start.name().as_ref()), b"object" | b"pict") =>
             {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 state.warnings.warn(
                     "docx_media_ignored",
                     "Unsupported DOCX media content was ignored during import",
@@ -3676,6 +3737,7 @@ fn parse_paragraph_run(
                 if matches!(local_name(start.name().as_ref()), b"object" | b"pict") =>
             {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 state.warnings.warn(
                     "docx_media_ignored",
                     "Unsupported DOCX media content was ignored during import",
@@ -3685,10 +3747,12 @@ fn parse_paragraph_run(
             }
             Event::Empty(start) if local_name(start.name().as_ref()) == b"commentReference" => {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 comment_state.reference_marker(&start, context.comments, state.warnings)?;
             }
             Event::Start(start) if local_name(start.name().as_ref()) == b"commentReference" => {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 comment_state.reference_marker(&start, context.comments, state.warnings)?;
                 let end = local_name(start.name().as_ref()).to_vec();
                 skip_element(reader, &end, parse_context.name)?;
@@ -3697,6 +3761,7 @@ fn parse_paragraph_run(
                 if docx_note_reference_kind(local_name(start.name().as_ref())).is_some() =>
             {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 flush_run_text_content(
                     &mut content,
                     &mut text,
@@ -3721,6 +3786,7 @@ fn parse_paragraph_run(
                 if docx_note_reference_kind(local_name(start.name().as_ref())).is_some() =>
             {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 flush_run_text_content(
                     &mut content,
                     &mut text,
@@ -3747,6 +3813,7 @@ fn parse_paragraph_run(
                 if matches!(local_name(start.name().as_ref()), b"fldChar" | b"instrText") =>
             {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 state.warnings.warn(
                     "docx_inline_metadata_ignored",
                     "Unsupported DOCX inline metadata was ignored during import",
@@ -3756,6 +3823,7 @@ fn parse_paragraph_run(
                 if matches!(local_name(start.name().as_ref()), b"fldChar" | b"instrText") =>
             {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 state.warnings.warn(
                     "docx_inline_metadata_ignored",
                     "Unsupported DOCX inline metadata was ignored during import",
@@ -3766,6 +3834,7 @@ fn parse_paragraph_run(
             Event::End(end) if local_name(end.name().as_ref()) == b"r" => break,
             Event::Empty(_) => {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 state.warnings.warn(
                     "docx_unsupported_run_content",
                     "Unsupported DOCX run content was ignored during import",
@@ -3773,6 +3842,7 @@ fn parse_paragraph_run(
             }
             Event::Start(start) => {
                 plain_text_only = false;
+                image_alignment_safe = false;
                 state.warnings.warn(
                     "docx_unsupported_run_content",
                     "Unsupported DOCX run content was ignored during import",
@@ -3796,6 +3866,7 @@ fn parse_paragraph_run(
     Ok(ParsedParagraphRun {
         content,
         plain_text_only,
+        image_alignment_safe,
     })
 }
 
@@ -3835,13 +3906,25 @@ fn parse_drawing(
     imported_images: &ImportedDocxImages,
     warnings: &mut WarningSink,
     name: &str,
-) -> Result<Option<ImageBlock>, DocxError> {
+) -> Result<ParsedDrawing, DocxError> {
     let mut embed_id = None;
     let mut linked_id = None;
     let mut alt_text = None;
     let mut presentation = ImagePresentation::default();
+    let mut saw_inline = false;
+    let mut saw_anchor = false;
     loop {
         match reader.read_event().map_err(|err| xml_error(name, err))? {
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"inline" =>
+            {
+                saw_inline = true;
+            }
+            Event::Empty(start) | Event::Start(start)
+                if local_name(start.name().as_ref()) == b"anchor" =>
+            {
+                saw_anchor = true;
+            }
             Event::Empty(start) | Event::Start(start)
                 if matches!(local_name(start.name().as_ref()), b"docPr" | b"cNvPr") =>
             {
@@ -3877,7 +3960,8 @@ fn parse_drawing(
         }
     }
 
-    if linked_id.is_some() {
+    let has_linked_reference = linked_id.is_some();
+    if has_linked_reference {
         warnings.warn(
             "docx_image_reference_ignored",
             "Unsupported DOCX image references were ignored during import",
@@ -3888,27 +3972,39 @@ fn parse_drawing(
             "docx_image_reference_ignored",
             "Unsupported DOCX image references were ignored during import",
         );
-        return Ok(None);
+        return Ok(ParsedDrawing {
+            image: None,
+            allow_paragraph_alignment: false,
+        });
     };
     if !rels.images.contains_key(&embed_id) {
         warnings.warn(
             "docx_image_reference_ignored",
             "Unsupported DOCX image references were ignored during import",
         );
-        return Ok(None);
+        return Ok(ParsedDrawing {
+            image: None,
+            allow_paragraph_alignment: false,
+        });
     }
     let Some(imported) = imported_images.by_relationship_id.get(&embed_id) else {
         warnings.warn(
             "docx_image_reference_ignored",
             "Unsupported DOCX image references were ignored during import",
         );
-        return Ok(None);
+        return Ok(ParsedDrawing {
+            image: None,
+            allow_paragraph_alignment: false,
+        });
     };
-    Ok(Some(ImageBlock {
-        asset_id: imported.asset_id.clone(),
-        presentation,
-        alt_text,
-    }))
+    Ok(ParsedDrawing {
+        image: Some(ImageBlock {
+            asset_id: imported.asset_id.clone(),
+            presentation,
+            alt_text,
+        }),
+        allow_paragraph_alignment: saw_inline && !saw_anchor && !has_linked_reference,
+    })
 }
 
 fn image_alt_text(start: &BytesStart<'_>, name: &str) -> Result<Option<String>, DocxError> {
@@ -4703,7 +4799,13 @@ fn append_paragraph_content(target: &mut Vec<ParagraphContent>, source: Vec<Para
                     target.push(ParagraphContent::Inline(Box::new(inline)));
                 }
             }
-            ParagraphContent::Image(image) => target.push(ParagraphContent::Image(image)),
+            ParagraphContent::Image {
+                image,
+                allow_alignment,
+            } => target.push(ParagraphContent::Image {
+                image,
+                allow_alignment,
+            }),
             ParagraphContent::PageBreak => target.push(ParagraphContent::PageBreak),
         }
     }
@@ -4715,14 +4817,21 @@ fn paragraph_content_to_blocks(
 ) -> Vec<ParsedBlock> {
     let mut blocks = Vec::new();
     let mut inlines = Vec::new();
+    let image_alignment = single_image_paragraph_alignment(&content, properties);
     if properties.page_break_before {
         blocks.push(parsed_page_break_block());
     }
     for item in content {
         match item {
             ParagraphContent::Inline(inline) => inlines.push(*inline),
-            ParagraphContent::Image(image) => {
+            ParagraphContent::Image {
+                mut image,
+                allow_alignment: _,
+            } => {
                 flush_paragraph_block(&mut blocks, &mut inlines, properties);
+                if let Some(alignment) = image_alignment {
+                    image.presentation.alignment = alignment;
+                }
                 blocks.push(ParsedBlock {
                     block: Block::Image(image),
                     list_marker: None,
@@ -4753,6 +4862,34 @@ fn paragraph_content_to_blocks(
         });
     }
     blocks
+}
+
+fn single_image_paragraph_alignment(
+    content: &[ParagraphContent],
+    properties: &ParagraphProperties,
+) -> Option<ImageAlignment> {
+    if properties.page_break_before
+        || properties.list_marker.is_some()
+        || properties.image_alignment_has_rich_content
+    {
+        return None;
+    }
+    match content {
+        [ParagraphContent::Image {
+            allow_alignment: true,
+            ..
+        }] => paragraph_alignment_to_image_alignment(properties.format.alignment?),
+        _ => None,
+    }
+}
+
+fn paragraph_alignment_to_image_alignment(alignment: ParagraphAlignment) -> Option<ImageAlignment> {
+    match alignment {
+        ParagraphAlignment::Left => Some(ImageAlignment::Left),
+        ParagraphAlignment::Center => Some(ImageAlignment::Center),
+        ParagraphAlignment::Right => Some(ImageAlignment::Right),
+        ParagraphAlignment::Justify => None,
+    }
 }
 
 fn parsed_page_break_block() -> ParsedBlock {
@@ -5678,7 +5815,13 @@ fn render_image_xml(image: &ImageBlock, export: &DocxImageExport, output: &mut S
         .parse::<u32>()
         .unwrap_or(1);
     let extent = image_extent_emu(image);
-    output.push_str("<w:p><w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"");
+    output.push_str("<w:p>");
+    if let Some(alignment) = image_alignment_to_paragraph_alignment(image.presentation.alignment) {
+        output.push_str("<w:pPr><w:jc w:val=\"");
+        output.push_str(docx_alignment_value(alignment));
+        output.push_str("\"/></w:pPr>");
+    }
+    output.push_str("<w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"");
     output.push_str(&extent.to_string());
     output.push_str("\" cy=\"");
     output.push_str(&extent.to_string());
@@ -5706,6 +5849,15 @@ fn render_image_xml(image: &ImageBlock, export: &DocxImageExport, output: &mut S
     output.push_str("\" cy=\"");
     output.push_str(&extent.to_string());
     output.push_str("\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>");
+}
+
+fn image_alignment_to_paragraph_alignment(alignment: ImageAlignment) -> Option<ParagraphAlignment> {
+    match alignment {
+        ImageAlignment::Inline => None,
+        ImageAlignment::Left => Some(ParagraphAlignment::Left),
+        ImageAlignment::Center => Some(ParagraphAlignment::Center),
+        ImageAlignment::Right => Some(ParagraphAlignment::Right),
+    }
 }
 
 fn image_extent_emu(image: &ImageBlock) -> u32 {
@@ -10681,9 +10833,9 @@ mod tests {
         document.sections[0].blocks = vec![Block::Image(ImageBlock {
             asset_id: "image-1.png".to_string(),
             presentation: ImagePresentation {
+                alignment: ImageAlignment::Right,
                 scale_percent: 150,
                 caption: Some("Round-trip caption".to_string()),
-                ..ImagePresentation::default()
             },
             alt_text: Some("Alt text".to_string()),
         })];
@@ -10698,6 +10850,7 @@ mod tests {
         };
         assert_eq!(image.asset_id, "docx-image-1.png");
         assert_eq!(image.alt_text.as_deref(), Some("Alt text"));
+        assert_eq!(image.presentation.alignment, ImageAlignment::Right);
         assert_eq!(image.presentation.scale_percent, 150);
         assert_eq!(
             image.presentation.caption.as_deref(),
@@ -10733,6 +10886,111 @@ mod tests {
         };
 
         assert_eq!(image.presentation.scale_percent, 150);
+    }
+
+    #[test]
+    fn imports_docx_image_alignment_for_single_image_paragraph() {
+        for (case, jc, expected) in [
+            ("left", "left", ImageAlignment::Left),
+            ("center", "center", ImageAlignment::Center),
+            ("right", "right", ImageAlignment::Right),
+            ("justify", "both", ImageAlignment::Inline),
+        ] {
+            let bytes = synthetic_docx_with_binary_parts(
+                &format!(
+                    r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<w:body><w:p><w:pPr><w:jc w:val="{jc}"/></w:pPr><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#
+                ),
+                Some(
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>"#,
+                ),
+                None,
+                &[],
+                &[("word/media/image1.png", SAMPLE_PNG)],
+            );
+
+            let document = read_docx_bytes(&bytes).expect("image alignment should import");
+            let Block::Image(image) = &document.sections[0].blocks[0] else {
+                panic!("image block expected for {case}");
+            };
+            assert_eq!(image.presentation.alignment, expected, "{case}");
+        }
+    }
+
+    #[test]
+    fn keeps_mixed_text_image_alignment_off_image_metadata() {
+        for (case, paragraph_xml, expected_image_index, expected_block_count) in [
+            (
+                "mixed-text",
+                r#"<w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:t>Before</w:t></w:r><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r><w:r><w:t>After</w:t></w:r></w:p>"#,
+                1_usize,
+                3_usize,
+            ),
+            (
+                "anchored",
+                r#"<w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:drawing><wp:anchor><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#,
+                0_usize,
+                1_usize,
+            ),
+            (
+                "hyperlink",
+                r#"<w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:hyperlink r:id="rLink"><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:hyperlink></w:p>"#,
+                0_usize,
+                1_usize,
+            ),
+            (
+                "ignored-rich-marker",
+                r#"<w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:bookmarkEnd w:id="1"/><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+                0_usize,
+                1_usize,
+            ),
+            (
+                "ignored-drawing-before-image",
+                r#"<w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rMissing"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+                0_usize,
+                1_usize,
+            ),
+            (
+                "linked-and-embedded",
+                r#"<w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rImg1" r:link="rLink"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+                0_usize,
+                1_usize,
+            ),
+        ] {
+            let document_xml = format!(
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<w:body>{paragraph_xml}</w:body></w:document>"#
+            );
+            let bytes = synthetic_docx_with_binary_parts(
+                &document_xml,
+                Some(
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+<Relationship Id="rLink" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/image" TargetMode="External"/>
+</Relationships>"#,
+                ),
+                None,
+                &[],
+                &[("word/media/image1.png", SAMPLE_PNG)],
+            );
+
+            let document = read_docx_bytes(&bytes).expect("image paragraph should import");
+            assert_eq!(
+                document.sections[0].blocks.len(),
+                expected_block_count,
+                "{case}"
+            );
+            let Block::Image(image) = &document.sections[0].blocks[expected_image_index] else {
+                panic!("image block expected for {case}");
+            };
+            assert_eq!(
+                image.presentation.alignment,
+                ImageAlignment::Inline,
+                "{case}"
+            );
+        }
     }
 
     #[test]
@@ -10918,6 +11176,7 @@ mod tests {
         document.sections[0].blocks = vec![Block::Image(ImageBlock {
             asset_id: "image-1.png".to_string(),
             presentation: ImagePresentation {
+                alignment: ImageAlignment::Center,
                 caption: Some("Visible caption".to_string()),
                 ..ImagePresentation::default()
             },
@@ -10956,6 +11215,7 @@ mod tests {
         assert!(document_rels.contains("relationships/image"));
         assert!(document_rels.contains(r#"Target="media/900word-image-1.png""#));
         assert!(document_xml.contains("<w:drawing>"));
+        assert!(document_xml.contains(r#"<w:jc w:val="center"/>"#));
         assert!(document_xml.contains("r:embed=\"rId3\""));
         assert!(document_xml.contains("descr=\"Alt text\""));
         assert!(document_xml.contains(r#"<w:pStyle w:val="Word900ImageCaption"/>"#));

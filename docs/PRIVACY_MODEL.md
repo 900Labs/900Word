@@ -92,6 +92,8 @@ Sprint 065 DOCX image scale import/export uses only direct `wp:extent` dimension
 
 Sprint 066 DOCX generated image caption import/export uses only visible local document caption text and the generated `Word900ImageCaption` paragraph style. Imported generated caption paragraphs are reattached only when they are plain text and immediately follow a supported image; other caption-like content remains visible paragraph text. Exported caption paragraphs are generated from local image presentation metadata and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, Word-native caption fields, or private build metadata.
 
+Sprint 067 DOCX image alignment import/export uses only simple paragraph `w:jc` values already present in preflighted local DOCX XML or generated from local `word-core` image presentation metadata. Imported alignment is accepted only for paragraphs that contain exactly one supported image and map to left, center, or right. Mixed text/image paragraphs, justify alignment, floating, wrapping, anchoring, and rich media layout metadata are ignored. Exported paragraph alignment is generated from local image alignment metadata and does not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
