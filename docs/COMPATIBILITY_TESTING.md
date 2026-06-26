@@ -19,6 +19,23 @@ Run this matrix before making public claims such as "opens in Word", "works in G
 
 Create the fixtures from generated or placeholder content:
 
+The repository includes a generated broad-coverage sample for the first manual pass:
+
+```bash
+cargo run -p word-fixtures --example generate_compatibility_artifacts -- target/compatibility
+```
+
+The command writes only generated placeholder artifacts under the ignored `target/compatibility/` directory:
+
+- `900word-compatibility-sample.odt`
+- `900word-compatibility-sample.docx`
+- `900word-compatibility-sample.txt`
+- `900word-compatibility-sample.html`
+- `900word-compatibility-sample.print.html`
+- `900word-compatibility-sample.pdf`
+
+Regenerate these artifacts from the release candidate commit being tested. Do not edit generated artifacts to include real content. Use additional generated or sanitized placeholder documents when a release claim needs a workflow-specific fixture beyond the broad sample.
+
 | Fixture | Required Content | Native Source |
 | --- | --- | --- |
 | Formal letter | title, paragraphs, date, footer/page number | generated template or placeholder document |

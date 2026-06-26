@@ -37,10 +37,11 @@ Before publishing binary artifacts:
 Before making public compatibility claims:
 
 1. Run the [Compatibility Testing](COMPATIBILITY_TESTING.md) matrix for the claimed application and format.
-2. Use generated or sanitized placeholder documents only.
-3. Record application versions, generic OS version, commit SHA, artifact/run ID, result, and documented degradations.
-4. Keep exported files, screenshots, logs, and suite-specific recovery files out of Git.
-5. Treat any undocumented content loss, repair prompt, or private metadata exposure as release-blocking until fixed or documented as a known limitation.
+2. Generate the broad placeholder sample with `cargo run -p word-fixtures --example generate_compatibility_artifacts -- target/compatibility` from the release candidate commit.
+3. Use generated or sanitized placeholder documents only.
+4. Record application versions, generic OS version, commit SHA, artifact/run ID, result, and documented degradations.
+5. Keep exported files, screenshots, logs, and suite-specific recovery files out of Git.
+6. Treat any undocumented content loss, repair prompt, or private metadata exposure as release-blocking until fixed or documented as a known limitation.
 
 ## Documentation Scan
 

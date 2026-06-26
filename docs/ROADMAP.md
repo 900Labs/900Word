@@ -651,3 +651,12 @@ Status: complete.
 - Define generated/sanitized fixture requirements, privacy rules, accepted result values, and release evidence fields before making external-suite compatibility claims.
 - Wire compatibility evidence into quality, public release, and release runbook documentation.
 - Keep generated compatibility artifacts, screenshots, logs, local paths, private documents, telemetry, network behavior, accounts, cloud sync, and broad untested compatibility claims out of scope.
+
+## Sprint 070: Compatibility Fixture Artifacts
+
+Status: complete.
+
+- Add a generated broad-coverage compatibility sample in `word-fixtures` that exercises headings, TOC, paragraphs, inline styling, lists, tables, images, comments, tracked changes, notes, headers, footers, and page fields.
+- Add a local artifact generator for ODT, DOCX, TXT, HTML, print HTML, and PDF outputs under ignored compatibility scratch directories.
+- Document the generator command in compatibility, quality, and public-release gates so manual suite testing starts from generated placeholder content.
+- Keep generated artifacts, screenshots, logs, local paths, private documents, broad untested compatibility claims, telemetry, network behavior, accounts, cloud sync, and external office automation out of scope.

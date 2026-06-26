@@ -12,3 +12,8 @@ chrono.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 word-core = { path = "../word-core" }
+
+[dev-dependencies]
+word-docx = { path = "../word-docx" }
+word-export = { path = "../word-export" }
+word-odf = { path = "../word-odf" }
