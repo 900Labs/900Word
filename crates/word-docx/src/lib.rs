@@ -49,6 +49,9 @@ const DOCX_TOC_TITLE_STYLE_ID: &str = "Word900TocTitle";
 const DOCX_TOC_ENTRY_STYLE_PREFIX: &str = "Word900TocEntry";
 const MAX_DOCX_IMAGE_PARTS: usize = 64;
 const MAX_DOCX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
+const DOCX_IMAGE_BASE_EXTENT_EMU: u64 = 914_400;
+const MIN_DOCX_IMAGE_SCALE_PERCENT: u16 = 25;
+const MAX_DOCX_IMAGE_SCALE_PERCENT: u16 = 200;
 const MAX_DOCX_COMMENT_PARTS: usize = 4;
 const MAX_DOCX_COMMENTS: usize = 128;
 const MAX_DOCX_REVISIONS: usize = 512;
@@ -2701,6 +2704,17 @@ fn parse_docx_i32_attr(start: &BytesStart<'_>, attr: &[u8]) -> Result<Option<i32
     Ok(value.parse::<i32>().ok())
 }
 
+fn parse_docx_u64_attr(
+    start: &BytesStart<'_>,
+    attr: &[u8],
+    name: &str,
+) -> Result<Option<u64>, DocxError> {
+    let Some(value) = attr_value(start, attr, name)? else {
+        return Ok(None);
+    };
+    Ok(value.parse::<u64>().ok())
+}
+
 fn parse_table_row(
     reader: &mut Reader<&[u8]>,
     context: &DocxImportContext<'_>,
@@ -3753,6 +3767,7 @@ fn parse_drawing(
     let mut embed_id = None;
     let mut linked_id = None;
     let mut alt_text = None;
+    let mut presentation = ImagePresentation::default();
     loop {
         match reader.read_event().map_err(|err| xml_error(name, err))? {
             Event::Empty(start) | Event::Start(start)
@@ -3761,6 +3776,17 @@ fn parse_drawing(
                 if alt_text.is_none() {
                     alt_text = image_alt_text(&start, name)?;
                 }
+            }
+            Event::Empty(start) if local_name(start.name().as_ref()) == b"extent" => {
+                if let Some(scale_percent) = docx_image_scale_percent(&start, name)? {
+                    presentation.scale_percent = scale_percent;
+                }
+            }
+            Event::Start(start) if local_name(start.name().as_ref()) == b"extent" => {
+                if let Some(scale_percent) = docx_image_scale_percent(&start, name)? {
+                    presentation.scale_percent = scale_percent;
+                }
+                skip_element(reader, b"extent", name)?;
             }
             Event::Empty(start) | Event::Start(start)
                 if local_name(start.name().as_ref()) == b"blip" =>
@@ -3808,7 +3834,7 @@ fn parse_drawing(
     };
     Ok(Some(ImageBlock {
         asset_id: imported.asset_id.clone(),
-        presentation: ImagePresentation::default(),
+        presentation,
         alt_text,
     }))
 }
@@ -3818,6 +3844,28 @@ fn image_alt_text(start: &BytesStart<'_>, name: &str) -> Result<Option<String>, 
     Ok(value
         .map(|value| value.trim().chars().take(512).collect::<String>())
         .filter(|value| !value.is_empty()))
+}
+
+fn docx_image_scale_percent(start: &BytesStart<'_>, name: &str) -> Result<Option<u16>, DocxError> {
+    let Some(cx) = parse_docx_u64_attr(start, b"cx", name)? else {
+        return Ok(None);
+    };
+    let Some(cy) = parse_docx_u64_attr(start, b"cy", name)? else {
+        return Ok(None);
+    };
+    if cx != cy || cx == 0 {
+        return Ok(None);
+    }
+    let scale = cx
+        .saturating_mul(100)
+        .saturating_add(DOCX_IMAGE_BASE_EXTENT_EMU / 2)
+        / DOCX_IMAGE_BASE_EXTENT_EMU;
+    if scale < u64::from(MIN_DOCX_IMAGE_SCALE_PERCENT)
+        || scale > u64::from(MAX_DOCX_IMAGE_SCALE_PERCENT)
+    {
+        return Ok(None);
+    }
+    Ok(u16::try_from(scale).ok())
 }
 
 fn parse_revision_container(
@@ -5518,8 +5566,11 @@ fn render_image_xml(image: &ImageBlock, export: &DocxImageExport, output: &mut S
 }
 
 fn image_extent_emu(image: &ImageBlock) -> u32 {
-    let scale = image.presentation.scale_percent.clamp(10, 400) as u32;
-    914_400_u32.saturating_mul(scale) / 100
+    let scale = image
+        .presentation
+        .scale_percent
+        .clamp(MIN_DOCX_IMAGE_SCALE_PERCENT, MAX_DOCX_IMAGE_SCALE_PERCENT) as u64;
+    u32::try_from(DOCX_IMAGE_BASE_EXTENT_EMU.saturating_mul(scale) / 100).unwrap_or(u32::MAX)
 }
 
 fn image_fallback_text(image: &ImageBlock) -> String {
@@ -10485,7 +10536,10 @@ mod tests {
         );
         document.sections[0].blocks = vec![Block::Image(ImageBlock {
             asset_id: "image-1.png".to_string(),
-            presentation: ImagePresentation::default(),
+            presentation: ImagePresentation {
+                scale_percent: 150,
+                ..ImagePresentation::default()
+            },
             alt_text: Some("Alt text".to_string()),
         })];
 
@@ -10499,6 +10553,7 @@ mod tests {
         };
         assert_eq!(image.asset_id, "docx-image-1.png");
         assert_eq!(image.alt_text.as_deref(), Some("Alt text"));
+        assert_eq!(image.presentation.scale_percent, 150);
         let asset = parsed
             .assets
             .get("docx-image-1.png")
@@ -10506,6 +10561,90 @@ mod tests {
         assert_eq!(asset.media_type, "image/png");
         assert_eq!(asset.bytes, SAMPLE_PNG);
         assert_eq!(asset.original_name, None);
+    }
+
+    #[test]
+    fn imports_docx_image_extent_as_bounded_scale() {
+        let bytes = synthetic_docx_with_binary_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="1371600" cy="1371600"/><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>"#,
+            ),
+            None,
+            &[],
+            &[("word/media/image1.png", SAMPLE_PNG)],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("image extent should import");
+        let Block::Image(image) = &document.sections[0].blocks[0] else {
+            panic!("image block expected");
+        };
+
+        assert_eq!(image.presentation.scale_percent, 150);
+    }
+
+    #[test]
+    fn ignores_unsupported_docx_image_extents() {
+        for (case, extent) in [
+            ("non-square", r#"<wp:extent cx="1371600" cy="914400"/>"#),
+            ("too-small", r#"<wp:extent cx="182880" cy="182880"/>"#),
+            ("too-large", r#"<wp:extent cx="2743200" cy="2743200"/>"#),
+            (
+                "oversized-u64",
+                r#"<wp:extent cx="18446744073709551615" cy="18446744073709551615"/>"#,
+            ),
+            ("invalid", r#"<wp:extent cx="private" cy="914400"/>"#),
+            ("missing", r#"<wp:extent cx="914400"/>"#),
+        ] {
+            let document_xml = format!(
+                r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<w:body><w:p><w:r><w:drawing><wp:inline>{extent}<a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#
+            );
+            let bytes = synthetic_docx_with_binary_parts(
+                &document_xml,
+                Some(
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>"#,
+                ),
+                None,
+                &[],
+                &[("word/media/image1.png", SAMPLE_PNG)],
+            );
+
+            let document = read_docx_bytes(&bytes).expect("image should import");
+            let Block::Image(image) = &document.sections[0].blocks[0] else {
+                panic!("image block expected for {case}");
+            };
+            assert_eq!(image.presentation.scale_percent, 100, "{case}");
+        }
+    }
+
+    #[test]
+    fn skips_nested_content_inside_started_docx_image_extent() {
+        let bytes = synthetic_docx_with_binary_parts(
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="1371600" cy="1371600"><a:blip r:embed="rPrivate"/></wp:extent><a:graphic><a:graphicData><a:blip r:embed="rImg1"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#,
+            Some(
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>"#,
+            ),
+            None,
+            &[],
+            &[("word/media/image1.png", SAMPLE_PNG)],
+        );
+
+        let document = read_docx_bytes(&bytes).expect("started extent should import");
+        let Block::Image(image) = &document.sections[0].blocks[0] else {
+            panic!("image block expected");
+        };
+
+        assert_eq!(image.asset_id, "docx-image-1.png");
+        assert_eq!(image.presentation.scale_percent, 150);
     }
 
     #[test]
@@ -10566,6 +10705,47 @@ mod tests {
         assert!(document_xml.contains("descr=\"Alt text\""));
         assert!(document_xml.contains("Visible caption"));
         assert_eq!(media, SAMPLE_PNG);
+    }
+
+    #[test]
+    fn clamps_docx_image_extent_export_to_local_scale_range() {
+        for (case, scale_percent, expected_extent) in [
+            ("below minimum", 5_u16, 228_600_u32),
+            ("above maximum", 500_u16, 1_828_800_u32),
+        ] {
+            let mut document = Document::new_untitled();
+            document.assets.insert(
+                "image-1.png".to_string(),
+                AssetRef {
+                    id: "image-1.png".to_string(),
+                    media_type: "image/png".to_string(),
+                    byte_len: SAMPLE_PNG.len(),
+                    bytes: SAMPLE_PNG.to_vec(),
+                    original_name: None,
+                },
+            );
+            document.sections[0].blocks = vec![Block::Image(ImageBlock {
+                asset_id: "image-1.png".to_string(),
+                presentation: ImagePresentation {
+                    scale_percent,
+                    ..ImagePresentation::default()
+                },
+                alt_text: Some("Alt text".to_string()),
+            })];
+
+            let bytes = write_docx_bytes(&document).expect("docx should write image package");
+            let mut archive =
+                ZipArchive::new(Cursor::new(bytes.as_slice())).expect("written docx should open");
+            let mut document_xml = String::new();
+            archive
+                .by_name(DOCUMENT_XML)
+                .expect("document xml should exist")
+                .read_to_string(&mut document_xml)
+                .expect("document xml should read");
+            let expected = format!(r#"cx="{expected_extent}" cy="{expected_extent}""#);
+
+            assert!(document_xml.contains(&expected), "{case}");
+        }
     }
 
     #[test]

@@ -608,3 +608,12 @@ Status: complete.
 - Ignore pattern fills, theme fills, arbitrary colors, and broader Word run-style metadata.
 - Keep export on generated local `w:highlight` tags for 900Word-authored highlights rather than preserving source shading form.
 - Keep ODT canonical and keep full Word style fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.
+
+## Sprint 065: DOCX Image Scale Interoperability
+
+Status: complete.
+
+- Import bounded square DOCX `wp:extent` image dimensions into the existing 900Word image scale metadata.
+- Export valid 900Word-authored image scale metadata as generated square DOCX `wp:extent` and DrawingML extent values.
+- Ignore non-square extents, out-of-bounds extents, cropping, rotation, compression/downsampling metadata, arbitrary image sizing, telemetry, network behavior, accounts, cloud sync, and heavy dependencies.
+- Keep ODT canonical and keep full DOCX media layout fidelity deferred.

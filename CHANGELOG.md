@@ -64,6 +64,7 @@ All notable changes to 900Word are tracked here.
 - DOCX paragraph page-break-before interoperability, importing supported top-level body paragraph `w:pageBreakBefore` flags as local `PageBreak` blocks while keeping nested paragraph flags, full pagination semantics, and hidden Word layout fidelity deferred.
 - DOCX generic font-family interoperability, importing/exporting allowlisted Word run fonts as bounded 900Word generic families while ignoring arbitrary font names, theme fonts, embedded fonts, and exact font fidelity.
 - DOCX run shading interoperability, importing safe direct `w:shd` run fills as the existing 900Word highlight palette while ignoring pattern fills, theme fills, arbitrary colors, and broader Word run-style fidelity.
+- DOCX image scale interoperability, importing/exporting bounded generated square `wp:extent` values as existing 900Word image scale metadata while keeping arbitrary sizing, cropping, compression, and full media layout fidelity deferred.
 
 ### Fixed
 

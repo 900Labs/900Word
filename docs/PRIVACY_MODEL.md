@@ -88,6 +88,8 @@ Sprint 063 DOCX generic font-family import/export uses only direct `w:rFonts` va
 
 Sprint 064 DOCX run shading import uses only direct `w:shd` run properties already present in preflighted DOCX XML. Accepted imported fills are normalized to the existing safe 900Word highlight palette, while pattern fills, theme fills, arbitrary colors, and broader Word run-style metadata are ignored. Export continues to use generated local highlight tags and does not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
 
+Sprint 065 DOCX image scale import/export uses only direct `wp:extent` dimensions already present in preflighted local DOCX drawing XML or generated from local `word-core` image presentation metadata. Accepted imported extents are square and normalize to bounded local image scale percentages. Unsupported dimensions, non-square extents, cropping, rotation, compression metadata, and rich media layout metadata are ignored. Exported DOCX extent values are generated from local image scale metadata and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
