@@ -617,3 +617,12 @@ Status: complete.
 - Export valid 900Word-authored image scale metadata as generated square DOCX `wp:extent` and DrawingML extent values.
 - Ignore non-square extents, out-of-bounds extents, cropping, rotation, compression/downsampling metadata, arbitrary image sizing, telemetry, network behavior, accounts, cloud sync, and heavy dependencies.
 - Keep ODT canonical and keep full DOCX media layout fidelity deferred.
+
+## Sprint 066: DOCX Generated Image Caption Interoperability
+
+Status: complete.
+
+- Export 900Word-authored image captions as visible generated `Word900ImageCaption` DOCX paragraphs after supported image blocks.
+- Import plain generated `Word900ImageCaption` paragraphs back into existing 900Word image caption metadata only when they immediately follow a supported image block.
+- Keep unstyled, orphaned, linked, rich, or otherwise unsupported caption-like DOCX paragraphs as visible document paragraphs instead of hidden image metadata.
+- Keep Word-native caption fields, rich caption formatting, arbitrary media layout fidelity, telemetry, network behavior, accounts, cloud sync, and heavy dependencies deferred.

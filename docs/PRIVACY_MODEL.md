@@ -90,6 +90,8 @@ Sprint 064 DOCX run shading import uses only direct `w:shd` run properties alrea
 
 Sprint 065 DOCX image scale import/export uses only direct `wp:extent` dimensions already present in preflighted local DOCX drawing XML or generated from local `word-core` image presentation metadata. Accepted imported extents are square and normalize to bounded local image scale percentages. Unsupported dimensions, non-square extents, cropping, rotation, compression metadata, and rich media layout metadata are ignored. Exported DOCX extent values are generated from local image scale metadata and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, or private build metadata.
 
+Sprint 066 DOCX generated image caption import/export uses only visible local document caption text and the generated `Word900ImageCaption` paragraph style. Imported generated caption paragraphs are reattached only when they are plain text and immediately follow a supported image; other caption-like content remains visible paragraph text. Exported caption paragraphs are generated from local image presentation metadata and do not include source paths, source filenames, account data, telemetry identifiers, remote references, OS usernames, hostnames, Word-native caption fields, or private build metadata.
+
 ## Logs
 
 Logs may include high-level operation names and error categories. Logs must not include document text, private filenames, local paths, or recovered content.
