@@ -65,6 +65,7 @@ All notable changes to 900Word are tracked here.
 - DOCX generic font-family interoperability, importing/exporting allowlisted Word run fonts as bounded 900Word generic families while ignoring arbitrary font names, theme fonts, embedded fonts, and exact font fidelity.
 - DOCX run shading interoperability, importing safe direct `w:shd` run fills as the existing 900Word highlight palette while ignoring pattern fills, theme fills, arbitrary colors, and broader Word run-style fidelity.
 - DOCX image scale interoperability, importing/exporting bounded generated square `wp:extent` values as existing 900Word image scale metadata while keeping arbitrary sizing, cropping, compression, and full media layout fidelity deferred.
+- DOCX generated image caption interoperability, exporting 900Word image captions with a generated `Word900ImageCaption` style and importing that style back only when it immediately follows a supported image block.
 
 ### Fixed
 
