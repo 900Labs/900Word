@@ -202,6 +202,8 @@
   }
 
   type ViewId = 'editor' | 'settings' | 'about';
+  type MainMenuId = 'file' | 'edit' | 'insert' | 'format' | 'table' | 'review' | 'view' | 'tools' | 'help';
+  type RibbonTabId = 'home' | 'insert' | 'layout' | 'review' | 'view';
   const viewOrder: ViewId[] = ['editor', 'settings', 'about'];
   const odtFileFilters = [{ name: 'OpenDocument Text', extensions: ['odt'] }];
   const documentFileFilters = [
@@ -271,6 +273,7 @@
   let title = $state('900Word');
   let status = $state(translate('en-US', 'starting'));
   let activeView = $state<ViewId>('editor');
+  let activeRibbonTab = $state<RibbonTabId>('home');
   let editorViewMode = $state<EditorViewMode>('page-layout');
   let zoomChoice = $state<EditorZoomChoice>('fit-width');
   let customZoomPercent = $state(100);
@@ -342,7 +345,7 @@
   let newCommentBody = $state('');
   let selectedCommentText = $state('');
   let activeCommentId = $state<string | null>(null);
-  let fileMenuOpen = $state(false);
+  let activeMenu = $state<MainMenuId | null>(null);
   let exportMenuOpen = $state(false);
   let navigatorHeadings = $state<DocumentOutlineEntry[]>([]);
   let linkTargets = $state<DocumentLinkTarget[]>([]);
@@ -420,6 +423,8 @@
       fileState.recovery_documents.length > 0 ||
       projectionWarnings.length > 0
   );
+  let showContextInspector = $derived(activeView === 'editor' && !settings.low_resource);
+  let contextInspectorTitle = $derived(contextInspectorLabel());
   let editorSyncQueue = Promise.resolve();
   let editorSyncError: string | null = null;
   let tableRows = $state(2);
@@ -434,7 +439,7 @@
   let commentBodyInput = $state<HTMLTextAreaElement | undefined>();
   let exportPathInputElement = $state<HTMLInputElement | undefined>();
   let linkInput = $state<HTMLInputElement | undefined>();
-  let fileMenuRoot = $state<HTMLDivElement | undefined>();
+  let mainMenuRoot = $state<HTMLElement | undefined>();
   let linkToolsRoot = $state<HTMLDivElement | undefined>();
   let view: ReturnType<typeof createEditor> | undefined;
   const toolbarActivationState: ToolbarActivationState = { pointerCommandHandled: false };
@@ -977,7 +982,7 @@
       await exportPdf();
       return;
     }
-    fileMenuOpen = true;
+    activeMenu = 'file';
     exportMenuOpen = true;
     status = tr('exportPdfPathRequired');
     await tick();
@@ -1234,6 +1239,22 @@
       image: null,
       selectionWordCount: 0
     };
+  }
+
+  function contextInspectorLabel() {
+    if (activeFormatting.image) {
+      return tr('imageControls');
+    }
+    if (activeFormatting.table) {
+      return tr('tables');
+    }
+    if (activeFormatting.selectionWordCount > 0) {
+      return tr('selectionWords');
+    }
+    if (activeFormatting.blockType === 'heading') {
+      return tr('blockFormatting');
+    }
+    return tr('paragraphControls');
   }
 
   function applyImageAttrs(attrs: SupportedImageAttrs) {
@@ -1921,8 +1942,15 @@
   }
 
   function closeFileMenu() {
-    fileMenuOpen = false;
+    activeMenu = null;
     exportMenuOpen = false;
+  }
+
+  function toggleMainMenu(menuId: MainMenuId) {
+    activeMenu = activeMenu === menuId ? null : menuId;
+    if (activeMenu !== 'file') {
+      exportMenuOpen = false;
+    }
   }
 
   function toggleDocumentInspector() {
@@ -1941,13 +1969,6 @@
     statsPanelOpen = !statsPanelOpen;
     if (statsPanelOpen) {
       inspectorPanelOpen = false;
-    }
-  }
-
-  function toggleFileMenu() {
-    fileMenuOpen = !fileMenuOpen;
-    if (!fileMenuOpen) {
-      exportMenuOpen = false;
     }
   }
 
@@ -2019,7 +2040,7 @@
     if (!(target instanceof Node)) {
       return;
     }
-    if (fileMenuOpen && !fileMenuRoot?.contains(target)) {
+    if (activeMenu && !mainMenuRoot?.contains(target)) {
       closeFileMenu();
     }
     if (linkPanelOpen && !linkToolsRoot?.contains(target)) {
@@ -2223,7 +2244,7 @@
       return;
     }
 
-    if (event.key === 'Escape' && fileMenuOpen) {
+    if (event.key === 'Escape' && activeMenu) {
       event.preventDefault();
       closeFileMenu();
       return;
@@ -2393,19 +2414,20 @@
     </div>
   </header>
 
-  <nav class="menu-strip" aria-label={tr('mainMenu')}>
-    <div bind:this={fileMenuRoot} class="file-menu">
-      <button
-        aria-expanded={fileMenuOpen}
-        aria-haspopup="menu"
-        class="menu-button"
-        type="button"
-        onclick={toggleFileMenu}
-      >
-        {tr('file')}
-      </button>
-      {#if fileMenuOpen}
-        <div class="file-menu-popover" aria-label={tr('file')}>
+  <nav bind:this={mainMenuRoot} class="menu-strip" aria-label={tr('mainMenu')}>
+    <div class="menu-bar" role="menubar">
+      <div class="file-menu">
+        <button
+          aria-expanded={activeMenu === 'file'}
+          aria-haspopup="menu"
+          class="menu-button"
+          type="button"
+          onclick={() => toggleMainMenu('file')}
+        >
+          {tr('file')}
+        </button>
+        {#if activeMenu === 'file'}
+          <div class="file-menu-popover" aria-label={tr('file')}>
           <div class="menu-popover-header" aria-hidden="true">
             <span>{tr('file')}</span>
           </div>
@@ -2457,30 +2479,6 @@
             <span class="menu-glyph glyph-inspector" aria-hidden="true"></span>
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('documentInspector')}</span>
-            </span>
-          </button>
-
-          <button
-            class="menu-command"
-            disabled={!editorEditable}
-            type="button"
-            onclick={() => runFileMenuAction(insertImageWithDialog)}
-          >
-            <span class="menu-glyph glyph-image" aria-hidden="true"></span>
-            <span class="menu-command-main">
-              <span class="menu-command-label">{tr('insertImage')}</span>
-            </span>
-          </button>
-          <button
-            class="menu-command"
-            disabled={!editorEditable}
-            title={tr('tableOfContents')}
-            type="button"
-            onclick={() => runFileMenuAction(insertOrUpdateTableOfContents)}
-          >
-            <span class="menu-glyph glyph-toc" aria-hidden="true"></span>
-            <span class="menu-command-main">
-              <span class="menu-command-label">{tr('insertOrUpdateTableOfContents')}</span>
             </span>
           </button>
 
@@ -2582,8 +2580,500 @@
             </span>
             <span class="menu-shortcut">{shortcut('printDocument')}</span>
           </button>
-        </div>
-      {/if}
+          </div>
+        {/if}
+      </div>
+
+      <div class="file-menu">
+        <button
+          aria-expanded={activeMenu === 'edit'}
+          aria-haspopup="menu"
+          class="menu-button"
+          type="button"
+          onclick={() => toggleMainMenu('edit')}
+        >
+          {tr('edit')}
+        </button>
+        {#if activeMenu === 'edit'}
+          <div class="file-menu-popover menu-popover-narrow" aria-label={tr('edit')}>
+            <div class="menu-popover-header" aria-hidden="true">
+              <span>{tr('edit')}</span>
+            </div>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(undoDocument)}>
+              <span class="menu-glyph glyph-undo" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('undo')}</span></span>
+              <span class="menu-shortcut">{shortcut('undo')}</span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(redoDocument)}>
+              <span class="menu-glyph glyph-redo" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('redo')}</span></span>
+              <span class="menu-shortcut">{shortcut('redo')}</span>
+            </button>
+            <div class="menu-separator" role="separator"></div>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => openFindPanel('find'))}>
+              <span class="menu-glyph glyph-find" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('find')}</span></span>
+              <span class="menu-shortcut">{shortcut('find')}</span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => openFindPanel('replace'))}>
+              <span class="menu-glyph glyph-replace" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('findAndReplace')}</span></span>
+              <span class="menu-shortcut">{shortcut('replace')}</span>
+            </button>
+            <div class="menu-separator" role="separator"></div>
+            <button
+              class="menu-command"
+              disabled={!editorEditable}
+              type="button"
+              onclick={() => runFileMenuAction(() => runToolbarCommand(clearFormatting))}
+            >
+              <span class="menu-glyph glyph-clear" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('clearFormatting')}</span></span>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="file-menu">
+        <button
+          aria-expanded={activeMenu === 'insert'}
+          aria-haspopup="menu"
+          class="menu-button"
+          type="button"
+          onclick={() => toggleMainMenu('insert')}
+        >
+          {tr('insert')}
+        </button>
+        {#if activeMenu === 'insert'}
+          <div class="file-menu-popover menu-popover-narrow" aria-label={tr('insert')}>
+            <div class="menu-popover-header" aria-hidden="true">
+              <span>{tr('insert')}</span>
+            </div>
+            <button
+              class="menu-command"
+              disabled={!editorEditable}
+              type="button"
+              onclick={() => runFileMenuAction(insertImageWithDialog)}
+            >
+              <span class="menu-glyph glyph-image" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('insertImage')}</span></span>
+            </button>
+            <button
+              class="menu-command"
+              disabled={!editorEditable}
+              type="button"
+              onclick={() => runFileMenuAction(() => runToolbarCommand(insertTable))}
+            >
+              <span class="menu-glyph glyph-table" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('insertTable')}</span></span>
+            </button>
+            <button
+              class="menu-command"
+              disabled={!editorEditable}
+              title={tr('tableOfContents')}
+              type="button"
+              onclick={() => runFileMenuAction(insertOrUpdateTableOfContents)}
+            >
+              <span class="menu-glyph glyph-toc" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('insertOrUpdateTableOfContents')}</span></span>
+            </button>
+            <div class="menu-separator" role="separator"></div>
+            <button
+              class="menu-command"
+              disabled={!editorEditable}
+              type="button"
+              onclick={() => runFileMenuAction(() => openLinkPanel())}
+            >
+              <span class="menu-glyph glyph-link" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('link')}</span></span>
+              <span class="menu-shortcut">{shortcut('insertLink')}</span>
+            </button>
+            <button
+              class="menu-command"
+              disabled={!editorEditable || !activeFormatting.blockType}
+              type="button"
+              onclick={() => runFileMenuAction(() => runToolbarCommand(addBookmarkToSelection))}
+            >
+              <span class="menu-glyph glyph-bookmark" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('bookmark')}</span></span>
+            </button>
+            <button
+              class="menu-command"
+              disabled={!editorEditable}
+              type="button"
+              onclick={() => runFileMenuAction(() => runToolbarCommand(() => void insertNote('footnote')))}
+            >
+              <span class="menu-glyph glyph-footnote" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('insertFootnote')}</span></span>
+            </button>
+            <button
+              class="menu-command"
+              disabled={!editorEditable}
+              type="button"
+              onclick={() => runFileMenuAction(() => runToolbarCommand(() => void insertNote('endnote')))}
+            >
+              <span class="menu-glyph glyph-endnote" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('insertEndnote')}</span></span>
+            </button>
+            <button
+              class="menu-command"
+              disabled={!editorEditable && commentThreads.length === 0}
+              type="button"
+              onclick={() => runFileMenuAction(openCommentsPanelForShortcut)}
+            >
+              <span class="menu-glyph glyph-comment" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('comments')}</span></span>
+              <span class="menu-shortcut">{shortcut('insertComment')}</span>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="file-menu">
+        <button
+          aria-expanded={activeMenu === 'format'}
+          aria-haspopup="menu"
+          class="menu-button"
+          type="button"
+          onclick={() => toggleMainMenu('format')}
+        >
+          {tr('format')}
+        </button>
+        {#if activeMenu === 'format'}
+          <div class="file-menu-popover format-menu-popover" aria-label={tr('format')}>
+            <div class="menu-popover-header" aria-hidden="true">
+              <span>{tr('format')}</span>
+            </div>
+            <div class="menu-control-grid">
+              <button
+                aria-label={tr('bold')}
+                aria-pressed={activeFormatting.marks.bold}
+                class:active-format={activeFormatting.marks.bold}
+                class="format-button strong"
+                disabled={!editorEditable}
+                title={shortcutTitle(tr('bold'), 'bold')}
+                type="button"
+                onclick={() => runFileMenuAction(() => runToolbarCommand(() => applyInlineMark('bold', tr('bold'))))}
+              >
+                B
+              </button>
+              <button
+                aria-label={tr('italic')}
+                aria-pressed={activeFormatting.marks.italic}
+                class:active-format={activeFormatting.marks.italic}
+                class="format-button italic"
+                disabled={!editorEditable}
+                title={shortcutTitle(tr('italic'), 'italic')}
+                type="button"
+                onclick={() => runFileMenuAction(() => runToolbarCommand(() => applyInlineMark('italic', tr('italic'))))}
+              >
+                I
+              </button>
+              <button
+                aria-label={tr('underline')}
+                aria-pressed={activeFormatting.marks.underline}
+                class:active-format={activeFormatting.marks.underline}
+                class="format-button underline"
+                disabled={!editorEditable}
+                title={shortcutTitle(tr('underline'), 'underline')}
+                type="button"
+                onclick={() => runFileMenuAction(() => runToolbarCommand(() => applyInlineMark('underline', tr('underline'))))}
+              >
+                U
+              </button>
+              <button
+                aria-label={tr('strikethrough')}
+                aria-pressed={activeFormatting.marks.strikethrough}
+                class:active-format={activeFormatting.marks.strikethrough}
+                class="format-button strike"
+                disabled={!editorEditable}
+                title={tr('strikethrough')}
+                type="button"
+                onclick={() => runFileMenuAction(() => runToolbarCommand(() => applyInlineMark('strikethrough', tr('strikethrough'))))}
+              >
+                S
+              </button>
+              <button
+                aria-label={tr('superscript')}
+                aria-pressed={activeFormatting.marks.superscript}
+                class:active-format={activeFormatting.marks.superscript}
+                class="format-button script"
+                disabled={!editorEditable}
+                title={tr('superscript')}
+                type="button"
+                onclick={() => runFileMenuAction(() => runToolbarCommand(() => applyInlineMark('superscript', tr('superscript'))))}
+              >
+                x<sup>2</sup>
+              </button>
+              <button
+                aria-label={tr('subscript')}
+                aria-pressed={activeFormatting.marks.subscript}
+                class:active-format={activeFormatting.marks.subscript}
+                class="format-button script"
+                disabled={!editorEditable}
+                title={tr('subscript')}
+                type="button"
+                onclick={() => runFileMenuAction(() => runToolbarCommand(() => applyInlineMark('subscript', tr('subscript'))))}
+              >
+                x<sub>2</sub>
+              </button>
+            </div>
+            <div class="menu-control-grid block-menu-grid">
+              <button disabled={!editorEditable} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(applyParagraph))}>
+                {tr('paragraph')}
+              </button>
+              <button disabled={!editorEditable} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => applyHeading(1)))}>
+                {tr('heading1')}
+              </button>
+              <button disabled={!editorEditable} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => applyHeading(2)))}>
+                {tr('heading2')}
+              </button>
+              <button disabled={!editorEditable} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => applyHeading(3)))}>
+                {tr('heading3')}
+              </button>
+            </div>
+            <select
+              aria-label={tr('styles')}
+              disabled={!editorEditable}
+              bind:value={selectedStyleId}
+              onchange={(event) => runFileMenuAction(() => runToolbarCommand(() => applyParagraphStyle(event.currentTarget.value)))}
+              title={tr('styles')}
+            >
+              {#each paragraphStyles as style}
+                <option value={style.id}>{style.label}</option>
+              {/each}
+            </select>
+            <button
+              class="menu-command"
+              disabled={!editorEditable}
+              type="button"
+              onclick={() => runFileMenuAction(() => runToolbarCommand(clearFormatting))}
+            >
+              <span class="menu-glyph glyph-clear" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('clearFormatting')}</span></span>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="file-menu">
+        <button
+          aria-expanded={activeMenu === 'table'}
+          aria-haspopup="menu"
+          class="menu-button"
+          type="button"
+          onclick={() => toggleMainMenu('table')}
+        >
+          {tr('tables')}
+        </button>
+        {#if activeMenu === 'table'}
+          <div class="file-menu-popover menu-popover-narrow" aria-label={tr('tables')}>
+            <div class="menu-popover-header" aria-hidden="true">
+              <span>{tr('tables')}</span>
+            </div>
+            <button class="menu-command" disabled={!editorEditable} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(insertTable))}>
+              <span class="menu-glyph glyph-table" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('insertTable')}</span></span>
+            </button>
+            <div class="menu-separator" role="separator"></div>
+            <button class="menu-command" disabled={!editorEditable || !activeFormatting.table?.canAddRow} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => editTable('add_row_above')))}>
+              <span class="menu-glyph glyph-row-up" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('addRowAbove')}</span></span>
+            </button>
+            <button class="menu-command" disabled={!editorEditable || !activeFormatting.table?.canAddRow} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => editTable('add_row_below')))}>
+              <span class="menu-glyph glyph-row-down" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('addRowBelow')}</span></span>
+            </button>
+            <button class="menu-command" disabled={!editorEditable || !activeFormatting.table?.canAddColumn} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => editTable('add_column_left')))}>
+              <span class="menu-glyph glyph-column-left" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('addColumnLeft')}</span></span>
+            </button>
+            <button class="menu-command" disabled={!editorEditable || !activeFormatting.table?.canAddColumn} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => editTable('add_column_right')))}>
+              <span class="menu-glyph glyph-column-right" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('addColumnRight')}</span></span>
+            </button>
+            <div class="menu-separator" role="separator"></div>
+            <button class="menu-command" disabled={!editorEditable || !activeFormatting.table?.canDeleteRow} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => editTable('delete_row')))}>
+              <span class="menu-glyph glyph-delete-row" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('deleteRow')}</span></span>
+            </button>
+            <button class="menu-command" disabled={!editorEditable || !activeFormatting.table?.canDeleteColumn} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => editTable('delete_column')))}>
+              <span class="menu-glyph glyph-delete-column" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('deleteColumn')}</span></span>
+            </button>
+            <button class="menu-command" disabled={!editorEditable || !activeFormatting.table?.canDeleteTable} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => editTable('delete_table')))}>
+              <span class="menu-glyph glyph-delete-table" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('deleteTable')}</span></span>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="file-menu">
+        <button
+          aria-expanded={activeMenu === 'review'}
+          aria-haspopup="menu"
+          class="menu-button"
+          type="button"
+          onclick={() => toggleMainMenu('review')}
+        >
+          {tr('review')}
+        </button>
+        {#if activeMenu === 'review'}
+          <div class="file-menu-popover menu-popover-narrow" aria-label={tr('review')}>
+            <div class="menu-popover-header" aria-hidden="true">
+              <span>{tr('review')}</span>
+            </div>
+            <button
+              class="menu-command"
+              disabled={!editorEditable}
+              type="button"
+              onclick={() => runFileMenuAction(() => setTrackChangesRecording(!trackChangesRecording))}
+            >
+              <span class="menu-glyph glyph-track" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('recordChanges')}</span></span>
+              <span class="menu-shortcut">{trackChangesRecording ? tr('recording') : tr('off')}</span>
+            </button>
+            <button class="menu-command" disabled={!editorEditable && trackedChangeCount === 0} type="button" onclick={() => runFileMenuAction(() => { reviewPanelOpen = !reviewPanelOpen; })}>
+              <span class="menu-glyph glyph-review" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('reviewChanges')}</span></span>
+              <span class="menu-shortcut">{trackedChangeCount}</span>
+            </button>
+            <button class="menu-command" disabled={!editorEditable && commentThreads.length === 0} type="button" onclick={() => runFileMenuAction(openCommentsPanelForShortcut)}>
+              <span class="menu-glyph glyph-comment" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('comments')}</span></span>
+              <span class="menu-shortcut">{unresolvedCommentCount}</span>
+            </button>
+            <button class="menu-command" disabled={noteSummaries.length === 0} type="button" onclick={() => runFileMenuAction(() => { notesPanelOpen = !notesPanelOpen; })}>
+              <span class="menu-glyph glyph-notes" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('notes')}</span></span>
+              <span class="menu-shortcut">{noteSummaries.length}</span>
+            </button>
+            <div class="menu-separator" role="separator"></div>
+            <button class="menu-command" disabled={!editorEditable || trackedChangeCount === 0} type="button" onclick={() => runFileMenuAction(acceptAllTrackedChanges)}>
+              <span class="menu-glyph glyph-accept" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('acceptAll')}</span></span>
+            </button>
+            <button class="menu-command" disabled={!editorEditable || trackedChangeCount === 0} type="button" onclick={() => runFileMenuAction(rejectAllTrackedChanges)}>
+              <span class="menu-glyph glyph-reject" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('rejectAll')}</span></span>
+            </button>
+            <div class="menu-separator" role="separator"></div>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(checkSpelling)}>
+              <span class="menu-glyph glyph-spell" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('checkSpelling')}</span></span>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="file-menu">
+        <button
+          aria-expanded={activeMenu === 'view'}
+          aria-haspopup="menu"
+          class="menu-button"
+          type="button"
+          onclick={() => toggleMainMenu('view')}
+        >
+          {tr('view')}
+        </button>
+        {#if activeMenu === 'view'}
+          <div class="file-menu-popover menu-popover-narrow" aria-label={tr('view')}>
+            <div class="menu-popover-header" aria-hidden="true">
+              <span>{tr('view')}</span>
+            </div>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => selectView('editor'))}>
+              <span class="menu-glyph glyph-editor" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('editor')}</span></span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => selectView('settings'))}>
+              <span class="menu-glyph glyph-settings" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('settings')}</span></span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => selectView('about'))}>
+              <span class="menu-glyph glyph-help" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('about')}</span></span>
+            </button>
+            <div class="menu-separator" role="separator"></div>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => setEditorViewMode('draft'))}>
+              <span class="menu-glyph glyph-draft" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('draftView')}</span></span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => setEditorViewMode('page-layout'))}>
+              <span class="menu-glyph glyph-page" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('pageLayoutView')}</span></span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => { showRulers = !showRulers; })}>
+              <span class="menu-glyph glyph-ruler" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('showRulers')}</span></span>
+              <span class="menu-shortcut">{showRulers ? tr('yes') : tr('no')}</span>
+            </button>
+            <div class="menu-separator" role="separator"></div>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(toggleStatsPanel)}>
+              <span class="menu-glyph glyph-stats" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('stats')}</span></span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(toggleDocumentInspector)}>
+              <span class="menu-glyph glyph-inspector" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('documentInspector')}</span></span>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="file-menu">
+        <button
+          aria-expanded={activeMenu === 'tools'}
+          aria-haspopup="menu"
+          class="menu-button"
+          type="button"
+          onclick={() => toggleMainMenu('tools')}
+        >
+          {tr('tools')}
+        </button>
+        {#if activeMenu === 'tools'}
+          <div class="file-menu-popover menu-popover-narrow" aria-label={tr('tools')}>
+            <div class="menu-popover-header" aria-hidden="true">
+              <span>{tr('tools')}</span>
+            </div>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(checkSpelling)}>
+              <span class="menu-glyph glyph-spell" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('checkSpelling')}</span></span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => selectView('settings'))}>
+              <span class="menu-glyph glyph-dictionary" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('dictionaryManager')}</span></span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(openDocumentInspector)}>
+              <span class="menu-glyph glyph-inspector" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('documentInspector')}</span></span>
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <div class="file-menu">
+        <button
+          aria-expanded={activeMenu === 'help'}
+          aria-haspopup="menu"
+          class="menu-button"
+          type="button"
+          onclick={() => toggleMainMenu('help')}
+        >
+          {tr('help')}
+        </button>
+        {#if activeMenu === 'help'}
+          <div class="file-menu-popover menu-popover-narrow" aria-label={tr('help')}>
+            <div class="menu-popover-header" aria-hidden="true">
+              <span>{tr('help')}</span>
+            </div>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => selectView('about'))}>
+              <span class="menu-glyph glyph-help" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('about900Word')}</span></span>
+            </button>
+          </div>
+        {/if}
+      </div>
     </div>
 
     <div class="view-tabs" role="tablist" aria-label={tr('workspaceViews')}>
@@ -2623,13 +3113,57 @@
     </div>
   </nav>
 
-  <section class="command-bar" aria-label={tr('editingToolbar')}>
-    <div class="tool-group" role="group" aria-label={tr('history')}>
+  <section class="command-bar ribbon-bar" aria-label={tr('editingToolbar')}>
+    <div class="ribbon-tabs" role="tablist" aria-label={tr('ribbonTabs')}>
+      <button
+        aria-selected={activeRibbonTab === 'home'}
+        role="tab"
+        type="button"
+        onclick={() => (activeRibbonTab = 'home')}
+      >
+        {tr('home')}
+      </button>
+      <button
+        aria-selected={activeRibbonTab === 'insert'}
+        role="tab"
+        type="button"
+        onclick={() => (activeRibbonTab = 'insert')}
+      >
+        {tr('insert')}
+      </button>
+      <button
+        aria-selected={activeRibbonTab === 'layout'}
+        role="tab"
+        type="button"
+        onclick={() => (activeRibbonTab = 'layout')}
+      >
+        {tr('layout')}
+      </button>
+      <button
+        aria-selected={activeRibbonTab === 'review'}
+        role="tab"
+        type="button"
+        onclick={() => (activeRibbonTab = 'review')}
+      >
+        {tr('review')}
+      </button>
+      <button
+        aria-selected={activeRibbonTab === 'view'}
+        role="tab"
+        type="button"
+        onclick={() => (activeRibbonTab = 'view')}
+      >
+        {tr('view')}
+      </button>
+    </div>
+
+    <div class="ribbon-groups">
+    <div class:hidden-ribbon={activeRibbonTab !== 'home'} class="tool-group" role="group" aria-label={tr('history')}>
       <button title={shortcutTitle(tr('undo'), 'undo')} type="button" onclick={undoDocument}>{tr('undo')}</button>
       <button title={shortcutTitle(tr('redo'), 'redo')} type="button" onclick={redoDocument}>{tr('redo')}</button>
     </div>
 
-    <div class="tool-group view-mode-tools" role="group" aria-label={tr('viewMode')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'view'} class="tool-group view-mode-tools" role="group" aria-label={tr('viewMode')}>
       <button
         aria-pressed={editorViewMode === 'draft'}
         class:active-format={editorViewMode === 'draft'}
@@ -2676,7 +3210,7 @@
       </label>
     </div>
 
-    <div class="tool-group style-tools" role="group" aria-label={tr('styles')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'home'} class="tool-group style-tools" role="group" aria-label={tr('styles')}>
       <select
         aria-label={tr('styles')}
         disabled={!editorEditable}
@@ -2709,7 +3243,7 @@
       </button>
     </div>
 
-    <div class="tool-group formatting-tools" role="group" aria-label={tr('textFormatting')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'home'} class="tool-group formatting-tools" role="group" aria-label={tr('textFormatting')}>
       <button
         aria-label={tr('bold')}
         aria-pressed={activeFormatting.marks.bold}
@@ -2796,7 +3330,7 @@
       </button>
     </div>
 
-    <div bind:this={linkToolsRoot} class="tool-group link-tools" role="group" aria-label={tr('linkTools')}>
+    <div bind:this={linkToolsRoot} class:hidden-ribbon={activeRibbonTab !== 'home' && activeRibbonTab !== 'insert'} class="tool-group link-tools" role="group" aria-label={tr('linkTools')}>
       <button
         aria-expanded={linkPanelOpen}
         aria-label={tr('openLinkPanel')}
@@ -2878,7 +3412,7 @@
       {/if}
     </div>
 
-    <div class="tool-group comment-tools" role="group" aria-label={tr('comments')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'review'} class="tool-group comment-tools" role="group" aria-label={tr('comments')}>
       <label class="check-row compact review-toggle" title={tr('recordChanges')}>
         <input
           checked={trackChangesRecording}
@@ -2938,7 +3472,7 @@
       </button>
     </div>
 
-    <div class="tool-group font-tools" role="group" aria-label={tr('fontControls')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'home'} class="tool-group font-tools" role="group" aria-label={tr('fontControls')}>
       <select
         aria-label={tr('fontFamily')}
         disabled={!editorEditable}
@@ -2985,7 +3519,7 @@
       />
     </div>
 
-    <div class="tool-group" role="group" aria-label={tr('blockFormatting')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'home'} class="tool-group" role="group" aria-label={tr('blockFormatting')}>
       <button
         disabled={!editorEditable}
         onpointerdown={(event) => runToolbarPointerCommand(event, applyParagraph)}
@@ -3027,7 +3561,7 @@
       </button>
     </div>
 
-    <div class="tool-group paragraph-tools" role="group" aria-label={tr('paragraphControls')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'home' && activeRibbonTab !== 'layout'} class="tool-group paragraph-tools" role="group" aria-label={tr('paragraphControls')}>
       <button
         aria-pressed={activeFormatting.paragraphFormat.align === 'left'}
         class:active-format={activeFormatting.paragraphFormat.align === 'left'}
@@ -3122,7 +3656,7 @@
       </label>
     </div>
 
-    <div class="tool-group list-tools" role="group" aria-label={tr('lists')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'home' && activeRibbonTab !== 'layout'} class="tool-group list-tools" role="group" aria-label={tr('lists')}>
       <button
         aria-pressed={activeFormatting.list?.type === 'bullet_list'}
         class:active-format={activeFormatting.list?.type === 'bullet_list'}
@@ -3165,7 +3699,7 @@
       </button>
     </div>
 
-    <div class="tool-group table-tools" role="group" aria-label={tr('tables')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'insert'} class="tool-group table-tools" role="group" aria-label={tr('tables')}>
       <label class="table-size-field" title={tr('tableRows')}>
         {tr('rowsShort')}
         <select
@@ -3334,7 +3868,7 @@
     </div>
 
     {#if activeFormatting.image}
-      <div class="tool-group image-tools" role="group" aria-label={tr('imageControls')}>
+      <div class:hidden-ribbon={activeRibbonTab !== 'insert'} class="tool-group image-tools" role="group" aria-label={tr('imageControls')}>
         <label class="image-text-field">
           {tr('imageAltText')}
           <input
@@ -3392,7 +3926,7 @@
       </div>
     {/if}
 
-    <div class="tool-group template-tools" role="group" aria-label={tr('templates')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'insert'} class="tool-group template-tools" role="group" aria-label={tr('templates')}>
       <select aria-label={tr('templates')} bind:value={selectedTemplateId}>
         {#each templates as template}
           <option value={template.id}>{template.name}</option>
@@ -3413,7 +3947,7 @@
       {/if}
     </div>
 
-    <div class="tool-group search-tools" role="search" aria-label={tr('findAndReplace')}>
+    <div class:hidden-ribbon={activeRibbonTab !== 'home'} class="tool-group search-tools" role="search" aria-label={tr('findAndReplace')}>
       <button
         aria-controls="find-panel"
         aria-expanded={findPanelOpen}
@@ -3454,10 +3988,11 @@
         </div>
       {/if}
     </div>
+    </div>
   </section>
 
   <section
-    class={showWorkspaceSidebar ? 'workspace has-sidebar' : 'workspace'}
+    class={`workspace${showWorkspaceSidebar ? ' has-sidebar' : ''}${showContextInspector ? ' has-context-inspector' : ''}`}
     aria-label={tr('documentWorkspace')}
   >
     {#if showWorkspaceSidebar}
@@ -3683,6 +4218,420 @@
         </div>
       {/if}
     </div>
+
+    {#if showContextInspector}
+      <aside class="context-inspector" aria-label={tr('properties')}>
+        <header class="context-inspector-header">
+          <span>{tr('properties')}</span>
+          <h2>{contextInspectorTitle}</h2>
+        </header>
+
+        <section class="property-section" aria-label={tr('textFormatting')}>
+          <h3>{tr('textFormatting')}</h3>
+          <div class="property-button-row" role="group" aria-label={tr('textFormatting')}>
+            <button
+              aria-label={tr('bold')}
+              aria-pressed={activeFormatting.marks.bold}
+              class:active-format={activeFormatting.marks.bold}
+              class="format-button strong"
+              disabled={!editorEditable}
+              onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('bold', tr('bold')))}
+              onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('bold', tr('bold')))}
+              title={shortcutTitle(tr('bold'), 'bold')}
+              type="button"
+              onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('bold', tr('bold')))}
+            >
+              B
+            </button>
+            <button
+              aria-label={tr('italic')}
+              aria-pressed={activeFormatting.marks.italic}
+              class:active-format={activeFormatting.marks.italic}
+              class="format-button italic"
+              disabled={!editorEditable}
+              onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('italic', tr('italic')))}
+              onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('italic', tr('italic')))}
+              title={shortcutTitle(tr('italic'), 'italic')}
+              type="button"
+              onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('italic', tr('italic')))}
+            >
+              I
+            </button>
+            <button
+              aria-label={tr('underline')}
+              aria-pressed={activeFormatting.marks.underline}
+              class:active-format={activeFormatting.marks.underline}
+              class="format-button underline"
+              disabled={!editorEditable}
+              onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('underline', tr('underline')))}
+              onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('underline', tr('underline')))}
+              title={shortcutTitle(tr('underline'), 'underline')}
+              type="button"
+              onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('underline', tr('underline')))}
+            >
+              U
+            </button>
+            <button
+              aria-label={tr('strikethrough')}
+              aria-pressed={activeFormatting.marks.strikethrough}
+              class:active-format={activeFormatting.marks.strikethrough}
+              class="format-button strike"
+              disabled={!editorEditable}
+              onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
+              onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
+              title={tr('strikethrough')}
+              type="button"
+              onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('strikethrough', tr('strikethrough')))}
+            >
+              S
+            </button>
+            <button
+              aria-label={tr('superscript')}
+              aria-pressed={activeFormatting.marks.superscript}
+              class:active-format={activeFormatting.marks.superscript}
+              class="format-button script"
+              disabled={!editorEditable}
+              onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
+              onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
+              title={tr('superscript')}
+              type="button"
+              onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('superscript', tr('superscript')))}
+            >
+              x<sup>2</sup>
+            </button>
+            <button
+              aria-label={tr('subscript')}
+              aria-pressed={activeFormatting.marks.subscript}
+              class:active-format={activeFormatting.marks.subscript}
+              class="format-button script"
+              disabled={!editorEditable}
+              onpointerdown={(event) => runToolbarPointerCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
+              onmousedown={(event) => runToolbarMouseCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
+              title={tr('subscript')}
+              type="button"
+              onclick={(event) => runToolbarKeyboardCommand(event, () => applyInlineMark('subscript', tr('subscript')))}
+            >
+              x<sub>2</sub>
+            </button>
+          </div>
+
+          <div class="property-grid">
+            <label>
+              {tr('styles')}
+              <select
+                aria-label={tr('styles')}
+                disabled={!editorEditable}
+                bind:value={selectedStyleId}
+                onpointerdown={() => captureToolbarSelection(true)}
+                onchange={(event) => applyParagraphStyle(event.currentTarget.value)}
+              >
+                {#each paragraphStyles as style}
+                  <option value={style.id}>{style.label}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              {tr('fontFamily')}
+              <select
+                aria-label={tr('fontFamily')}
+                disabled={!editorEditable}
+                bind:value={selectedFontFamily}
+                onpointerdown={() => captureToolbarSelection(true)}
+                onchange={(event) => applyTextStyle({ fontFamily: event.currentTarget.value }, tr('fontFamily'))}
+              >
+                {#each fontFamilies as font}
+                  <option value={font.id}>{font.label}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              {tr('fontSize')}
+              <select
+                aria-label={tr('fontSize')}
+                disabled={!editorEditable}
+                bind:value={selectedFontSize}
+                onpointerdown={() => captureToolbarSelection(true)}
+                onchange={(event) => applyTextStyle({ fontSizePt: Number(event.currentTarget.value) }, tr('fontSize'))}
+              >
+                {#each fontSizes as size}
+                  <option value={size}>{size} pt</option>
+                {/each}
+              </select>
+            </label>
+            <label class="property-color-field">
+              {tr('textColor')}
+              <input
+                aria-label={tr('textColor')}
+                disabled={!editorEditable}
+                bind:value={selectedTextColor}
+                onpointerdown={() => captureToolbarSelection(true)}
+                onchange={(event) => applyTextStyle({ textColor: event.currentTarget.value }, tr('textColor'))}
+                type="color"
+              />
+            </label>
+            <label class="property-color-field">
+              {tr('highlightColor')}
+              <input
+                aria-label={tr('highlightColor')}
+                disabled={!editorEditable}
+                bind:value={selectedHighlightColor}
+                onpointerdown={() => captureToolbarSelection(true)}
+                onchange={(event) => applyTextStyle({ highlightColor: event.currentTarget.value }, tr('highlightColor'))}
+                type="color"
+              />
+            </label>
+          </div>
+        </section>
+
+        <section class="property-section" aria-label={tr('paragraphControls')}>
+          <h3>{tr('paragraphControls')}</h3>
+          <div class="property-button-row" role="group" aria-label={tr('blockFormatting')}>
+            <button disabled={!editorEditable} type="button" onclick={() => runToolbarCommand(applyParagraph)}>
+              {tr('paragraph')}
+            </button>
+            <button disabled={!editorEditable} type="button" onclick={() => runToolbarCommand(() => applyHeading(1))}>
+              {tr('heading1')}
+            </button>
+            <button disabled={!editorEditable} type="button" onclick={() => runToolbarCommand(() => applyHeading(2))}>
+              {tr('heading2')}
+            </button>
+            <button disabled={!editorEditable} type="button" onclick={() => runToolbarCommand(() => applyHeading(3))}>
+              {tr('heading3')}
+            </button>
+          </div>
+          <div class="property-button-row" role="group" aria-label={tr('paragraphControls')}>
+            <button
+              aria-pressed={activeFormatting.paragraphFormat.align === 'left'}
+              class:active-format={activeFormatting.paragraphFormat.align === 'left'}
+              disabled={!editorEditable}
+              title={tr('alignLeft')}
+              type="button"
+              onclick={() => runToolbarCommand(() => applyParagraphFormat({ align: 'left' }, tr('alignLeft')))}
+            >
+              L
+            </button>
+            <button
+              aria-pressed={activeFormatting.paragraphFormat.align === 'center'}
+              class:active-format={activeFormatting.paragraphFormat.align === 'center'}
+              disabled={!editorEditable}
+              title={tr('alignCenter')}
+              type="button"
+              onclick={() => runToolbarCommand(() => applyParagraphFormat({ align: 'center' }, tr('alignCenter')))}
+            >
+              C
+            </button>
+            <button
+              aria-pressed={activeFormatting.paragraphFormat.align === 'right'}
+              class:active-format={activeFormatting.paragraphFormat.align === 'right'}
+              disabled={!editorEditable}
+              title={tr('alignRight')}
+              type="button"
+              onclick={() => runToolbarCommand(() => applyParagraphFormat({ align: 'right' }, tr('alignRight')))}
+            >
+              R
+            </button>
+            <button
+              aria-pressed={activeFormatting.paragraphFormat.align === 'justify'}
+              class:active-format={activeFormatting.paragraphFormat.align === 'justify'}
+              disabled={!editorEditable}
+              title={tr('alignJustify')}
+              type="button"
+              onclick={() => runToolbarCommand(() => applyParagraphFormat({ align: 'justify' }, tr('alignJustify')))}
+            >
+              J
+            </button>
+          </div>
+          <div class="property-grid">
+            <label>
+              {tr('lineSpacing')}
+              <select
+                aria-label={tr('lineSpacing')}
+                disabled={!editorEditable}
+                bind:value={selectedLineSpacing}
+                onpointerdown={() => captureToolbarSelection(true)}
+                onchange={(event) => applyParagraphFormat({ lineSpacing: Number(event.currentTarget.value) }, tr('lineSpacing'))}
+              >
+                {#each lineSpacings as lineSpacing}
+                  <option value={lineSpacing.id}>{lineSpacing.label}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              {tr('before')}
+              <input
+                disabled={!editorEditable}
+                min="0"
+                max="50"
+                type="number"
+                value={spacingBefore}
+                onpointerdown={() => captureToolbarSelection(true)}
+                onchange={(event) => setSpacingField('spacingBefore', event.currentTarget.valueAsNumber)}
+              />
+            </label>
+            <label>
+              {tr('after')}
+              <input
+                disabled={!editorEditable}
+                min="0"
+                max="50"
+                type="number"
+                value={spacingAfter}
+                onpointerdown={() => captureToolbarSelection(true)}
+                onchange={(event) => setSpacingField('spacingAfter', event.currentTarget.valueAsNumber)}
+              />
+            </label>
+            <label>
+              {tr('firstLine')}
+              <input
+                disabled={!editorEditable}
+                min="-50"
+                max="50"
+                type="number"
+                value={firstLineIndent}
+                onpointerdown={() => captureToolbarSelection(true)}
+                onchange={(event) => setSpacingField('firstLineIndent', event.currentTarget.valueAsNumber)}
+              />
+            </label>
+          </div>
+        </section>
+
+        {#if activeFormatting.table}
+          <section class="property-section" aria-label={tr('tables')}>
+            <h3>{tr('tables')}</h3>
+            <div class="property-grid">
+              <label>
+                {tr('tableColumnWidth')}
+                <input
+                  disabled={!editorEditable || activeFormatting.table.columns <= 1}
+                  min={activeFormatting.table.column.minPercent}
+                  max={activeFormatting.table.column.maxPercent}
+                  step="1"
+                  type="range"
+                  bind:value={tableColumnWidthPercent}
+                  onpointerdown={() => captureToolbarSelection(true)}
+                  onchange={(event) => setTableColumnWidth(Number(event.currentTarget.value))}
+                />
+              </label>
+              <label>
+                {tr('tableCellBackground')}
+                <select
+                  aria-label={tr('tableCellBackground')}
+                  disabled={!editorEditable}
+                  bind:value={tableCellBackground}
+                  onpointerdown={() => captureToolbarSelection(true)}
+                  onchange={(event) => setTableCellBackground(event.currentTarget.value)}
+                >
+                  {#each tableCellBackgrounds as background}
+                    <option value={background.id}>{tr(background.labelKey)}</option>
+                  {/each}
+                </select>
+              </label>
+              <label>
+                {tr('tableCellAlignment')}
+                <select
+                  aria-label={tr('tableCellAlignment')}
+                  disabled={!editorEditable}
+                  bind:value={tableCellAlignment}
+                  onpointerdown={() => captureToolbarSelection(true)}
+                  onchange={(event) => setTableCellAlignment(event.currentTarget.value)}
+                >
+                  {#each tableCellAlignments as alignment}
+                    <option value={alignment.id}>{tr(alignment.labelKey)}</option>
+                  {/each}
+                </select>
+              </label>
+              <label>
+                {tr('tableCellBorder')}
+                <select
+                  aria-label={tr('tableCellBorder')}
+                  disabled={!editorEditable}
+                  bind:value={tableCellBorder}
+                  onpointerdown={() => captureToolbarSelection(true)}
+                  onchange={(event) => setTableCellBorder(event.currentTarget.value)}
+                >
+                  <option value="visible">{tr('tableCellBorderVisible')}</option>
+                  <option value="hidden">{tr('tableCellBorderHidden')}</option>
+                </select>
+              </label>
+            </div>
+          </section>
+        {/if}
+
+        {#if activeFormatting.image}
+          <section class="property-section" aria-label={tr('imageControls')}>
+            <h3>{tr('imageControls')}</h3>
+            <div class="property-grid">
+              <label>
+                {tr('imageAltText')}
+                <input
+                  disabled={!editorEditable}
+                  bind:value={imageAltText}
+                  onpointerdown={() => captureToolbarSelection(true)}
+                  onchange={() => applyImageAttrs({ altText: imageAltText })}
+                  type="text"
+                />
+              </label>
+              <label>
+                {tr('imageCaption')}
+                <input
+                  disabled={!editorEditable}
+                  bind:value={imageCaption}
+                  onpointerdown={() => captureToolbarSelection(true)}
+                  onchange={() => applyImageAttrs({ caption: imageCaption })}
+                  type="text"
+                />
+              </label>
+              <label>
+                {tr('imageAlignment')}
+                <select
+                  aria-label={tr('imageAlignment')}
+                  disabled={!editorEditable}
+                  bind:value={imageAlignment}
+                  onpointerdown={() => captureToolbarSelection(true)}
+                  onchange={(event) => setImageAlignment(event.currentTarget.value)}
+                >
+                  {#each imageAlignments as alignment}
+                    <option value={alignment.id}>{alignment.label}</option>
+                  {/each}
+                </select>
+              </label>
+              <label>
+                {tr('imageScale')}
+                <input
+                  disabled={!editorEditable}
+                  min="25"
+                  max="200"
+                  step="5"
+                  type="range"
+                  bind:value={imageScalePercent}
+                  onpointerdown={() => captureToolbarSelection(true)}
+                  onchange={(event) => setImageScale(Number(event.currentTarget.value))}
+                />
+              </label>
+            </div>
+          </section>
+        {/if}
+
+        <section class="property-section" aria-label={tr('documentFormat')}>
+          <h3>{tr('documentFormat')}</h3>
+          <dl class="property-metrics">
+            <div>
+              <dt>{tr('pageSize')}</dt>
+              <dd>{pageFormats.find((format) => format.id === currentPageFormatId())?.label ?? tr('custom')}</dd>
+            </div>
+            <div>
+              <dt>{tr('words')}</dt>
+              <dd>{expandedStats.wordCount}</dd>
+            </div>
+            <div>
+              <dt>{tr('estimatedPages')}</dt>
+              <dd>{expandedStats.estimatedPageCount}</dd>
+            </div>
+          </dl>
+          <button type="button" onclick={() => selectView('settings')}>{tr('settings')}</button>
+        </section>
+      </aside>
+    {/if}
 
     <div
       aria-label={tr('settings')}

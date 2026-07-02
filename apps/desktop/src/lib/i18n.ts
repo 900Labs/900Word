@@ -112,6 +112,7 @@ export type UiStringKey =
   | 'discard'
   | 'deletion'
   | 'draftView'
+  | 'edit'
   | 'editor'
   | 'editorReadOnly'
   | 'editingToolbar'
@@ -145,6 +146,7 @@ export type UiStringKey =
   | 'footer'
   | 'footerFields'
   | 'footnotes'
+  | 'format'
   | 'formattingCleared'
   | 'addToDictionary'
   | 'firstFooter'
@@ -159,10 +161,12 @@ export type UiStringKey =
   | 'headingApplied'
   | 'headingJumped'
   | 'headingUnchanged'
+  | 'help'
   | 'height'
   | 'headersFooters'
   | 'highContrast'
   | 'highlightColor'
+  | 'home'
   | 'html'
   | 'history'
   | 'increaseIndent'
@@ -186,6 +190,7 @@ export type UiStringKey =
   | 'inspectorSavedWithUnsavedChanges'
   | 'inspectorUnsaved'
   | 'insertion'
+  | 'insert'
   | 'insertImage'
   | 'insertFootnote'
   | 'insertEndnote'
@@ -198,6 +203,7 @@ export type UiStringKey =
   | 'italic'
   | 'language'
   | 'largeToolbar'
+  | 'layout'
   | 'left'
   | 'license'
   | 'lineSpacing'
@@ -284,6 +290,7 @@ export type UiStringKey =
   | 'print'
   | 'printFrame'
   | 'printPrepared'
+  | 'properties'
   | 'privacyWarnings'
   | 'projection'
   | 'recent'
@@ -302,11 +309,13 @@ export type UiStringKey =
   | 'rejectAll'
   | 'reducedMotion'
   | 'resolve'
+  | 'review'
   | 'reviewChanges'
   | 'removeBookmark'
   | 'removeBookmarkShort'
   | 'removeLink'
   | 'right'
+  | 'ribbonTabs'
   | 'rowsShort'
   | 'readingMinutes'
   | 'readingTime'
@@ -389,6 +398,7 @@ export type UiStringKey =
   | 'textFormatting'
   | 'textColor'
   | 'top'
+  | 'tools'
   | 'txt'
   | 'uiLocale'
   | 'underline'
@@ -402,6 +412,7 @@ export type UiStringKey =
   | 'useTemplate'
   | 'userDictionarySuffix'
   | 'version'
+  | 'view'
   | 'viewMode'
   | 'width'
   | 'words'
@@ -533,6 +544,7 @@ const english: UiStrings = {
   discard: 'Discard',
   deletion: 'Deletion',
   draftView: 'Draft',
+  edit: 'Edit',
   editor: 'Editor',
   editorReadOnly: 'Editor is read-only',
   editingToolbar: 'Editing toolbar',
@@ -566,6 +578,7 @@ const english: UiStrings = {
   footer: 'Footer',
   footerFields: 'Footer fields',
   footnotes: 'Footnotes',
+  format: 'Format',
   formattingCleared: 'Formatting cleared',
   addToDictionary: 'Add',
   firstFooter: 'First-page footer',
@@ -580,10 +593,12 @@ const english: UiStrings = {
   headingApplied: 'Heading {level} applied',
   headingJumped: 'Jumped to {heading}',
   headingUnchanged: 'Heading {level} unchanged',
+  help: 'Help',
   height: 'Height',
   headersFooters: 'Headers and footers',
   highContrast: 'High contrast',
   highlightColor: 'Highlight color',
+  home: 'Home',
   html: 'HTML',
   history: 'History',
   increaseIndent: 'Increase indent',
@@ -607,6 +622,7 @@ const english: UiStrings = {
   inspectorSavedWithUnsavedChanges: 'Saved with unsaved changes',
   inspectorUnsaved: 'Unsaved',
   insertion: 'Insertion',
+  insert: 'Insert',
   insertFootnote: 'Footnote',
   insertEndnote: 'Endnote',
   insertImage: 'Insert image',
@@ -619,6 +635,7 @@ const english: UiStrings = {
   italic: 'Italic',
   language: 'Language',
   largeToolbar: 'Large toolbar and controls',
+  layout: 'Layout',
   left: 'Left',
   license: 'License',
   lineSpacing: 'Line spacing',
@@ -705,6 +722,7 @@ const english: UiStrings = {
   print: 'Print',
   printFrame: 'Print document',
   printPrepared: 'Print view prepared',
+  properties: 'Properties',
   privacyWarnings: 'Privacy warnings',
   projection: 'Projection',
   recent: 'Recent',
@@ -723,6 +741,7 @@ const english: UiStrings = {
   rejectAll: 'Reject all',
   reducedMotion: 'Reduced motion',
   resolve: 'Resolve',
+  review: 'Review',
   reviewChanges: 'Review changes',
   removeBookmark: 'Remove bookmark',
   removeBookmarkShort: 'No mark',
@@ -730,6 +749,7 @@ const english: UiStrings = {
   readingMinutes: '{count} min',
   readingTime: 'Reading time',
   right: 'Right',
+  ribbonTabs: 'Toolbar tabs',
   rowsShort: 'R',
   save: 'Save',
   saveAs: 'Save As...',
@@ -810,6 +830,7 @@ const english: UiStrings = {
   textFormatting: 'Text formatting',
   textColor: 'Text color',
   top: 'Top',
+  tools: 'Tools',
   txt: 'TXT',
   uiLocale: 'UI language',
   underline: 'Underline',
@@ -823,6 +844,7 @@ const english: UiStrings = {
   useTemplate: 'Use Template',
   userDictionarySuffix: 'user',
   version: 'Version',
+  view: 'View',
   viewMode: 'View mode',
   width: 'Width',
   words: 'Words',
@@ -894,6 +916,7 @@ const spanish: Partial<UiStrings> = {
   documentSavedAs: 'Documento guardado como',
   dirty: 'Cambios',
   discard: 'Descartar',
+  edit: 'Editar',
   editor: 'Editor',
   editorReadOnly: 'El editor es de solo lectura',
   editingToolbar: 'Barra de edicion',
@@ -911,8 +934,11 @@ const spanish: Partial<UiStrings> = {
   file: 'Archivo',
   find: 'Buscar',
   findAndReplace: 'Buscar y reemplazar',
+  format: 'Formato',
   height: 'Alto',
+  help: 'Ayuda',
   highContrast: 'Alto contraste',
+  home: 'Inicio',
   html: 'HTML',
   imageAlignment: 'Alineacion de imagen',
   imageAltText: 'Texto alternativo',
@@ -922,11 +948,13 @@ const spanish: Partial<UiStrings> = {
   imageTooLarge: 'La imagen es demasiado grande. Comprímala o cambie su tamaño antes de insertarla.',
   imageScale: 'Escala',
   imageUpdated: 'Imagen actualizada',
+  insert: 'Insertar',
   insertImage: 'Insertar imagen',
   installedDictionaries: 'Diccionarios instalados',
   italic: 'Cursiva',
   language: 'Idioma',
   largeToolbar: 'Barra y controles grandes',
+  layout: 'Diseno',
   left: 'Izquierda',
   license: 'Licencia',
   lowResourceMode: 'Modo de bajo consumo',
@@ -956,6 +984,7 @@ const spanish: Partial<UiStrings> = {
   pdfPageRangeTo: 'Hasta pagina',
   print: 'Imprimir',
   printPrepared: 'Vista de impresion preparada',
+  properties: 'Propiedades',
   recent: 'Recientes',
   recovery: 'Recuperacion',
   recoveryDiscarded: 'Borrador de recuperacion descartado',
@@ -963,7 +992,9 @@ const spanish: Partial<UiStrings> = {
   redo: 'Rehacer',
   reducedMotion: 'Movimiento reducido',
   replace: 'Reemplazar',
+  review: 'Revision',
   right: 'Derecha',
+  ribbonTabs: 'Pestanas de barra',
   save: 'Guardar',
   saveAs: 'Guardar como...',
   saveSettings: 'Guardar ajustes',
@@ -998,6 +1029,7 @@ const spanish: Partial<UiStrings> = {
   templateSaveFailed: 'No se pudo guardar la plantilla',
   templates: 'Plantillas',
   top: 'Superior',
+  tools: 'Herramientas',
   txt: 'TXT',
   uiLocale: 'Idioma de interfaz',
   underline: 'Subrayado',
@@ -1005,6 +1037,7 @@ const spanish: Partial<UiStrings> = {
   useTemplate: 'Usar plantilla',
   userDictionarySuffix: 'usuario',
   version: 'Version',
+  view: 'Vista',
   width: 'Ancho',
   words: 'Palabras',
   workspaceViews: 'Vistas del espacio de trabajo',
