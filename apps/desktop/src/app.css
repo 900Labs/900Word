@@ -1702,6 +1702,62 @@ select:focus-visible {
   justify-self: start;
 }
 
+.review-dashboard {
+  margin: 0 0 0.85rem;
+}
+
+.review-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.42rem;
+}
+
+.review-summary-grid button {
+  min-width: 0;
+  min-height: 78px;
+  display: grid;
+  align-content: start;
+  gap: 0.18rem;
+  padding: 0.52rem 0.46rem;
+  border: 1px solid #ccd5d2;
+  border-radius: 7px;
+  background: #f7f8f7;
+  color: #26313b;
+  text-align: left;
+  box-shadow: none;
+}
+
+.review-summary-grid button:hover:not(:disabled),
+.review-summary-grid button.active-review-summary {
+  border-color: #0f6b5f;
+  background: #eef8f6;
+  box-shadow: inset 0 0 0 1px rgba(15, 107, 95, 0.12);
+}
+
+.review-summary-grid span {
+  overflow: hidden;
+  color: #59636d;
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.review-summary-grid strong {
+  color: #17212b;
+  font-size: 1.2rem;
+  line-height: 1.05;
+}
+
+.review-summary-grid small {
+  overflow-wrap: anywhere;
+  color: #69737d;
+  font-size: 0.68rem;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
 .privacy-note {
   margin: 0.15rem 0 0.65rem;
   padding: 0.48rem 0.55rem;
@@ -1710,6 +1766,52 @@ select:focus-visible {
   background: #fff8dd;
   color: #5e4a09 !important;
   line-height: 1.35;
+}
+
+.review-filter-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.28rem;
+  margin: 0 0 0.48rem;
+  padding: 0.2rem;
+  border: 1px solid #ccd5d2;
+  border-radius: 7px;
+  background: #eef1ef;
+}
+
+.review-filter-row button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 0.24rem 0.3rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #4b5560;
+  font-size: 0.72rem;
+  font-weight: 820;
+  box-shadow: none;
+}
+
+.review-filter-row button:hover:not(:disabled),
+.review-filter-row button.active-filter {
+  background: #ffffff;
+  color: #14202a;
+  box-shadow: 0 1px 3px rgba(23, 33, 43, 0.1);
+}
+
+.review-navigator {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+}
+
+.review-navigator button {
+  min-width: 0;
+  min-height: 31px;
+  padding: 0.28rem 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 790;
 }
 
 .review-bulk-actions {
@@ -1751,6 +1853,11 @@ select:focus-visible {
 
 .changes-list li.review-deletion {
   border-left: 4px solid #a23b28;
+}
+
+.changes-list li.active-change {
+  border-color: #0f6b5f;
+  box-shadow: inset 0 0 0 1px rgba(15, 107, 95, 0.18);
 }
 
 .change-jump {

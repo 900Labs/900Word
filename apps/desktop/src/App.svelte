@@ -352,6 +352,9 @@
   let newCommentBody = $state('');
   let selectedCommentText = $state('');
   let activeCommentId = $state<string | null>(null);
+  let activeTrackedChangeId = $state<string | null>(null);
+  let commentFilter = $state<'all' | 'unresolved' | 'resolved'>('unresolved');
+  let reviewChangeFilter = $state<'all' | 'insertions' | 'deletions'>('all');
   let activeMenu = $state<MainMenuId | null>(null);
   let exportMenuOpen = $state(false);
   let navigatorHeadings = $state<DocumentOutlineEntry[]>([]);
@@ -395,6 +398,28 @@
   let trackChangesRecording = $derived(Boolean(documentState?.track_changes?.recording));
   let unresolvedCommentCount = $derived(commentThreads.filter((comment) => !comment.resolved).length);
   let trackedChangeCount = $derived(trackedChanges.length);
+  let filteredCommentThreads = $derived(
+    commentThreads.filter((comment) => {
+      if (commentFilter === 'resolved') {
+        return comment.resolved;
+      }
+      if (commentFilter === 'unresolved') {
+        return !comment.resolved;
+      }
+      return true;
+    })
+  );
+  let filteredTrackedChanges = $derived(
+    trackedChanges.filter((change) => {
+      if (reviewChangeFilter === 'insertions') {
+        return change.kind === 'insertion';
+      }
+      if (reviewChangeFilter === 'deletions') {
+        return change.kind === 'deletion';
+      }
+      return true;
+    })
+  );
   let selectionWordCount = $derived(activeFormatting.selectionWordCount);
   let expandedStats = $derived<ExpandedDocumentStats>(
     buildExpandedDocumentStats({
@@ -1799,6 +1824,17 @@
     status = selectEditorCommentRange(view, comment.id) ? tr('commentSelected') : tr('noMatches');
   }
 
+  function navigateComment(delta: number) {
+    if (filteredCommentThreads.length === 0) {
+      status = tr('noComments');
+      return;
+    }
+    const currentIndex = filteredCommentThreads.findIndex((comment) => comment.id === activeCommentId);
+    const nextIndex =
+      currentIndex === -1 ? (delta < 0 ? filteredCommentThreads.length - 1 : 0) : wrapIndex(currentIndex + delta, filteredCommentThreads.length);
+    jumpToComment(filteredCommentThreads[nextIndex]);
+  }
+
   async function setTrackChangesRecording(enabled: boolean) {
     if (!documentState || !editorEditable) {
       status = tr('editorReadOnly');
@@ -1844,6 +1880,13 @@
     try {
       await waitForEditorSync();
       const document = await invoke<DocumentState>('apply_document_command', { command });
+      if (
+        command.type === 'accept_all_tracked_changes' ||
+        command.type === 'reject_all_tracked_changes' ||
+        ('id' in command && command.id === activeTrackedChangeId)
+      ) {
+        activeTrackedChangeId = null;
+      }
       await loadDocumentIntoEditor(document, nextStatus);
       await refreshFileState();
     } catch (error) {
@@ -1854,7 +1897,23 @@
   function jumpToTrackedChange(change: TrackedChangeSummary) {
     activeView = 'editor';
     reviewPanelOpen = true;
+    activeTrackedChangeId = change.id;
     status = selectEditorTrackedChangeRange(view, change.id) ? tr('trackedChangeSelected') : tr('noMatches');
+  }
+
+  function navigateTrackedChange(delta: number) {
+    if (filteredTrackedChanges.length === 0) {
+      status = tr('noTrackedChanges');
+      return;
+    }
+    const currentIndex = filteredTrackedChanges.findIndex((change) => change.id === activeTrackedChangeId);
+    const nextIndex =
+      currentIndex === -1 ? (delta < 0 ? filteredTrackedChanges.length - 1 : 0) : wrapIndex(currentIndex + delta, filteredTrackedChanges.length);
+    jumpToTrackedChange(filteredTrackedChanges[nextIndex]);
+  }
+
+  function wrapIndex(index: number, length: number) {
+    return ((index % length) + length) % length;
   }
 
   function trackedChangeTimestamp(change: TrackedChangeSummary) {
@@ -4086,13 +4145,81 @@
           </ul>
         {/if}
 
+        {#if reviewPanelOpen || commentsPanelOpen || notesPanelOpen}
+          <section class="review-dashboard" aria-label={tr('reviewSummary')}>
+            <div class="review-summary-grid">
+              <button
+                class:active-review-summary={reviewPanelOpen}
+                type="button"
+                onclick={() => (reviewPanelOpen = !reviewPanelOpen)}
+              >
+                <span>{tr('trackedChanges')}</span>
+                <strong>{trackedChangeCount}</strong>
+                <small>{trackChangesRecording ? tr('recording') : tr('notRecording')}</small>
+              </button>
+              <button
+                class:active-review-summary={commentsPanelOpen}
+                type="button"
+                onclick={() => (commentsPanelOpen = !commentsPanelOpen)}
+              >
+                <span>{tr('comments')}</span>
+                <strong>{unresolvedCommentCount}/{commentThreads.length}</strong>
+                <small>{tr('unresolvedComments')}</small>
+              </button>
+              <button
+                class:active-review-summary={notesPanelOpen}
+                type="button"
+                onclick={() => (notesPanelOpen = !notesPanelOpen)}
+              >
+                <span>{tr('notes')}</span>
+                <strong>{noteSummaries.length}</strong>
+                <small>{tr('footnotes')}</small>
+              </button>
+            </div>
+          </section>
+        {/if}
+
         {#if reviewPanelOpen}
           <section class="review-panel" aria-label={tr('reviewChanges')}>
             <div class="sidebar-section-heading">
               <h2>{tr('reviewChanges')}</h2>
-              <span>{trackedChangeCount}</span>
+              <span>{filteredTrackedChanges.length}/{trackedChangeCount}</span>
             </div>
             <p class="privacy-note">{tr('trackChangesPrivacyWarning')}</p>
+            <div class="review-filter-row" role="group" aria-label={tr('reviewChanges')}>
+              <button
+                aria-pressed={reviewChangeFilter === 'all'}
+                class:active-filter={reviewChangeFilter === 'all'}
+                type="button"
+                onclick={() => (reviewChangeFilter = 'all')}
+              >
+                {tr('all')}
+              </button>
+              <button
+                aria-pressed={reviewChangeFilter === 'insertions'}
+                class:active-filter={reviewChangeFilter === 'insertions'}
+                type="button"
+                onclick={() => (reviewChangeFilter = 'insertions')}
+              >
+                {tr('insertion')}
+              </button>
+              <button
+                aria-pressed={reviewChangeFilter === 'deletions'}
+                class:active-filter={reviewChangeFilter === 'deletions'}
+                type="button"
+                onclick={() => (reviewChangeFilter = 'deletions')}
+              >
+                {tr('deletion')}
+              </button>
+            </div>
+            <div class="review-navigator">
+              <button disabled={filteredTrackedChanges.length === 0} type="button" onclick={() => navigateTrackedChange(-1)}>
+                {tr('previousChange')}
+              </button>
+              <button disabled={filteredTrackedChanges.length === 0} type="button" onclick={() => navigateTrackedChange(1)}>
+                {tr('nextChange')}
+              </button>
+            </div>
             <div class="review-bulk-actions">
               <button disabled={!editorEditable || trackedChangeCount === 0} type="button" onclick={acceptAllTrackedChanges}>
                 {tr('acceptAll')}
@@ -4101,10 +4228,10 @@
                 {tr('rejectAll')}
               </button>
             </div>
-            {#if trackedChanges.length > 0}
+            {#if filteredTrackedChanges.length > 0}
               <ul class="changes-list">
-                {#each trackedChanges as change}
-                  <li class={`review-${change.kind}`}>
+                {#each filteredTrackedChanges as change}
+                  <li class={`review-${change.kind}`} class:active-change={activeTrackedChangeId === change.id}>
                     <button class="change-jump" type="button" onclick={() => jumpToTrackedChange(change)}>
                       <span class="change-kind">{change.kind === 'insertion' ? tr('insertion') : tr('deletion')}</span>
                       <span class="change-author">{change.author || localTrackedChangeAuthor}</span>
@@ -4130,7 +4257,41 @@
           <section class="comments-panel" aria-label={tr('comments')}>
             <div class="sidebar-section-heading">
               <h2>{tr('comments')}</h2>
-              <span>{unresolvedCommentCount}/{commentThreads.length}</span>
+              <span>{filteredCommentThreads.length}/{commentThreads.length}</span>
+            </div>
+            <div class="review-filter-row" role="group" aria-label={tr('comments')}>
+              <button
+                aria-pressed={commentFilter === 'unresolved'}
+                class:active-filter={commentFilter === 'unresolved'}
+                type="button"
+                onclick={() => (commentFilter = 'unresolved')}
+              >
+                {tr('unresolved')}
+              </button>
+              <button
+                aria-pressed={commentFilter === 'all'}
+                class:active-filter={commentFilter === 'all'}
+                type="button"
+                onclick={() => (commentFilter = 'all')}
+              >
+                {tr('all')}
+              </button>
+              <button
+                aria-pressed={commentFilter === 'resolved'}
+                class:active-filter={commentFilter === 'resolved'}
+                type="button"
+                onclick={() => (commentFilter = 'resolved')}
+              >
+                {tr('resolved')}
+              </button>
+            </div>
+            <div class="review-navigator">
+              <button disabled={filteredCommentThreads.length === 0} type="button" onclick={() => navigateComment(-1)}>
+                {tr('previousComment')}
+              </button>
+              <button disabled={filteredCommentThreads.length === 0} type="button" onclick={() => navigateComment(1)}>
+                {tr('nextComment')}
+              </button>
             </div>
             <div class="comment-add-box">
               <label>
@@ -4151,9 +4312,9 @@
                 {tr('addComment')}
               </button>
             </div>
-            {#if commentThreads.length > 0}
+            {#if filteredCommentThreads.length > 0}
               <ul class="comments-list">
-                {#each commentThreads as comment}
+                {#each filteredCommentThreads as comment}
                   <li class:resolved-comment={comment.resolved} class:active-comment={activeCommentId === comment.id}>
                     <button class="comment-jump" type="button" onclick={() => jumpToComment(comment)}>
                       <span class="comment-author">{comment.author || localCommentAuthor}</span>

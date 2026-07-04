@@ -228,6 +228,8 @@ export type UiStringKey =
   | 'new'
   | 'newFromTemplate'
   | 'next'
+  | 'nextChange'
+  | 'nextComment'
   | 'noIssues'
   | 'noMatches'
   | 'noSuggestions'
@@ -289,6 +291,8 @@ export type UiStringKey =
   | 'pdfPageRangeFrom'
   | 'pdfPageRangeTo'
   | 'previous'
+  | 'previousChange'
+  | 'previousComment'
   | 'print'
   | 'printFrame'
   | 'printPrepared'
@@ -311,8 +315,10 @@ export type UiStringKey =
   | 'rejectAll'
   | 'reducedMotion'
   | 'resolve'
+  | 'resolved'
   | 'review'
   | 'reviewChanges'
+  | 'reviewSummary'
   | 'removeBookmark'
   | 'removeBookmarkShort'
   | 'removeLink'
@@ -407,6 +413,7 @@ export type UiStringKey =
   | 'uiLocale'
   | 'underline'
   | 'unlink'
+  | 'unresolved'
   | 'unresolvedComments'
   | 'undo'
   | 'undoApplied'
@@ -664,6 +671,8 @@ const english: UiStrings = {
   new: 'New',
   newFromTemplate: 'New from template',
   next: 'Next',
+  nextChange: 'Next change',
+  nextComment: 'Next comment',
   no: 'No',
   noComments: 'No comments',
   noPrivacyWarnings: 'No privacy warnings.',
@@ -725,6 +734,8 @@ const english: UiStrings = {
   pdfPageRangeFrom: 'From page',
   pdfPageRangeTo: 'To page',
   previous: 'Prev',
+  previousChange: 'Previous change',
+  previousComment: 'Previous comment',
   print: 'Print',
   printFrame: 'Print document',
   printPrepared: 'Print view prepared',
@@ -747,8 +758,10 @@ const english: UiStrings = {
   rejectAll: 'Reject all',
   reducedMotion: 'Reduced motion',
   resolve: 'Resolve',
+  resolved: 'Resolved',
   review: 'Review',
   reviewChanges: 'Review changes',
+  reviewSummary: 'Review summary',
   removeBookmark: 'Remove bookmark',
   removeBookmarkShort: 'No mark',
   removeLink: 'Remove link',
@@ -843,6 +856,7 @@ const english: UiStrings = {
   uiLocale: 'UI language',
   underline: 'Underline',
   unlink: 'Unlink',
+  unresolved: 'Unresolved',
   unresolvedComments: 'Unresolved comments',
   undo: 'Undo',
   undoApplied: 'Undo applied',
@@ -969,6 +983,8 @@ const spanish: Partial<UiStrings> = {
   new: 'Nuevo',
   newFromTemplate: 'Nuevo desde plantilla',
   next: 'Siguiente',
+  nextChange: 'Cambio siguiente',
+  nextComment: 'Comentario siguiente',
   noIssues: 'Sin problemas.',
   noMatches: 'Sin coincidencias',
   noRecentDocuments: 'No hay documentos recientes',
@@ -992,6 +1008,8 @@ const spanish: Partial<UiStrings> = {
   pdfPageRange: 'Paginas PDF',
   pdfPageRangeFrom: 'Desde pagina',
   pdfPageRangeTo: 'Hasta pagina',
+  previousChange: 'Cambio anterior',
+  previousComment: 'Comentario anterior',
   print: 'Imprimir',
   printPrepared: 'Vista de impresion preparada',
   properties: 'Propiedades',
@@ -1002,7 +1020,9 @@ const spanish: Partial<UiStrings> = {
   redo: 'Rehacer',
   reducedMotion: 'Movimiento reducido',
   replace: 'Reemplazar',
+  resolved: 'Resuelto',
   review: 'Revision',
+  reviewSummary: 'Resumen de revision',
   right: 'Derecha',
   ribbonTabs: 'Pestanas de barra',
   save: 'Guardar',
@@ -1046,6 +1066,7 @@ const spanish: Partial<UiStrings> = {
   uiLocale: 'Idioma de interfaz',
   underline: 'Subrayado',
   undo: 'Deshacer',
+  unresolved: 'Sin resolver',
   useTemplate: 'Usar plantilla',
   userDictionarySuffix: 'usuario',
   version: 'Version',
