@@ -69,6 +69,7 @@
     pageRegionTextToBlocks,
     pageRegionToText,
     trackedChangesInDocument,
+    type Block,
     type DocumentStyle,
     type DocumentCommand,
     type DocumentState,
@@ -355,6 +356,7 @@
     x: number;
     y: number;
   } | null>(null);
+  let objectsPanelOpen = $state(false);
   let layoutPanelOpen = $state(false);
   let spellingPanelOpen = $state(false);
   let activeSpellIssueKey = $state<string | null>(null);
@@ -484,6 +486,10 @@
     h2: navigatorHeadings.filter((heading) => heading.level === 2).length,
     h3: navigatorHeadings.filter((heading) => heading.level === 3).length
   });
+  let tableCount = $derived(countDocumentTables(documentState));
+  let selectedObjectLabel = $derived(
+    activeFormatting.image ? tr('imageControls') : activeFormatting.table ? tr('tables') : tr('noObjectSelected')
+  );
   let activeSpellIssue = $derived<EditorSpellIssueRange | undefined>(
     spellIssueRanges.find((issue) => spellInstanceKey(issue) === activeSpellIssueKey) ?? spellIssueRanges[0]
   );
@@ -500,6 +506,7 @@
     commentsPanelOpen ||
     notesPanelOpen ||
     reviewPanelOpen ||
+      objectsPanelOpen ||
       layoutPanelOpen ||
       spellingPanelOpen ||
       showAutomaticSidebarContent ||
@@ -2241,6 +2248,13 @@
     editorViewMode = mode;
   }
 
+  function toggleObjectsPanel() {
+    objectsPanelOpen = !objectsPanelOpen;
+    if (objectsPanelOpen) {
+      activeView = 'editor';
+    }
+  }
+
   function toggleLayoutPanel() {
     layoutPanelOpen = !layoutPanelOpen;
     if (layoutPanelOpen) {
@@ -2461,6 +2475,35 @@
 
   function pageMarginSummaryLabel() {
     return `${pageSetup.margin_top_mm}/${pageSetup.margin_right_mm}/${pageSetup.margin_bottom_mm}/${pageSetup.margin_left_mm} mm`;
+  }
+
+  function countDocumentTables(document: DocumentState | undefined) {
+    return document?.sections.reduce((total, section) => total + countTableBlocks(section.blocks), 0) ?? 0;
+  }
+
+  function countTableBlocks(blocks: Block[]): number {
+    return blocks.reduce((total, block) => {
+      if (block.type === 'Table' && isTableBlockValue(block.value)) {
+        return (
+          total +
+          1 +
+          block.value.rows.reduce(
+            (rowTotal, row) => rowTotal + row.cells.reduce((cellTotal, cell) => cellTotal + countTableBlocks(cell.blocks), 0),
+            0
+          )
+        );
+      }
+      return total;
+    }, 0);
+  }
+
+  function isTableBlockValue(value: unknown): value is { rows: Array<{ cells: Array<{ blocks: Block[] }> }> } {
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      'rows' in value &&
+      Array.isArray(value.rows)
+    );
   }
 
   function sortedCommentThreads(document: DocumentState | undefined): CommentThread[] {
@@ -2935,6 +2978,15 @@
             </button>
             <button
               class="menu-command"
+              type="button"
+              onclick={() => runFileMenuAction(toggleObjectsPanel)}
+            >
+              <span class="menu-glyph glyph-table" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('objectsWorkspace')}</span></span>
+              <span class="menu-shortcut">{tableCount + expandedStats.imageCount}</span>
+            </button>
+            <button
+              class="menu-command"
               disabled={!editorEditable}
               title={tr('tableOfContents')}
               type="button"
@@ -3140,6 +3192,11 @@
             <button class="menu-command" disabled={!editorEditable} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(insertTable))}>
               <span class="menu-glyph glyph-table" aria-hidden="true"></span>
               <span class="menu-command-main"><span class="menu-command-label">{tr('insertTable')}</span></span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(toggleObjectsPanel)}>
+              <span class="menu-glyph glyph-table" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('objectsWorkspace')}</span></span>
+              <span class="menu-shortcut">{activeFormatting.table ? tr('selectedTable') : tableCount}</span>
             </button>
             <div class="menu-separator" role="separator"></div>
             <button class="menu-command" disabled={!editorEditable || !activeFormatting.table?.canAddRow} type="button" onclick={() => runFileMenuAction(() => runToolbarCommand(() => editTable('add_row_above')))}>
@@ -4076,6 +4133,16 @@
         {tr('insertTableShort')}
       </button>
       <button
+        class="table-insert-button"
+        aria-expanded={objectsPanelOpen}
+        class:active-format={objectsPanelOpen}
+        title={tr('objectsWorkspace')}
+        type="button"
+        onclick={toggleObjectsPanel}
+      >
+        {tr('objects')}
+      </button>
+      <button
         disabled={!editorEditable || !activeFormatting.table?.canAddRow}
         title={tr('addRowAbove')}
         type="button"
@@ -4528,6 +4595,246 @@
                 </ul>
               {:else}
                 <p class="empty-sidebar-note">{tr('noHeadings')}</p>
+              {/if}
+            </section>
+          </section>
+        {/if}
+
+        {#if objectsPanelOpen}
+          <section class="objects-panel" aria-label={tr('objectsWorkspace')}>
+            <div class="sidebar-section-heading">
+              <h2>{tr('objectsWorkspace')}</h2>
+              <span>{selectedObjectLabel}</span>
+            </div>
+            <div class="object-summary-grid">
+              <div>
+                <span>{tr('activeObject')}</span>
+                <strong>{selectedObjectLabel}</strong>
+              </div>
+              <div>
+                <span>{tr('tables')}</span>
+                <strong>{tableCount}</strong>
+              </div>
+              <div>
+                <span>{tr('images')}</span>
+                <strong>{expandedStats.imageCount}</strong>
+              </div>
+            </div>
+
+            <section class="object-card" aria-label={tr('insert')}>
+              <div class="object-card-heading">
+                <h3>{tr('insert')}</h3>
+              </div>
+              <div class="object-insert-grid">
+                <label>
+                  {tr('tableRows')}
+                  <select
+                    aria-label={tr('tableRows')}
+                    disabled={!editorEditable}
+                    bind:value={tableRows}
+                    onpointerdown={() => captureToolbarSelection(true)}
+                  >
+                    {#each tableDimensions as size}
+                      <option value={size}>{size}</option>
+                    {/each}
+                  </select>
+                </label>
+                <label>
+                  {tr('tableColumns')}
+                  <select
+                    aria-label={tr('tableColumns')}
+                    disabled={!editorEditable}
+                    bind:value={tableColumns}
+                    onpointerdown={() => captureToolbarSelection(true)}
+                  >
+                    {#each tableDimensions as size}
+                      <option value={size}>{size}</option>
+                    {/each}
+                  </select>
+                </label>
+                <button disabled={!editorEditable} type="button" onclick={insertTable}>{tr('insertTable')}</button>
+                <button disabled={!editorEditable} type="button" onclick={insertImageWithDialog}>{tr('insertImage')}</button>
+              </div>
+            </section>
+
+            <section class="object-card" aria-label={tr('selectedTable')}>
+              <div class="object-card-heading">
+                <h3>{tr('selectedTable')}</h3>
+                {#if activeFormatting.table}
+                  <span>{activeFormatting.table.rows} x {activeFormatting.table.columns}</span>
+                {/if}
+              </div>
+              {#if activeFormatting.table}
+                <div class="object-action-grid">
+                  <button disabled={!editorEditable || !activeFormatting.table.canAddRow} type="button" onclick={() => editTable('add_row_above')}>
+                    {tr('addRowAbove')}
+                  </button>
+                  <button disabled={!editorEditable || !activeFormatting.table.canAddRow} type="button" onclick={() => editTable('add_row_below')}>
+                    {tr('addRowBelow')}
+                  </button>
+                  <button disabled={!editorEditable || !activeFormatting.table.canAddColumn} type="button" onclick={() => editTable('add_column_left')}>
+                    {tr('addColumnLeft')}
+                  </button>
+                  <button disabled={!editorEditable || !activeFormatting.table.canAddColumn} type="button" onclick={() => editTable('add_column_right')}>
+                    {tr('addColumnRight')}
+                  </button>
+                  <button disabled={!editorEditable || !activeFormatting.table.canDeleteRow} type="button" onclick={() => editTable('delete_row')}>
+                    {tr('deleteRow')}
+                  </button>
+                  <button disabled={!editorEditable || !activeFormatting.table.canDeleteColumn} type="button" onclick={() => editTable('delete_column')}>
+                    {tr('deleteColumn')}
+                  </button>
+                </div>
+                <button class="object-danger-button" disabled={!editorEditable || !activeFormatting.table.canDeleteTable} type="button" onclick={() => editTable('delete_table')}>
+                  {tr('deleteTable')}
+                </button>
+                <label class="object-range-field">
+                  <span>{tr('tableColumnWidth')}</span>
+                  <input
+                    disabled={!editorEditable || activeFormatting.table.columns <= 1}
+                    min={activeFormatting.table.column.minPercent}
+                    max={activeFormatting.table.column.maxPercent}
+                    step="1"
+                    type="range"
+                    bind:value={tableColumnWidthPercent}
+                    onpointerdown={() => captureToolbarSelection(true)}
+                    onchange={(event) => setTableColumnWidth(Number(event.currentTarget.value))}
+                  />
+                  <input
+                    disabled={!editorEditable || activeFormatting.table.columns <= 1}
+                    min={activeFormatting.table.column.minPercent}
+                    max={activeFormatting.table.column.maxPercent}
+                    step="1"
+                    type="number"
+                    bind:value={tableColumnWidthPercent}
+                    onpointerdown={() => captureToolbarSelection(true)}
+                    onchange={(event) => setTableColumnWidth(Number(event.currentTarget.value))}
+                  />
+                </label>
+                <div class="object-field-group">
+                  <span>{tr('tableCellBackground')}</span>
+                  <div class="object-swatch-row" role="group" aria-label={tr('tableCellBackground')}>
+                    {#each tableCellBackgrounds as background}
+                      <button
+                        aria-label={tr(background.labelKey)}
+                        aria-pressed={tableCellBackground === background.id}
+                        class:active-swatch={tableCellBackground === background.id}
+                        type="button"
+                        onclick={() => setTableCellBackground(background.id)}
+                      >
+                        <span
+                          class:empty-swatch={background.id === 'none'}
+                          style={background.id === 'none' ? '' : `background-color: ${background.id};`}
+                        ></span>
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+                <div class="object-field-group">
+                  <span>{tr('tableCellAlignment')}</span>
+                  <div class="object-segment-row" role="group" aria-label={tr('tableCellAlignment')}>
+                    {#each tableCellAlignments as alignment}
+                      <button
+                        aria-pressed={tableCellAlignment === alignment.id}
+                        class:active-filter={tableCellAlignment === alignment.id}
+                        type="button"
+                        onclick={() => setTableCellAlignment(alignment.id)}
+                      >
+                        {tr(alignment.labelKey)}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+                <div class="object-segment-row" role="group" aria-label={tr('tableCellBorder')}>
+                  <button
+                    aria-pressed={tableCellBorder === 'visible'}
+                    class:active-filter={tableCellBorder === 'visible'}
+                    type="button"
+                    onclick={() => setTableCellBorder('visible')}
+                  >
+                    {tr('tableCellBorderVisible')}
+                  </button>
+                  <button
+                    aria-pressed={tableCellBorder === 'hidden'}
+                    class:active-filter={tableCellBorder === 'hidden'}
+                    type="button"
+                    onclick={() => setTableCellBorder('hidden')}
+                  >
+                    {tr('tableCellBorderHidden')}
+                  </button>
+                </div>
+              {:else}
+                <p class="empty-sidebar-note">{tr('noTableSelected')}</p>
+              {/if}
+            </section>
+
+            <section class="object-card" aria-label={tr('selectedImage')}>
+              <div class="object-card-heading">
+                <h3>{tr('selectedImage')}</h3>
+                {#if activeFormatting.image}
+                  <span>{imageScalePercent}%</span>
+                {/if}
+              </div>
+              {#if activeFormatting.image}
+                <label class="object-text-field">
+                  {tr('imageAltText')}
+                  <input
+                    disabled={!editorEditable}
+                    bind:value={imageAltText}
+                    onpointerdown={() => captureToolbarSelection(true)}
+                    onchange={() => applyImageAttrs({ altText: imageAltText })}
+                    type="text"
+                  />
+                </label>
+                <label class="object-text-field">
+                  {tr('imageCaption')}
+                  <input
+                    disabled={!editorEditable}
+                    bind:value={imageCaption}
+                    onpointerdown={() => captureToolbarSelection(true)}
+                    onchange={() => applyImageAttrs({ caption: imageCaption })}
+                    type="text"
+                  />
+                </label>
+                <div class="object-field-group">
+                  <span>{tr('imageAlignment')}</span>
+                  <div class="object-segment-row" role="group" aria-label={tr('imageAlignment')}>
+                    {#each imageAlignments as alignment}
+                      <button
+                        aria-pressed={imageAlignment === alignment.id}
+                        class:active-filter={imageAlignment === alignment.id}
+                        type="button"
+                        onclick={() => setImageAlignment(alignment.id)}
+                      >
+                        {alignment.label}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+                <label class="object-range-field">
+                  <span>{tr('imageScale')}</span>
+                  <input
+                    disabled={!editorEditable}
+                    min="25"
+                    max="200"
+                    step="5"
+                    type="range"
+                    bind:value={imageScalePercent}
+                    onpointerdown={() => captureToolbarSelection(true)}
+                    onchange={(event) => setImageScale(Number(event.currentTarget.value))}
+                  />
+                  <input
+                    disabled={!editorEditable}
+                    min="25"
+                    max="200"
+                    type="number"
+                    value={imageScalePercent}
+                    onpointerdown={() => captureToolbarSelection(true)}
+                    onchange={(event) => setImageScale(event.currentTarget.valueAsNumber)}
+                  />
+                </label>
+              {:else}
+                <p class="empty-sidebar-note">{tr('noImageSelected')}</p>
               {/if}
             </section>
           </section>

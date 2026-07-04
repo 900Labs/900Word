@@ -1436,6 +1436,171 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+.object-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.42rem;
+  margin-bottom: 0.65rem;
+}
+
+.object-summary-grid div {
+  min-width: 0;
+  display: grid;
+  gap: 0.16rem;
+  padding: 0.5rem;
+  border: 1px solid #ccd5d2;
+  border-radius: 7px;
+  background: #f7f8f7;
+}
+
+.object-summary-grid span {
+  overflow: hidden;
+  color: #59636d;
+  font-size: 0.66rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.object-summary-grid strong {
+  overflow-wrap: anywhere;
+  color: #17212b;
+  font-size: 0.84rem;
+  line-height: 1.2;
+}
+
+.object-card {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 0.7rem;
+  padding: 0.6rem;
+  border: 1px solid #d2d9d6;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.object-card-heading {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.object-card-heading h3 {
+  margin: 0;
+  color: #20242c;
+  font-size: 0.88rem;
+}
+
+.object-card-heading span {
+  color: #69737d;
+  font-size: 0.72rem;
+  font-weight: 760;
+}
+
+.object-insert-grid,
+.object-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.38rem;
+}
+
+.object-insert-grid label,
+.object-text-field,
+.object-range-field,
+.object-field-group {
+  min-width: 0;
+  display: grid;
+  gap: 0.24rem;
+  color: #4b5560;
+  font-size: 0.74rem;
+  font-weight: 820;
+}
+
+.object-insert-grid select,
+.object-text-field input,
+.object-range-field input,
+.object-field-group select {
+  width: 100%;
+  min-width: 0;
+}
+
+.object-insert-grid button,
+.object-action-grid button,
+.object-danger-button {
+  min-width: 0;
+  min-height: 31px;
+  padding: 0.28rem 0.42rem;
+  font-size: 0.75rem;
+  font-weight: 790;
+}
+
+.object-danger-button {
+  justify-self: start;
+  border-color: #d6b6ae;
+  background: #fff5f2;
+  color: #8f2d1f;
+}
+
+.object-range-field {
+  grid-template-columns: minmax(0, 1fr) 4rem;
+  align-items: center;
+}
+
+.object-range-field span {
+  grid-column: 1 / -1;
+}
+
+.object-range-field input[type='range'] {
+  padding-inline: 0;
+}
+
+.object-range-field input[type='number'] {
+  min-height: 31px;
+}
+
+.object-swatch-row,
+.object-segment-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(2.25rem, 1fr));
+  gap: 0.28rem;
+}
+
+.object-swatch-row button,
+.object-segment-row button {
+  min-width: 0;
+  min-height: 31px;
+  padding: 0.22rem 0.28rem;
+  font-size: 0.72rem;
+  font-weight: 790;
+}
+
+.object-swatch-row button {
+  display: grid;
+  place-items: center;
+}
+
+.object-swatch-row span {
+  width: 1.15rem;
+  height: 1.15rem;
+  border: 1px solid #aeb8bf;
+  border-radius: 4px;
+}
+
+.object-swatch-row .empty-swatch {
+  background:
+    linear-gradient(135deg, transparent 0 44%, #a23b28 45% 55%, transparent 56% 100%),
+    #ffffff;
+}
+
+.object-swatch-row button.active-swatch,
+.object-segment-row button.active-filter {
+  border-color: #0f6b5f;
+  background: #eef8f6;
+  box-shadow: inset 0 0 0 1px rgba(15, 107, 95, 0.14);
+}
+
 .start-panel {
   min-width: 0;
   overflow: auto;

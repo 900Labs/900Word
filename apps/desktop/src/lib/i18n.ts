@@ -6,6 +6,7 @@ export type UiStringKey =
   | 'accept'
   | 'acceptAll'
   | 'accessibilityAndPerformance'
+  | 'activeObject'
   | 'all'
   | 'allTrackedChangesAccepted'
   | 'allTrackedChangesRejected'
@@ -248,7 +249,10 @@ export type UiStringKey =
   | 'no'
   | 'noComments'
   | 'noHeadings'
+  | 'noImageSelected'
+  | 'noObjectSelected'
   | 'noPrivacyWarnings'
+  | 'noTableSelected'
   | 'noTrackedChanges'
   | 'notAvailable'
   | 'notRecording'
@@ -271,6 +275,8 @@ export type UiStringKey =
   | 'estimatedReadingTime'
   | 'numberedList'
   | 'numberedListApplied'
+  | 'objects'
+  | 'objectsWorkspace'
   | 'off'
   | 'offlineDictionaryFallback'
   | 'open'
@@ -354,6 +360,8 @@ export type UiStringKey =
   | 'settingsReset'
   | 'settingsUpdated'
   | 'selectionWords'
+  | 'selectedImage'
+  | 'selectedTable'
   | 'showRulers'
   | 'smartDashes'
   | 'smartListTriggers'
@@ -469,6 +477,7 @@ const english: UiStrings = {
   accept: 'Accept',
   acceptAll: 'Accept all',
   accessibilityAndPerformance: 'Accessibility and performance',
+  activeObject: 'Active object',
   all: 'All',
   allTrackedChangesAccepted: 'All tracked changes accepted',
   allTrackedChangesRejected: 'All tracked changes rejected',
@@ -709,7 +718,10 @@ const english: UiStrings = {
   no: 'No',
   noComments: 'No comments',
   noHeadings: 'No headings yet',
+  noImageSelected: 'Select an image to edit image placement and metadata.',
+  noObjectSelected: 'No object selected',
   noPrivacyWarnings: 'No privacy warnings.',
+  noTableSelected: 'Select a table cell to edit table structure and cell formatting.',
   noTrackedChanges: 'No tracked changes',
   notAvailable: 'Not available',
   notRecording: 'Not recording',
@@ -735,6 +747,8 @@ const english: UiStrings = {
   noSuggestions: 'No suggestions',
   numberedList: 'Numbered list',
   numberedListApplied: 'Numbered list applied',
+  objects: 'Objects',
+  objectsWorkspace: 'Objects workspace',
   off: 'Off',
   offlineDictionaryFallback: 'Dictionary fallback used',
   open: 'Open',
@@ -818,6 +832,8 @@ const english: UiStrings = {
   settingsReset: 'Settings reset to defaults',
   settingsUpdated: 'Settings updated',
   selectionWords: 'Selection words',
+  selectedImage: 'Selected image',
+  selectedTable: 'Selected table',
   showRulers: 'Rulers',
   smartDashes: 'Convert -- to em dash',
   smartListTriggers: 'Turn - and 1. starters into lists',
@@ -928,6 +944,7 @@ const spanish: Partial<UiStrings> = {
   autosaveUpdated: 'Borrador de recuperacion actualizado',
   accessibilityAndPerformance: 'Accesibilidad y rendimiento',
   activeDictionary: 'Diccionario activo',
+  activeObject: 'Objeto activo',
   blankDocument: 'Documento en blanco',
   blocks: 'Bloques',
   bold: 'Negrita',
@@ -1041,10 +1058,15 @@ const spanish: Partial<UiStrings> = {
   nextIssue: 'Problema siguiente',
   noIssues: 'Sin problemas.',
   noHeadings: 'Aun no hay titulos',
+  noImageSelected: 'Seleccione una imagen para editar ubicacion y metadatos.',
+  noObjectSelected: 'No hay objeto seleccionado',
   noMatches: 'Sin coincidencias',
   noRecentDocuments: 'No hay documentos recientes',
   noRecoveryDrafts: 'No hay borradores de recuperacion',
+  noTableSelected: 'Seleccione una celda de tabla para editar estructura y formato.',
   no: 'No',
+  objects: 'Objetos',
+  objectsWorkspace: 'Espacio de objetos',
   off: 'Apagado',
   open: 'Abrir',
   openDictionarySettings: 'Ajustes de diccionario',
@@ -1092,6 +1114,8 @@ const spanish: Partial<UiStrings> = {
   resetSettings: 'Restablecer ajustes',
   settingsReset: 'Ajustes restablecidos',
   settingsUpdated: 'Ajustes guardados',
+  selectedImage: 'Imagen seleccionada',
+  selectedTable: 'Tabla seleccionada',
   smartDashes: 'Convertir -- en raya',
   smartListTriggers: 'Convertir - y 1. en listas',
   smartQuotes: 'Usar comillas tipograficas',
