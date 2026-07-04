@@ -42,6 +42,7 @@ export type UiStringKey =
   | 'charactersWithSpaces'
   | 'charactersNoSpaces'
   | 'checkSpelling'
+  | 'chooseExportLocation'
   | 'clear'
   | 'clearFormatting'
   | 'close'
@@ -125,11 +126,8 @@ export type UiStringKey =
   | 'exportHtmlSaved'
   | 'exportDocx'
   | 'exportDocxSaved'
-  | 'exportPath'
-  | 'exportPathPlaceholder'
   | 'exportPdf'
   | 'exportPdfInvalidRange'
-  | 'exportPdfPathRequired'
   | 'exportPdfPrepared'
   | 'exportPdfSaved'
   | 'exportTxt'
@@ -479,6 +477,7 @@ const english: UiStrings = {
   charactersWithSpaces: 'Characters with spaces',
   charactersNoSpaces: 'Characters without spaces',
   checkSpelling: 'Check Spelling',
+  chooseExportLocation: 'Choose an export format and save location.',
   clear: 'Clear',
   clearFormatting: 'Clear formatting',
   close: 'Close',
@@ -563,11 +562,8 @@ const english: UiStrings = {
   exportHtmlSaved: 'HTML export written ({bytes} bytes)',
   exportDocx: 'Export DOCX',
   exportDocxSaved: 'DOCX export written ({bytes} bytes)',
-  exportPath: 'Export path',
-  exportPathPlaceholder: 'Export .txt, .html, .pdf, or .docx path',
   exportPdf: 'Export PDF',
   exportPdfInvalidRange: 'Enter a valid PDF page range.',
-  exportPdfPathRequired: 'Enter a PDF export path in File > Export.',
   exportPdfPrepared: 'PDF export prepared ({bytes} bytes)',
   exportPdfSaved: 'PDF export written ({bytes} bytes)',
   exportTxt: 'Export TXT',
@@ -884,6 +880,7 @@ const spanish: Partial<UiStrings> = {
   case: 'Mayusculas',
   characters: 'Caracteres',
   checkSpelling: 'Revisar ortografia',
+  chooseExportLocation: 'Elija formato y ubicacion de exportacion.',
   custom: 'Personalizado',
   dictionary: 'Diccionario',
   dictionaryAffFile: 'Archivo AFF',
@@ -936,10 +933,7 @@ const spanish: Partial<UiStrings> = {
   export: 'Exportar',
   exportHtmlPrepared: 'Exportacion HTML preparada ({characters} caracteres)',
   exportHtmlSaved: 'Exportacion HTML escrita ({bytes} bytes)',
-  exportPath: 'Ruta de exportacion',
-  exportPathPlaceholder: 'Ruta .txt, .html, .pdf o .docx',
   exportPdfInvalidRange: 'Ingrese un rango de paginas PDF valido.',
-  exportPdfPathRequired: 'Ingrese una ruta de exportacion PDF en Archivo > Exportar.',
   exportPdfPrepared: 'Exportacion PDF preparada ({bytes} bytes)',
   exportPdfSaved: 'Exportacion PDF escrita ({bytes} bytes)',
   exportTxtPrepared: 'Exportacion TXT preparada ({characters} caracteres)',

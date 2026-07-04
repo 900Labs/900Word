@@ -604,9 +604,16 @@ select:focus-visible {
   margin-left: 2.3rem;
 }
 
+.menu-panel-note {
+  margin: 0;
+  color: #56616b;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .export-format-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.35rem;
 }
 

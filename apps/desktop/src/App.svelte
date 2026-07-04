@@ -145,6 +145,8 @@
     pageEnd?: number | null;
   }
 
+  type ExportFormat = 'txt' | 'html' | 'pdf' | 'docx';
+
   interface DictionaryInfo {
     language_tag: string;
     display_name: string;
@@ -211,6 +213,12 @@
     ...odtFileFilters,
     { name: 'Word Document', extensions: ['docx'] }
   ];
+  const exportFileFilters: Record<ExportFormat, Array<{ name: string; extensions: string[] }>> = {
+    txt: [{ name: 'Plain Text', extensions: ['txt'] }],
+    html: [{ name: 'HTML Document', extensions: ['html'] }],
+    pdf: [{ name: 'PDF Document', extensions: ['pdf'] }],
+    docx: [{ name: 'Word Document', extensions: ['docx'] }]
+  };
   const imageFileFilters = [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }];
   const pageFormats: PageFormat[] = [
     { id: 'a4', label: 'A4 (210 x 297 mm)', width_mm: 210, height_mm: 297 },
@@ -283,7 +291,6 @@
   let stats = $state<CoreDocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
   let spellIssues = $state<SpellIssue[]>([]);
   let projectionWarnings = $state<string[]>([]);
-  let exportPathInput = $state('');
   let pdfPageRangeMode = $state<'all' | 'range'>('all');
   let pdfPageStartInput = $state('1');
   let pdfPageEndInput = $state('1');
@@ -437,7 +444,6 @@
   let findInput = $state<HTMLInputElement | undefined>();
   let replaceInput = $state<HTMLInputElement | undefined>();
   let commentBodyInput = $state<HTMLTextAreaElement | undefined>();
-  let exportPathInputElement = $state<HTMLInputElement | undefined>();
   let linkInput = $state<HTMLInputElement | undefined>();
   let mainMenuRoot = $state<HTMLElement | undefined>();
   let linkToolsRoot = $state<HTMLDivElement | undefined>();
@@ -917,9 +923,13 @@
 
   async function exportText() {
     try {
+      const path = await chooseExportPath('txt');
+      if (!path) {
+        return;
+      }
       await waitForEditorSync();
       const result = await invoke<ExportFileResult>('export_txt_to_path', {
-        path: exportPathInput
+        path
       });
       status = tr('exportTxtSaved', { bytes: result.byte_len });
     } catch (error) {
@@ -929,9 +939,13 @@
 
   async function exportHtml() {
     try {
+      const path = await chooseExportPath('html');
+      if (!path) {
+        return;
+      }
       await waitForEditorSync();
       const result = await invoke<ExportFileResult>('export_html_to_path', {
-        path: exportPathInput
+        path
       });
       status = tr('exportHtmlSaved', { bytes: result.byte_len });
     } catch (error) {
@@ -941,6 +955,10 @@
 
   async function exportPdf() {
     try {
+      const path = await chooseExportPath('pdf');
+      if (!path) {
+        return;
+      }
       await waitForEditorSync();
       const options = pdfExportOptions();
       if (!options) {
@@ -948,7 +966,7 @@
         return;
       }
       const result = await invoke<ExportFileResult>('export_pdf_to_path', {
-        path: exportPathInput,
+        path,
         options
       });
       status = tr('exportPdfSaved', { bytes: result.byte_len });
@@ -979,9 +997,13 @@
 
   async function exportDocx() {
     try {
+      const path = await chooseExportPath('docx');
+      if (!path) {
+        return;
+      }
       await waitForEditorSync();
       const result = await invoke<ExportFileResult>('export_docx_to_path', {
-        path: exportPathInput
+        path
       });
       status = tr('exportDocxSaved', { bytes: result.byte_len });
     } catch (error) {
@@ -990,15 +1012,7 @@
   }
 
   async function runExportPdfShortcut() {
-    if (exportPathInput.trim().toLocaleLowerCase().endsWith('.pdf')) {
-      await exportPdf();
-      return;
-    }
-    activeMenu = 'file';
-    exportMenuOpen = true;
-    status = tr('exportPdfPathRequired');
-    await tick();
-    exportPathInputElement?.focus();
+    await exportPdf();
   }
 
   async function printDocument() {
@@ -2266,12 +2280,28 @@
   }
 
   function defaultDocumentFileName() {
+    return `${defaultDocumentBaseName()}.odt`;
+  }
+
+  function defaultExportFileName(format: ExportFormat) {
+    return `${defaultDocumentBaseName()}.${format}`;
+  }
+
+  function defaultDocumentBaseName() {
     const cleaned = title
       .replace(/[\\/:*?"<>|]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
     const baseName = cleaned.length > 0 ? cleaned : 'Untitled Document';
-    return baseName.toLowerCase().endsWith('.odt') ? baseName : `${baseName}.odt`;
+    return baseName.replace(/\.(odt|docx|txt|html|pdf)$/i, '') || 'Untitled Document';
+  }
+
+  async function chooseExportPath(format: ExportFormat) {
+    const selected = await saveDialog({
+      defaultPath: defaultExportFileName(format),
+      filters: exportFileFilters[format]
+    });
+    return selected || null;
   }
 
   function handleGlobalKeydown(event: KeyboardEvent) {
@@ -2536,15 +2566,7 @@
           </button>
           {#if exportMenuOpen}
             <div class="file-submenu-panel" aria-label={tr('export')}>
-              <label for="file-menu-export-path">{tr('exportPath')}</label>
-              <input
-                id="file-menu-export-path"
-                aria-label={tr('exportPath')}
-                bind:this={exportPathInputElement}
-                bind:value={exportPathInput}
-                placeholder={tr('exportPathPlaceholder')}
-                type="text"
-              />
+              <p class="menu-panel-note">{tr('chooseExportLocation')}</p>
               <fieldset class="menu-field" aria-label={tr('pdfPageRange')}>
                 <legend>{tr('pdfPageRange')}</legend>
                 <label>
@@ -2590,10 +2612,10 @@
               </fieldset>
               <div class="export-format-grid">
                 <button class="format-option" type="button" onclick={() => runFileMenuAction(exportText)}>
-                  <span>{tr('txt')}</span>
+                  <span>{tr('exportTxt')}</span>
                 </button>
                 <button class="format-option" type="button" onclick={() => runFileMenuAction(exportHtml)}>
-                  <span>{tr('html')}</span>
+                  <span>{tr('exportHtml')}</span>
                 </button>
                 <button
                   class="format-option"
@@ -2601,11 +2623,11 @@
                   type="button"
                   onclick={() => runFileMenuAction(exportPdf)}
                 >
-                  <span>{tr('pdf')}</span>
+                  <span>{tr('exportPdf')}</span>
                   <span class="format-shortcut">{shortcut('exportPdf')}</span>
                 </button>
                 <button class="format-option" type="button" onclick={() => runFileMenuAction(exportDocx)}>
-                  <span>{tr('docx')}</span>
+                  <span>{tr('exportDocx')}</span>
                 </button>
               </div>
             </div>
