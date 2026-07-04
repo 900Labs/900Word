@@ -106,6 +106,7 @@ export type UiStringKey =
   | 'documentActions'
   | 'documentFormat'
   | 'documentInspector'
+  | 'documentStructure'
   | 'docx'
   | 'docxImported'
   | 'documentOpened'
@@ -159,6 +160,7 @@ export type UiStringKey =
   | 'heading2'
   | 'heading3'
   | 'headingApplied'
+  | 'headings'
   | 'headingJumped'
   | 'headingUnchanged'
   | 'help'
@@ -205,6 +207,7 @@ export type UiStringKey =
   | 'languageTools'
   | 'largeToolbar'
   | 'layout'
+  | 'layoutStructure'
   | 'left'
   | 'license'
   | 'lineSpacing'
@@ -225,6 +228,12 @@ export type UiStringKey =
   | 'markToggled'
   | 'markUnavailable'
   | 'mainMenu'
+  | 'marginModerate'
+  | 'marginNarrow'
+  | 'marginNormal'
+  | 'marginPresets'
+  | 'margins'
+  | 'marginWide'
   | 'modified'
   | 'navigator'
   | 'new'
@@ -238,6 +247,7 @@ export type UiStringKey =
   | 'noSuggestions'
   | 'no'
   | 'noComments'
+  | 'noHeadings'
   | 'noPrivacyWarnings'
   | 'noTrackedChanges'
   | 'notAvailable'
@@ -273,6 +283,7 @@ export type UiStringKey =
   | 'pageNumber'
   | 'pageRegionsReadOnly'
   | 'pageRegionsUpdated'
+  | 'pageSetup'
   | 'paragraph'
   | 'paragraphApplied'
   | 'paragraphControls'
@@ -559,6 +570,7 @@ const english: UiStrings = {
   documentActions: 'Document actions',
   documentFormat: 'Document format',
   documentInspector: 'Document Inspector',
+  documentStructure: 'Document structure',
   docx: 'DOCX',
   docxImported: 'DOCX imported as an unsaved ODT document',
   documentOpened: 'Document opened',
@@ -612,6 +624,7 @@ const english: UiStrings = {
   heading2: 'H2',
   heading3: 'H3',
   headingApplied: 'Heading {level} applied',
+  headings: 'Headings',
   headingJumped: 'Jumped to {heading}',
   headingUnchanged: 'Heading {level} unchanged',
   help: 'Help',
@@ -658,6 +671,7 @@ const english: UiStrings = {
   languageTools: 'Language tools',
   largeToolbar: 'Large toolbar and controls',
   layout: 'Layout',
+  layoutStructure: 'Layout & structure',
   left: 'Left',
   license: 'License',
   lineSpacing: 'Line spacing',
@@ -678,6 +692,12 @@ const english: UiStrings = {
   markToggled: '{label} toggled',
   markUnavailable: '{label} unavailable',
   mainMenu: 'Main menu',
+  marginModerate: 'Moderate',
+  marginNarrow: 'Narrow',
+  marginNormal: 'Normal',
+  marginPresets: 'Margin presets',
+  margins: 'Margins',
+  marginWide: 'Wide',
   modified: 'Modified',
   navigator: 'Navigator',
   new: 'New',
@@ -688,6 +708,7 @@ const english: UiStrings = {
   nextIssue: 'Next issue',
   no: 'No',
   noComments: 'No comments',
+  noHeadings: 'No headings yet',
   noPrivacyWarnings: 'No privacy warnings.',
   noTrackedChanges: 'No tracked changes',
   notAvailable: 'Not available',
@@ -726,6 +747,7 @@ const english: UiStrings = {
   pageNumber: 'Page number',
   pageRegionsReadOnly: 'Imported header/footer content is read-only',
   pageRegionsUpdated: 'Headers and footers updated',
+  pageSetup: 'Page setup',
   paragraph: 'P',
   paragraphApplied: 'Paragraph applied',
   paragraphControls: 'Paragraph controls',
@@ -956,6 +978,7 @@ const spanish: Partial<UiStrings> = {
   dictionaryUnavailableOption: 'No disponible ({languageTag})',
   documentActions: 'Acciones del documento',
   documentFormat: 'Formato de documento',
+  documentStructure: 'Estructura del documento',
   documentOpened: 'Documento abierto',
   documentSaved: 'Documento guardado',
   documentSavedAs: 'Documento guardado como',
@@ -979,6 +1002,7 @@ const spanish: Partial<UiStrings> = {
   format: 'Formato',
   height: 'Alto',
   help: 'Ayuda',
+  headings: 'Titulos',
   highContrast: 'Alto contraste',
   home: 'Inicio',
   html: 'HTML',
@@ -998,10 +1022,17 @@ const spanish: Partial<UiStrings> = {
   languageTools: 'Herramientas de idioma',
   largeToolbar: 'Barra y controles grandes',
   layout: 'Diseno',
+  layoutStructure: 'Diseno y estructura',
   left: 'Izquierda',
   license: 'Licencia',
   lowResourceMode: 'Modo de bajo consumo',
   mainMenu: 'Menu principal',
+  marginModerate: 'Moderado',
+  marginNarrow: 'Estrecho',
+  marginNormal: 'Normal',
+  marginPresets: 'Preajustes de margenes',
+  margins: 'Margenes',
+  marginWide: 'Amplio',
   new: 'Nuevo',
   newFromTemplate: 'Nuevo desde plantilla',
   next: 'Siguiente',
@@ -1009,6 +1040,7 @@ const spanish: Partial<UiStrings> = {
   nextComment: 'Comentario siguiente',
   nextIssue: 'Problema siguiente',
   noIssues: 'Sin problemas.',
+  noHeadings: 'Aun no hay titulos',
   noMatches: 'Sin coincidencias',
   noRecentDocuments: 'No hay documentos recientes',
   noRecoveryDrafts: 'No hay borradores de recuperacion',
@@ -1018,6 +1050,7 @@ const spanish: Partial<UiStrings> = {
   openDictionarySettings: 'Ajustes de diccionario',
   page: 'Pagina',
   pageSetupUpdated: 'Pagina actualizada',
+  pageSetup: 'Configuracion de pagina',
   pageSize: 'Tamano de pagina',
   personalDictionary: 'Diccionario personal',
   personalDictionaryEmpty: 'No hay palabras personales para este diccionario.',

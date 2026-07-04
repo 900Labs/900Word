@@ -203,6 +203,12 @@
     height_mm: number;
   }
 
+  interface MarginPreset {
+    id: string;
+    labelKey: UiStringKey;
+    margins: Pick<PageSetup, 'margin_top_mm' | 'margin_right_mm' | 'margin_bottom_mm' | 'margin_left_mm'>;
+  }
+
   type ViewId = 'start' | 'editor' | 'settings' | 'about';
   type MainMenuId = 'file' | 'edit' | 'insert' | 'format' | 'table' | 'review' | 'view' | 'tools' | 'help';
   type RibbonTabId = 'home' | 'insert' | 'layout' | 'review' | 'view';
@@ -227,6 +233,28 @@
     { id: 'letter', label: 'US Letter (216 x 279 mm)', width_mm: 216, height_mm: 279 },
     { id: 'legal', label: 'US Legal (216 x 356 mm)', width_mm: 216, height_mm: 356 },
     { id: 'tabloid', label: 'Tabloid (279 x 432 mm)', width_mm: 279, height_mm: 432 }
+  ];
+  const marginPresets: MarginPreset[] = [
+    {
+      id: 'normal',
+      labelKey: 'marginNormal',
+      margins: { margin_top_mm: 25, margin_right_mm: 25, margin_bottom_mm: 25, margin_left_mm: 25 }
+    },
+    {
+      id: 'narrow',
+      labelKey: 'marginNarrow',
+      margins: { margin_top_mm: 13, margin_right_mm: 13, margin_bottom_mm: 13, margin_left_mm: 13 }
+    },
+    {
+      id: 'moderate',
+      labelKey: 'marginModerate',
+      margins: { margin_top_mm: 25, margin_right_mm: 19, margin_bottom_mm: 25, margin_left_mm: 19 }
+    },
+    {
+      id: 'wide',
+      labelKey: 'marginWide',
+      margins: { margin_top_mm: 25, margin_right_mm: 51, margin_bottom_mm: 25, margin_left_mm: 51 }
+    }
   ];
   const paragraphStyles = [
     { id: 'body', label: 'Normal' },
@@ -327,6 +355,7 @@
     x: number;
     y: number;
   } | null>(null);
+  let layoutPanelOpen = $state(false);
   let spellingPanelOpen = $state(false);
   let activeSpellIssueKey = $state<string | null>(null);
   let lastSpellCheckDictionary = $state('');
@@ -448,6 +477,13 @@
   );
   let effectiveZoomPercent = $derived(zoomChoice === 'fit-width' ? fitWidthZoom : customZoomPercent);
   let editorSurfaceStyle = $derived(editorViewportStyle(pageSetup, effectiveZoomPercent));
+  let currentPageFormatLabel = $derived(pageFormats.find((format) => format.id === currentPageFormatId())?.label ?? tr('custom'));
+  let marginSummary = $derived(pageMarginSummaryLabel());
+  let headingLevelCounts = $derived({
+    h1: navigatorHeadings.filter((heading) => heading.level === 1).length,
+    h2: navigatorHeadings.filter((heading) => heading.level === 2).length,
+    h3: navigatorHeadings.filter((heading) => heading.level === 3).length
+  });
   let activeSpellIssue = $derived<EditorSpellIssueRange | undefined>(
     spellIssueRanges.find((issue) => spellInstanceKey(issue) === activeSpellIssueKey) ?? spellIssueRanges[0]
   );
@@ -464,6 +500,7 @@
     commentsPanelOpen ||
     notesPanelOpen ||
     reviewPanelOpen ||
+      layoutPanelOpen ||
       spellingPanelOpen ||
       showAutomaticSidebarContent ||
       fileState.recovery_documents.length > 0 ||
@@ -2204,6 +2241,13 @@
     editorViewMode = mode;
   }
 
+  function toggleLayoutPanel() {
+    layoutPanelOpen = !layoutPanelOpen;
+    if (layoutPanelOpen) {
+      activeView = 'editor';
+    }
+  }
+
   function setZoomChoice(value: string) {
     if (value === 'fit-width') {
       zoomChoice = 'fit-width';
@@ -2385,12 +2429,38 @@
     };
   }
 
+  function updatePageMarginsPreset(presetId: string) {
+    const preset = marginPresets.find((candidate) => candidate.id === presetId);
+    if (!preset) {
+      return;
+    }
+    pageSetup = {
+      ...pageSetup,
+      ...preset.margins
+    };
+  }
+
   function currentPageFormatId() {
     return (
       pageFormats.find(
         (format) => format.width_mm === pageSetup.width_mm && format.height_mm === pageSetup.height_mm
       )?.id ?? 'custom'
     );
+  }
+
+  function currentMarginPresetId() {
+    return (
+      marginPresets.find((preset) =>
+        preset.margins.margin_top_mm === pageSetup.margin_top_mm &&
+        preset.margins.margin_right_mm === pageSetup.margin_right_mm &&
+        preset.margins.margin_bottom_mm === pageSetup.margin_bottom_mm &&
+        preset.margins.margin_left_mm === pageSetup.margin_left_mm
+      )?.id ?? 'custom'
+    );
+  }
+
+  function pageMarginSummaryLabel() {
+    return `${pageSetup.margin_top_mm}/${pageSetup.margin_right_mm}/${pageSetup.margin_bottom_mm}/${pageSetup.margin_left_mm} mm`;
   }
 
   function sortedCommentThreads(document: DocumentState | undefined): CommentThread[] {
@@ -3208,6 +3278,11 @@
               <span class="menu-command-main"><span class="menu-command-label">{tr('showRulers')}</span></span>
               <span class="menu-shortcut">{showRulers ? tr('yes') : tr('no')}</span>
             </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(toggleLayoutPanel)}>
+              <span class="menu-glyph glyph-page" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('layoutStructure')}</span></span>
+              <span class="menu-shortcut">{navigatorHeadings.length}</span>
+            </button>
             <div class="menu-separator" role="separator"></div>
             <button class="menu-command" type="button" onclick={() => runFileMenuAction(toggleStatsPanel)}>
               <span class="menu-glyph glyph-stats" aria-hidden="true"></span>
@@ -3424,6 +3499,45 @@
         <input bind:checked={showRulers} type="checkbox" />
         {tr('showRulers')}
       </label>
+      <button
+        aria-expanded={layoutPanelOpen}
+        class:active-format={layoutPanelOpen}
+        type="button"
+        onclick={toggleLayoutPanel}
+      >
+        {tr('layoutStructure')}
+      </button>
+    </div>
+
+    <div class:hidden-ribbon={activeRibbonTab !== 'layout'} class="tool-group page-layout-tools" role="group" aria-label={tr('pageSetup')}>
+      <label class="page-format-field">
+        {tr('pageSize')}
+        <select
+          aria-label={tr('pageSize')}
+          value={currentPageFormatId()}
+          onchange={(event) => updatePageFormat(event.currentTarget.value)}
+        >
+          {#each pageFormats as format}
+            <option value={format.id}>{format.label}</option>
+          {/each}
+          <option value="custom">{tr('custom')}</option>
+        </select>
+      </label>
+      <label class="page-format-field">
+        {tr('margins')}
+        <select
+          aria-label={tr('margins')}
+          value={currentMarginPresetId()}
+          onchange={(event) => updatePageMarginsPreset(event.currentTarget.value)}
+        >
+          {#each marginPresets as preset}
+            <option value={preset.id}>{tr(preset.labelKey)}</option>
+          {/each}
+          <option value="custom">{tr('custom')}</option>
+        </select>
+      </label>
+      <button type="button" onclick={toggleLayoutPanel}>{tr('layoutStructure')}</button>
+      <button type="button" onclick={applyPageSetup}>{tr('applyPage')}</button>
     </div>
 
     <div class:hidden-ribbon={activeRibbonTab !== 'home'} class="tool-group style-tools" role="group" aria-label={tr('styles')}>
@@ -4234,6 +4348,189 @@
               </li>
             {/each}
           </ul>
+        {/if}
+
+        {#if layoutPanelOpen}
+          <section class="layout-panel" aria-label={tr('layoutStructure')}>
+            <div class="sidebar-section-heading">
+              <h2>{tr('layoutStructure')}</h2>
+              <span>{currentPageFormatLabel}</span>
+            </div>
+            <div class="layout-summary-grid">
+              <div>
+                <span>{tr('pageSize')}</span>
+                <strong>{currentPageFormatLabel}</strong>
+              </div>
+              <div>
+                <span>{tr('margins')}</span>
+                <strong>{marginSummary}</strong>
+              </div>
+              <div>
+                <span>{tr('headings')}</span>
+                <strong>{navigatorHeadings.length}</strong>
+              </div>
+            </div>
+
+            <div class="layout-control-grid">
+              <label>
+                {tr('pageSize')}
+                <select
+                  aria-label={tr('pageSize')}
+                  value={currentPageFormatId()}
+                  onchange={(event) => updatePageFormat(event.currentTarget.value)}
+                >
+                  {#each pageFormats as format}
+                    <option value={format.id}>{format.label}</option>
+                  {/each}
+                  <option value="custom">{tr('custom')}</option>
+                </select>
+              </label>
+              <label>
+                {tr('margins')}
+                <select
+                  aria-label={tr('margins')}
+                  value={currentMarginPresetId()}
+                  onchange={(event) => updatePageMarginsPreset(event.currentTarget.value)}
+                >
+                  {#each marginPresets as preset}
+                    <option value={preset.id}>{tr(preset.labelKey)}</option>
+                  {/each}
+                  <option value="custom">{tr('custom')}</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="layout-preset-row" role="group" aria-label={tr('marginPresets')}>
+              {#each marginPresets as preset}
+                <button
+                  aria-pressed={currentMarginPresetId() === preset.id}
+                  class:active-filter={currentMarginPresetId() === preset.id}
+                  type="button"
+                  onclick={() => updatePageMarginsPreset(preset.id)}
+                >
+                  {tr(preset.labelKey)}
+                </button>
+              {/each}
+            </div>
+
+            <div class="page-dimension-grid">
+              <label>
+                {tr('width')}
+                <input
+                  min="50"
+                  max="500"
+                  type="number"
+                  value={pageSetup.width_mm}
+                  oninput={(event) => updatePageSetupField('width_mm', event.currentTarget.valueAsNumber)}
+                />
+              </label>
+              <label>
+                {tr('height')}
+                <input
+                  min="50"
+                  max="500"
+                  type="number"
+                  value={pageSetup.height_mm}
+                  oninput={(event) => updatePageSetupField('height_mm', event.currentTarget.valueAsNumber)}
+                />
+              </label>
+              <label>
+                {tr('top')}
+                <input
+                  min="0"
+                  max="100"
+                  type="number"
+                  value={pageSetup.margin_top_mm}
+                  oninput={(event) => updatePageSetupField('margin_top_mm', event.currentTarget.valueAsNumber)}
+                />
+              </label>
+              <label>
+                {tr('right')}
+                <input
+                  min="0"
+                  max="100"
+                  type="number"
+                  value={pageSetup.margin_right_mm}
+                  oninput={(event) => updatePageSetupField('margin_right_mm', event.currentTarget.valueAsNumber)}
+                />
+              </label>
+              <label>
+                {tr('bottom')}
+                <input
+                  min="0"
+                  max="100"
+                  type="number"
+                  value={pageSetup.margin_bottom_mm}
+                  oninput={(event) => updatePageSetupField('margin_bottom_mm', event.currentTarget.valueAsNumber)}
+                />
+              </label>
+              <label>
+                {tr('left')}
+                <input
+                  min="0"
+                  max="100"
+                  type="number"
+                  value={pageSetup.margin_left_mm}
+                  oninput={(event) => updatePageSetupField('margin_left_mm', event.currentTarget.valueAsNumber)}
+                />
+              </label>
+            </div>
+
+            <div class="layout-action-row">
+              <button type="button" onclick={applyPageSetup}>{tr('applyPage')}</button>
+              <button
+                disabled={!editorEditable || navigatorHeadings.length === 0}
+                type="button"
+                onclick={insertOrUpdateTableOfContents}
+              >
+                {tr('insertOrUpdateTableOfContents')}
+              </button>
+            </div>
+
+            <div class="layout-view-row" role="group" aria-label={tr('viewMode')}>
+              <button
+                aria-pressed={editorViewMode === 'draft'}
+                class:active-filter={editorViewMode === 'draft'}
+                type="button"
+                onclick={() => setEditorViewMode('draft')}
+              >
+                {tr('draftView')}
+              </button>
+              <button
+                aria-pressed={editorViewMode === 'page-layout'}
+                class:active-filter={editorViewMode === 'page-layout'}
+                type="button"
+                onclick={() => setEditorViewMode('page-layout')}
+              >
+                {tr('pageLayoutView')}
+              </button>
+              <label class="check-row compact">
+                <input bind:checked={showRulers} type="checkbox" />
+                {tr('showRulers')}
+              </label>
+            </div>
+
+            <section class="layout-structure-section" aria-label={tr('documentStructure')}>
+              <div class="layout-structure-heading">
+                <h3>{tr('documentStructure')}</h3>
+                <span>H1 {headingLevelCounts.h1} / H2 {headingLevelCounts.h2} / H3 {headingLevelCounts.h3}</span>
+              </div>
+              {#if navigatorHeadings.length > 0}
+                <ul class="layout-outline-list">
+                  {#each navigatorHeadings as heading}
+                    <li class={`navigator-level-${heading.level}`}>
+                      <button type="button" onclick={() => jumpToHeading(heading)}>
+                        <span class="navigator-marker">H{heading.level}</span>
+                        <span>{heading.text}</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="empty-sidebar-note">{tr('noHeadings')}</p>
+              {/if}
+            </section>
+          </section>
         {/if}
 
         {#if reviewPanelOpen || commentsPanelOpen || notesPanelOpen}
