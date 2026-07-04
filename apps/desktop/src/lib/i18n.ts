@@ -26,6 +26,7 @@ export type UiStringKey =
   | 'autosave'
   | 'autosaveUpdated'
   | 'before'
+  | 'blankDocument'
   | 'blockFormatting'
   | 'blocks'
   | 'bold'
@@ -227,6 +228,7 @@ export type UiStringKey =
   | 'modified'
   | 'navigator'
   | 'new'
+  | 'newFromTemplate'
   | 'next'
   | 'noIssues'
   | 'noMatches'
@@ -239,6 +241,8 @@ export type UiStringKey =
   | 'notRecording'
   | 'notes'
   | 'noNotes'
+  | 'noRecentDocuments'
+  | 'noRecoveryDrafts'
   | 'noteBodyRequired'
   | 'noteBodyTooLong'
   | 'noteInsertionUnavailable'
@@ -342,6 +346,7 @@ export type UiStringKey =
   | 'spelling'
   | 'spellingSuggestionApplied'
   | 'starting'
+  | 'startCenter'
   | 'startWriting'
   | 'statusNoSpellingIssues'
   | 'stats'
@@ -391,6 +396,7 @@ export type UiStringKey =
   | 'templateLoaded'
   | 'templateDeleted'
   | 'templateDeleteFailed'
+  | 'templateGallery'
   | 'templateName'
   | 'templateSaved'
   | 'templateSaveFailed'
@@ -457,6 +463,7 @@ const english: UiStrings = {
   autosave: 'Autosave',
   autosaveUpdated: 'Recovery draft updated',
   before: 'Before',
+  blankDocument: 'Blank document',
   blockFormatting: 'Block formatting',
   blocks: 'Blocks',
   bold: 'Bold',
@@ -659,6 +666,7 @@ const english: UiStrings = {
   modified: 'Modified',
   navigator: 'Navigator',
   new: 'New',
+  newFromTemplate: 'New from template',
   next: 'Next',
   no: 'No',
   noComments: 'No comments',
@@ -668,6 +676,8 @@ const english: UiStrings = {
   notRecording: 'Not recording',
   notes: 'Notes',
   noNotes: 'No footnotes or endnotes',
+  noRecentDocuments: 'No recent documents',
+  noRecoveryDrafts: 'No recovery drafts',
   noteBodyRequired: 'Enter note text before inserting it.',
   noteBodyTooLong: 'Note is too long. Keep it under {max} characters.',
   noteInsertionUnavailable: 'Place the cursor in editable text before inserting a note.',
@@ -774,6 +784,7 @@ const english: UiStrings = {
   spelling: 'Spelling',
   spellingSuggestionApplied: 'Spelling suggestion applied',
   starting: 'Starting...',
+  startCenter: 'Start Center',
   startWriting: 'Start writing...',
   statusNoSpellingIssues: 'No spelling issues found',
   stats: 'Stats',
@@ -823,6 +834,7 @@ const english: UiStrings = {
   templateLoaded: 'Template loaded',
   templateDeleted: 'Template deleted',
   templateDeleteFailed: 'Template could not be deleted',
+  templateGallery: 'Template gallery',
   templateName: 'Template name',
   templateSaved: 'Template saved',
   templateSaveFailed: 'Template could not be saved',
@@ -864,6 +876,7 @@ const spanish: Partial<UiStrings> = {
   autosaveUpdated: 'Borrador de recuperacion actualizado',
   accessibilityAndPerformance: 'Accesibilidad y rendimiento',
   activeDictionary: 'Diccionario activo',
+  blankDocument: 'Documento en blanco',
   blocks: 'Bloques',
   bold: 'Negrita',
   bottom: 'Inferior',
@@ -960,9 +973,12 @@ const spanish: Partial<UiStrings> = {
   lowResourceMode: 'Modo de bajo consumo',
   mainMenu: 'Menu principal',
   new: 'Nuevo',
+  newFromTemplate: 'Nuevo desde plantilla',
   next: 'Siguiente',
   noIssues: 'Sin problemas.',
   noMatches: 'Sin coincidencias',
+  noRecentDocuments: 'No hay documentos recientes',
+  noRecoveryDrafts: 'No hay borradores de recuperacion',
   no: 'No',
   off: 'Apagado',
   open: 'Abrir',
@@ -1010,6 +1026,7 @@ const spanish: Partial<UiStrings> = {
   smartTyping: 'Escritura inteligente',
   spelling: 'Ortografia',
   starting: 'Iniciando...',
+  startCenter: 'Centro de inicio',
   startWriting: 'Empieza a escribir...',
   statusNoSpellingIssues: 'No se encontraron problemas de ortografia',
   stats: 'Estadisticas',
@@ -1024,6 +1041,7 @@ const spanish: Partial<UiStrings> = {
   templateLoaded: 'Plantilla cargada',
   templateDeleted: 'Plantilla eliminada',
   templateDeleteFailed: 'No se pudo eliminar la plantilla',
+  templateGallery: 'Galeria de plantillas',
   templateName: 'Nombre de plantilla',
   templateSaved: 'Plantilla guardada',
   templateSaveFailed: 'No se pudo guardar la plantilla',

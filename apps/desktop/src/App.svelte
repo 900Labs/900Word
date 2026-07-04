@@ -201,10 +201,10 @@
     height_mm: number;
   }
 
-  type ViewId = 'editor' | 'settings' | 'about';
+  type ViewId = 'start' | 'editor' | 'settings' | 'about';
   type MainMenuId = 'file' | 'edit' | 'insert' | 'format' | 'table' | 'review' | 'view' | 'tools' | 'help';
   type RibbonTabId = 'home' | 'insert' | 'layout' | 'review' | 'view';
-  const viewOrder: ViewId[] = ['editor', 'settings', 'about'];
+  const viewOrder: ViewId[] = ['start', 'editor', 'settings', 'about'];
   const odtFileFilters = [{ name: 'OpenDocument Text', extensions: ['odt'] }];
   const documentFileFilters = [
     { name: 'Documents', extensions: ['odt', 'docx'] },
@@ -272,7 +272,7 @@
 
   let title = $state('900Word');
   let status = $state(translate('en-US', 'starting'));
-  let activeView = $state<ViewId>('editor');
+  let activeView = $state<ViewId>('start');
   let activeRibbonTab = $state<RibbonTabId>('home');
   let editorViewMode = $state<EditorViewMode>('page-layout');
   let zoomChoice = $state<EditorZoomChoice>('fit-width');
@@ -444,11 +444,14 @@
   let view: ReturnType<typeof createEditor> | undefined;
   const toolbarActivationState: ToolbarActivationState = { pointerCommandHandled: false };
 
-  async function newDocument() {
+  async function newDocument(openEditor = true) {
     await waitForEditorSync();
     const document = await invoke<DocumentState>('new_document');
     await loadDocumentIntoEditor(document, '');
     await refreshFileState();
+    if (openEditor) {
+      activeView = 'editor';
+    }
   }
 
   async function newDocumentFromTemplate() {
@@ -458,6 +461,12 @@
     });
     await loadDocumentIntoEditor(document, tr('templateLoaded'));
     await refreshFileState();
+    activeView = 'editor';
+  }
+
+  async function newDocumentFromTemplateId(templateId: string) {
+    selectedTemplateId = templateId;
+    await newDocumentFromTemplate();
   }
 
   async function refreshTemplates(preferredTemplateId = selectedTemplateId) {
@@ -619,6 +628,7 @@
     });
     await loadDocumentIntoEditor(document, isDocx ? tr('docxImported') : tr('documentOpened'));
     await refreshFileState();
+    activeView = 'editor';
   }
 
   async function openDocumentWithDialog() {
@@ -639,6 +649,7 @@
     });
     await loadDocumentIntoEditor(document, tr('documentOpened'));
     await refreshFileState();
+    activeView = 'editor';
   }
 
   async function saveCurrentDocument() {
@@ -711,6 +722,7 @@
     });
     await loadDocumentIntoEditor(document, tr('recoveryOpened'));
     await refreshFileState();
+    activeView = 'editor';
   }
 
   async function discardRecovery(token: string) {
@@ -1844,6 +1856,32 @@
     }).format(parsed);
   }
 
+  function recoveryModifiedLabel(recovery: RecoveryDocumentSummary) {
+    const timestamp = recovery.modified_unix_seconds * 1000;
+    if (!Number.isFinite(timestamp) || timestamp <= 0) {
+      return '';
+    }
+    return new Intl.DateTimeFormat(settings.ui_locale, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(timestamp);
+  }
+
+  function byteCountLabel(byteLen: number) {
+    const normalized = Math.max(0, Math.trunc(byteLen));
+    if (normalized < 1024) {
+      return `${normalized} B`;
+    }
+    const kib = normalized / 1024;
+    if (kib < 1024) {
+      return `${kib.toFixed(kib >= 10 ? 0 : 1)} KiB`;
+    }
+    const mib = kib / 1024;
+    return `${mib.toFixed(mib >= 10 ? 0 : 1)} MiB`;
+  }
+
   function trackedChangePreview(change: TrackedChangeSummary) {
     const text = change.text.replace(/\s+/g, ' ').trim();
     return text.length > 80 ? `${text.slice(0, 77)}...` : text || tr('emptyChangeText');
@@ -2383,7 +2421,7 @@
   onMount(() => {
     window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener('click', handleWindowClick);
-    Promise.all([newDocument(), loadShellState()]).catch((error: unknown) => {
+    Promise.all([newDocument(false), loadShellState()]).catch((error: unknown) => {
       status = error instanceof Error ? error.message : String(error);
     });
 
@@ -2982,6 +3020,10 @@
             <div class="menu-popover-header" aria-hidden="true">
               <span>{tr('view')}</span>
             </div>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => selectView('start'))}>
+              <span class="menu-glyph glyph-start" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('startCenter')}</span></span>
+            </button>
             <button class="menu-command" type="button" onclick={() => runFileMenuAction(() => selectView('editor'))}>
               <span class="menu-glyph glyph-editor" aria-hidden="true"></span>
               <span class="menu-command-main"><span class="menu-command-label">{tr('editor')}</span></span>
@@ -3077,6 +3119,17 @@
     </div>
 
     <div class="view-tabs" role="tablist" aria-label={tr('workspaceViews')}>
+      <button
+        aria-controls="start-view"
+        aria-selected={activeView === 'start'}
+        id="start-tab"
+        onkeydown={(event) => handleViewTabKeydown(event, 'start')}
+        role="tab"
+        type="button"
+        onclick={() => selectView('start')}
+      >
+        {tr('startCenter')}
+      </button>
       <button
         aria-controls="editor-view"
         aria-selected={activeView === 'editor'}
@@ -4162,6 +4215,107 @@
         {/if}
       </aside>
     {/if}
+
+    <div
+      aria-label={tr('startCenter')}
+      class:hidden-view={activeView !== 'start'}
+      class="start-panel"
+      id="start-view"
+      role="tabpanel"
+      tabindex={activeView === 'start' ? 0 : -1}
+    >
+      <div class="start-surface">
+        <section class="start-primary" aria-label={tr('documentActions')}>
+          <div class="start-heading">
+            <span>900Word</span>
+            <h2>{tr('startCenter')}</h2>
+          </div>
+          <div class="start-action-grid">
+            <button class="start-action primary-start-action" type="button" onclick={() => newDocument()}>
+              <span class="start-action-icon glyph-new" aria-hidden="true"></span>
+              <span>{tr('blankDocument')}</span>
+            </button>
+            <button class="start-action" type="button" onclick={openDocumentWithDialog}>
+              <span class="start-action-icon glyph-open" aria-hidden="true"></span>
+              <span>{tr('open')}</span>
+            </button>
+            <button class="start-action" type="button" onclick={() => selectView('editor')}>
+              <span class="start-action-icon glyph-editor" aria-hidden="true"></span>
+              <span>{tr('editor')}</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="start-section" aria-label={tr('recent')}>
+          <div class="start-section-heading">
+            <h3>{tr('recent')}</h3>
+            <span>{fileState.recent_documents.length}</span>
+          </div>
+          {#if fileState.recent_documents.length > 0}
+            <div class="start-list" role="list">
+              {#each fileState.recent_documents as recent}
+                <article class="start-list-item" role="listitem">
+                  <span class="start-item-title">{recent.label}</span>
+                  <button type="button" onclick={() => openRecentDocument(recent.token)}>{tr('openRecent')}</button>
+                </article>
+              {/each}
+            </div>
+          {:else}
+            <p class="start-empty">{tr('noRecentDocuments')}</p>
+          {/if}
+        </section>
+
+        <section class="start-section" aria-label={tr('recovery')}>
+          <div class="start-section-heading">
+            <h3>{tr('recovery')}</h3>
+            <span>{fileState.recovery_documents.length}</span>
+          </div>
+          {#if fileState.recovery_documents.length > 0}
+            <div class="start-list" role="list">
+              {#each fileState.recovery_documents as recovery}
+                <article class="start-list-item recovery-item" role="listitem">
+                  <span class="start-item-title">{recovery.label}</span>
+                  <span class="start-item-meta">
+                    {[recoveryModifiedLabel(recovery), byteCountLabel(recovery.byte_len)].filter(Boolean).join(' - ')}
+                  </span>
+                  <div class="start-item-actions">
+                    <button type="button" onclick={() => recoverDocument(recovery.token)}>{tr('recover')}</button>
+                    <button type="button" onclick={() => discardRecovery(recovery.token)}>{tr('discard')}</button>
+                  </div>
+                </article>
+              {/each}
+            </div>
+          {:else}
+            <p class="start-empty">{tr('noRecoveryDrafts')}</p>
+          {/if}
+        </section>
+
+        <section class="start-section start-templates" aria-label={tr('templateGallery')}>
+          <div class="start-section-heading">
+            <h3>{tr('templateGallery')}</h3>
+            <span>{templates.length}</span>
+          </div>
+          <div class="template-gallery" role="list">
+            {#each templates as template}
+              <article class:active-template-card={selectedTemplateId === template.id} class="template-card" role="listitem">
+                <button type="button" onclick={() => newDocumentFromTemplateId(template.id)}>
+                  <span class="template-preview" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </span>
+                  <span class="template-card-body">
+                    <strong>{template.name}</strong>
+                    <span>{template.source}</span>
+                    <small>{template.description}</small>
+                  </span>
+                </button>
+              </article>
+            {/each}
+          </div>
+        </section>
+      </div>
+    </div>
 
     <div
       aria-label={tr('editor')}
