@@ -45,6 +45,7 @@ export type UiStringKey =
   | 'chooseExportLocation'
   | 'clear'
   | 'clearFormatting'
+  | 'clearSpelling'
   | 'close'
   | 'columnsShort'
   | 'comments'
@@ -201,6 +202,7 @@ export type UiStringKey =
   | 'ignoreOnce'
   | 'italic'
   | 'language'
+  | 'languageTools'
   | 'largeToolbar'
   | 'layout'
   | 'left'
@@ -230,6 +232,7 @@ export type UiStringKey =
   | 'next'
   | 'nextChange'
   | 'nextComment'
+  | 'nextIssue'
   | 'noIssues'
   | 'noMatches'
   | 'noSuggestions'
@@ -261,6 +264,7 @@ export type UiStringKey =
   | 'off'
   | 'offlineDictionaryFallback'
   | 'open'
+  | 'openDictionarySettings'
   | 'openLinkPanel'
   | 'openRecent'
   | 'page'
@@ -293,6 +297,7 @@ export type UiStringKey =
   | 'previous'
   | 'previousChange'
   | 'previousComment'
+  | 'previousIssue'
   | 'print'
   | 'printFrame'
   | 'printPrepared'
@@ -348,6 +353,11 @@ export type UiStringKey =
   | 'spellIgnoredOnce'
   | 'spellIssueCount'
   | 'spelling'
+  | 'spellingCleared'
+  | 'spellingIssue'
+  | 'spellingIssueSelected'
+  | 'spellingIssues'
+  | 'spellingSuggestions'
   | 'spellingSuggestionApplied'
   | 'starting'
   | 'startCenter'
@@ -487,6 +497,7 @@ const english: UiStrings = {
   chooseExportLocation: 'Choose an export format and save location.',
   clear: 'Clear',
   clearFormatting: 'Clear formatting',
+  clearSpelling: 'Clear spelling',
   close: 'Close',
   columnsShort: 'C',
   comments: 'Comments',
@@ -644,6 +655,7 @@ const english: UiStrings = {
   ignoreOnce: 'Ignore once',
   italic: 'Italic',
   language: 'Language',
+  languageTools: 'Language tools',
   largeToolbar: 'Large toolbar and controls',
   layout: 'Layout',
   left: 'Left',
@@ -673,6 +685,7 @@ const english: UiStrings = {
   next: 'Next',
   nextChange: 'Next change',
   nextComment: 'Next comment',
+  nextIssue: 'Next issue',
   no: 'No',
   noComments: 'No comments',
   noPrivacyWarnings: 'No privacy warnings.',
@@ -704,6 +717,7 @@ const english: UiStrings = {
   off: 'Off',
   offlineDictionaryFallback: 'Dictionary fallback used',
   open: 'Open',
+  openDictionarySettings: 'Dictionary settings',
   openLinkPanel: 'Insert or edit link',
   openRecent: 'Open',
   page: 'Page',
@@ -736,6 +750,7 @@ const english: UiStrings = {
   previous: 'Prev',
   previousChange: 'Previous change',
   previousComment: 'Previous comment',
+  previousIssue: 'Previous issue',
   print: 'Print',
   printFrame: 'Print document',
   printPrepared: 'Print view prepared',
@@ -791,6 +806,11 @@ const english: UiStrings = {
   spellIgnoredOnce: 'Spelling issue ignored once',
   spellIssueCount: '{count} spelling issue(s)',
   spelling: 'Spelling',
+  spellingCleared: 'Spelling marks cleared',
+  spellingIssue: 'Spelling issue',
+  spellingIssueSelected: 'Spelling issue selected',
+  spellingIssues: 'Spelling issues',
+  spellingSuggestions: 'Spelling suggestions',
   spellingSuggestionApplied: 'Spelling suggestion applied',
   starting: 'Starting...',
   startCenter: 'Start Center',
@@ -895,6 +915,7 @@ const spanish: Partial<UiStrings> = {
   characters: 'Caracteres',
   checkSpelling: 'Revisar ortografia',
   chooseExportLocation: 'Elija formato y ubicacion de exportacion.',
+  clearSpelling: 'Limpiar ortografia',
   custom: 'Personalizado',
   dictionary: 'Diccionario',
   dictionaryAffFile: 'Archivo AFF',
@@ -974,6 +995,7 @@ const spanish: Partial<UiStrings> = {
   installedDictionaries: 'Diccionarios instalados',
   italic: 'Cursiva',
   language: 'Idioma',
+  languageTools: 'Herramientas de idioma',
   largeToolbar: 'Barra y controles grandes',
   layout: 'Diseno',
   left: 'Izquierda',
@@ -985,6 +1007,7 @@ const spanish: Partial<UiStrings> = {
   next: 'Siguiente',
   nextChange: 'Cambio siguiente',
   nextComment: 'Comentario siguiente',
+  nextIssue: 'Problema siguiente',
   noIssues: 'Sin problemas.',
   noMatches: 'Sin coincidencias',
   noRecentDocuments: 'No hay documentos recientes',
@@ -992,6 +1015,7 @@ const spanish: Partial<UiStrings> = {
   no: 'No',
   off: 'Apagado',
   open: 'Abrir',
+  openDictionarySettings: 'Ajustes de diccionario',
   page: 'Pagina',
   pageSetupUpdated: 'Pagina actualizada',
   pageSize: 'Tamano de pagina',
@@ -1010,6 +1034,7 @@ const spanish: Partial<UiStrings> = {
   pdfPageRangeTo: 'Hasta pagina',
   previousChange: 'Cambio anterior',
   previousComment: 'Comentario anterior',
+  previousIssue: 'Problema anterior',
   print: 'Imprimir',
   printPrepared: 'Vista de impresion preparada',
   properties: 'Propiedades',
@@ -1039,6 +1064,11 @@ const spanish: Partial<UiStrings> = {
   smartQuotes: 'Usar comillas tipograficas',
   smartTyping: 'Escritura inteligente',
   spelling: 'Ortografia',
+  spellingCleared: 'Marcas de ortografia limpiadas',
+  spellingIssue: 'Problema de ortografia',
+  spellingIssueSelected: 'Problema de ortografia seleccionado',
+  spellingIssues: 'Problemas de ortografia',
+  spellingSuggestions: 'Sugerencias de ortografia',
   starting: 'Iniciando...',
   startCenter: 'Centro de inicio',
   startWriting: 'Empieza a escribir...',

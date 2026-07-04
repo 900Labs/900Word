@@ -327,6 +327,10 @@
     x: number;
     y: number;
   } | null>(null);
+  let spellingPanelOpen = $state(false);
+  let activeSpellIssueKey = $state<string | null>(null);
+  let lastSpellCheckDictionary = $state('');
+  let lastSpellCheckWarnings = $state<string[]>([]);
   let statsPanelOpen = $state(false);
   let inspectorPanelOpen = $state(false);
   let ignoredSpellWords = new Set<string>();
@@ -444,6 +448,15 @@
   );
   let effectiveZoomPercent = $derived(zoomChoice === 'fit-width' ? fitWidthZoom : customZoomPercent);
   let editorSurfaceStyle = $derived(editorViewportStyle(pageSetup, effectiveZoomPercent));
+  let activeSpellIssue = $derived<EditorSpellIssueRange | undefined>(
+    spellIssueRanges.find((issue) => spellInstanceKey(issue) === activeSpellIssueKey) ?? spellIssueRanges[0]
+  );
+  let activeSpellIssueIndex = $derived(
+    activeSpellIssue ? spellIssueRanges.findIndex((issue) => spellInstanceKey(issue) === spellInstanceKey(activeSpellIssue)) : -1
+  );
+  let visibleDictionaryLabel = $derived(
+    lastSpellCheckDictionary || selectedDictionary?.display_name || settings.language_tag
+  );
   let showAutomaticSidebarContent = $derived(
     !settings.low_resource && (navigatorHeadings.length > 0 || fileState.recent_documents.length > 0)
   );
@@ -451,6 +464,7 @@
     commentsPanelOpen ||
     notesPanelOpen ||
     reviewPanelOpen ||
+      spellingPanelOpen ||
       showAutomaticSidebarContent ||
       fileState.recovery_documents.length > 0 ||
       projectionWarnings.length > 0
@@ -1055,20 +1069,36 @@
   }
 
   async function checkSpelling() {
-    const result = await invoke<SpellCheckResult>('check_spelling', {
-      text: plainText,
-      languageTag: settings.language_tag
-    });
-    spellIssues = result.issues.filter((issue) => !spellIssueIgnored(issue));
-    spellIssueRanges = setEditorSpellIssues(view, spellIssues, plainText);
-    spellPopover = null;
-    if (result.warnings.length > 0) {
-      status = `${tr('offlineDictionaryFallback')}: ${result.dictionary_display_name}`;
-    } else {
-      status =
-        spellIssues.length === 0
-          ? tr('statusNoSpellingIssues')
-          : tr('spellIssueCount', { count: spellIssues.length });
+    try {
+      const result = await invoke<SpellCheckResult>('check_spelling', {
+        text: plainText,
+        languageTag: settings.language_tag
+      });
+      lastSpellCheckDictionary = result.dictionary_display_name;
+      lastSpellCheckWarnings = result.warnings;
+      spellIssues = result.issues.filter((issue) => !spellIssueIgnored(issue));
+      spellIssueRanges = setEditorSpellIssues(view, spellIssues, plainText);
+      syncActiveSpellIssue(spellIssueRanges);
+      spellPopover = null;
+      if (result.warnings.length > 0) {
+        status = `${tr('offlineDictionaryFallback')}: ${result.dictionary_display_name}`;
+      } else {
+        status =
+          spellIssues.length === 0
+            ? tr('statusNoSpellingIssues')
+            : tr('spellIssueCount', { count: spellIssues.length });
+      }
+    } catch (error) {
+      setStatusFromError(error);
+    }
+  }
+
+  async function runSpellingPanelCheck() {
+    spellingPanelOpen = true;
+    activeView = 'editor';
+    await checkSpelling();
+    if (activeSpellIssue) {
+      jumpToSpellIssue(activeSpellIssue);
     }
   }
 
@@ -1076,7 +1106,21 @@
     spellIssues = [];
     spellIssueRanges = setEditorSpellIssues(view, [], plainText);
     spellPopover = null;
+    activeSpellIssueKey = null;
+    lastSpellCheckWarnings = [];
     ignoredSpellInstances = new Set();
+  }
+
+  function clearSpellingPanel() {
+    clearSpellDecorations();
+    status = tr('spellingCleared');
+  }
+
+  function toggleSpellingPanel() {
+    spellingPanelOpen = !spellingPanelOpen;
+    if (spellingPanelOpen) {
+      activeView = 'editor';
+    }
   }
 
   function handleEditorContextMenu(event: MouseEvent) {
@@ -1093,6 +1137,7 @@
       return;
     }
     event.preventDefault();
+    activeSpellIssueKey = spellInstanceKey(issue);
     spellPopover = {
       issue,
       x: Math.min(event.clientX, window.innerWidth - 240),
@@ -1100,40 +1145,41 @@
     };
   }
 
-  function replaceSpellIssue(suggestion: string) {
-    if (!spellPopover) {
+  async function replaceSpellIssue(suggestion: string, issue = spellPopover?.issue ?? activeSpellIssue) {
+    if (!issue) {
       return;
     }
-    const issue = spellPopover.issue;
     if (replaceEditorTextRange(view, issue.from, issue.to, suggestion)) {
       spellPopover = null;
       status = tr('spellingSuggestionApplied');
+      await waitForEditorSync();
+      await checkSpelling();
     }
   }
 
-  function ignoreSpellIssueOnce() {
-    if (!spellPopover) {
+  function ignoreSpellIssueOnce(issue = spellPopover?.issue ?? activeSpellIssue) {
+    if (!issue) {
       return;
     }
-    ignoredSpellInstances.add(spellInstanceKey(spellPopover.issue));
+    ignoredSpellInstances.add(spellInstanceKey(issue));
     refreshVisibleSpellIssues();
     status = tr('spellIgnoredOnce');
   }
 
-  function ignoreSpellIssueAll() {
-    if (!spellPopover) {
+  function ignoreSpellIssueAll(issue = spellPopover?.issue ?? activeSpellIssue) {
+    if (!issue) {
       return;
     }
-    ignoredSpellWords.add(normalizeSpellWord(spellPopover.issue.word));
+    ignoredSpellWords.add(normalizeSpellWord(issue.word));
     refreshVisibleSpellIssues();
     status = tr('spellIgnoredAll');
   }
 
-  async function addSpellIssueToPersonalDictionary() {
-    if (!spellPopover) {
+  async function addSpellIssueToPersonalDictionary(issue = spellPopover?.issue ?? activeSpellIssue) {
+    if (!issue) {
       return;
     }
-    const word = spellPopover.issue.word;
+    const word = issue.word;
     try {
       await invoke('add_to_personal_dictionary', {
         word,
@@ -1152,7 +1198,38 @@
   function refreshVisibleSpellIssues() {
     spellIssues = spellIssues.filter((issue) => !spellIssueIgnored(issue));
     spellIssueRanges = setEditorSpellIssues(view, spellIssues, plainText);
+    syncActiveSpellIssue(spellIssueRanges);
     spellPopover = null;
+  }
+
+  function syncActiveSpellIssue(ranges: EditorSpellIssueRange[]) {
+    if (ranges.length === 0) {
+      activeSpellIssueKey = null;
+      return;
+    }
+    const activeStillVisible = ranges.some((issue) => spellInstanceKey(issue) === activeSpellIssueKey);
+    if (!activeStillVisible) {
+      activeSpellIssueKey = spellInstanceKey(ranges[0]);
+    }
+  }
+
+  function jumpToSpellIssue(issue: EditorSpellIssueRange) {
+    activeView = 'editor';
+    spellingPanelOpen = true;
+    activeSpellIssueKey = spellInstanceKey(issue);
+    spellPopover = null;
+    status = selectEditorTextRange(view, issue.from, issue.to) ? tr('spellingIssueSelected') : tr('noMatches');
+  }
+
+  function navigateSpellIssue(delta: number) {
+    if (spellIssueRanges.length === 0) {
+      status = tr('statusNoSpellingIssues');
+      return;
+    }
+    const currentIndex = spellIssueRanges.findIndex((issue) => spellInstanceKey(issue) === activeSpellIssueKey);
+    const nextIndex =
+      currentIndex === -1 ? (delta < 0 ? spellIssueRanges.length - 1 : 0) : wrapIndex(currentIndex + delta, spellIssueRanges.length);
+    jumpToSpellIssue(spellIssueRanges[nextIndex]);
   }
 
   function spellIssueIgnored(issue: SpellIssue) {
@@ -3078,7 +3155,7 @@
               <span class="menu-command-main"><span class="menu-command-label">{tr('rejectAll')}</span></span>
             </button>
             <div class="menu-separator" role="separator"></div>
-            <button class="menu-command" type="button" onclick={() => runFileMenuAction(checkSpelling)}>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(runSpellingPanelCheck)}>
               <span class="menu-glyph glyph-spell" aria-hidden="true"></span>
               <span class="menu-command-main"><span class="menu-command-label">{tr('checkSpelling')}</span></span>
             </button>
@@ -3159,7 +3236,12 @@
             <div class="menu-popover-header" aria-hidden="true">
               <span>{tr('tools')}</span>
             </div>
-            <button class="menu-command" type="button" onclick={() => runFileMenuAction(checkSpelling)}>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(toggleSpellingPanel)}>
+              <span class="menu-glyph glyph-spell" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('languageTools')}</span></span>
+              <span class="menu-shortcut">{spellIssueRanges.length}</span>
+            </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(runSpellingPanelCheck)}>
               <span class="menu-glyph glyph-spell" aria-hidden="true"></span>
               <span class="menu-command-main"><span class="menu-command-label">{tr('checkSpelling')}</span></span>
             </button>
@@ -3585,6 +3667,15 @@
         onclick={() => (notesPanelOpen = !notesPanelOpen)}
       >
         {tr('notes')}{noteSummaries.length > 0 ? ` ${noteSummaries.length}` : ''}
+      </button>
+      <button
+        aria-expanded={spellingPanelOpen}
+        class:active-format={spellingPanelOpen}
+        title={tr('languageTools')}
+        type="button"
+        onclick={toggleSpellingPanel}
+      >
+        {tr('spelling')}{spellIssueRanges.length > 0 ? ` ${spellIssueRanges.length}` : ''}
       </button>
       <button
         disabled={!editorEditable}
@@ -4362,6 +4453,87 @@
           </section>
         {/if}
 
+        {#if spellingPanelOpen}
+          <section class="spelling-panel" aria-label={tr('languageTools')}>
+            <div class="sidebar-section-heading">
+              <h2>{tr('languageTools')}</h2>
+              <span>{spellIssueRanges.length}</span>
+            </div>
+            <div class="spelling-summary-grid">
+              <div>
+                <span>{tr('activeDictionary')}</span>
+                <strong>{visibleDictionaryLabel}</strong>
+              </div>
+              <div>
+                <span>{tr('spellingIssues')}</span>
+                <strong>{spellIssueRanges.length}</strong>
+              </div>
+              <div>
+                <span>{tr('personalDictionary')}</span>
+                <strong>{personalDictionaryWords.length}</strong>
+              </div>
+            </div>
+            {#if lastSpellCheckWarnings.length > 0}
+              <p class="privacy-note">{tr('offlineDictionaryFallback')}: {visibleDictionaryLabel}</p>
+            {/if}
+            <div class="spelling-panel-actions">
+              <button type="button" onclick={runSpellingPanelCheck}>{tr('checkSpelling')}</button>
+              <button disabled={spellIssueRanges.length === 0} type="button" onclick={clearSpellingPanel}>
+                {tr('clearSpelling')}
+              </button>
+              <button type="button" onclick={() => selectView('settings')}>{tr('openDictionarySettings')}</button>
+            </div>
+
+            {#if activeSpellIssue}
+              <article class="spell-review-card">
+                <div class="spell-review-heading">
+                  <span>{tr('spellingIssue')}</span>
+                  <strong>{activeSpellIssue.word}</strong>
+                  <small>{tr('matchCount', { current: activeSpellIssueIndex + 1, total: spellIssueRanges.length })}</small>
+                </div>
+                <div class="review-navigator">
+                  <button disabled={spellIssueRanges.length === 0} type="button" onclick={() => navigateSpellIssue(-1)}>
+                    {tr('previousIssue')}
+                  </button>
+                  <button disabled={spellIssueRanges.length === 0} type="button" onclick={() => navigateSpellIssue(1)}>
+                    {tr('nextIssue')}
+                  </button>
+                </div>
+                <div class="spell-suggestions" aria-label={tr('spellingSuggestions')}>
+                  {#if activeSpellIssue.suggestions && activeSpellIssue.suggestions.length > 0}
+                    {#each activeSpellIssue.suggestions as suggestion}
+                      <button type="button" onclick={() => replaceSpellIssue(suggestion, activeSpellIssue)}>
+                        {suggestion}
+                      </button>
+                    {/each}
+                  {:else}
+                    <span class="spell-muted">{tr('noSuggestions')}</span>
+                  {/if}
+                </div>
+                <div class="spell-panel-actions">
+                  <button type="button" onclick={() => ignoreSpellIssueOnce(activeSpellIssue)}>{tr('ignoreOnce')}</button>
+                  <button type="button" onclick={() => ignoreSpellIssueAll(activeSpellIssue)}>{tr('ignoreAll')}</button>
+                  <button type="button" onclick={() => addSpellIssueToPersonalDictionary(activeSpellIssue)}>
+                    {tr('addToDictionary')}
+                  </button>
+                </div>
+              </article>
+              <ul class="spell-issues-list">
+                {#each spellIssueRanges as issue}
+                  <li class:active-spell-issue={spellInstanceKey(issue) === activeSpellIssueKey}>
+                    <button type="button" onclick={() => jumpToSpellIssue(issue)}>
+                      <span>{issue.word}</span>
+                      <small>{issue.suggestions?.[0] ?? tr('noSuggestions')}</small>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="empty-sidebar-note">{tr('statusNoSpellingIssues')}</p>
+            {/if}
+          </section>
+        {/if}
+
         {#if !settings.low_resource && fileState.recent_documents.length > 0}
           <h2>{tr('recent')}</h2>
           <ul class="action-list">
@@ -4548,9 +4720,9 @@
             <span class="spell-muted">{tr('noSuggestions')}</span>
           {/if}
           <div class="spell-actions">
-            <button type="button" onclick={ignoreSpellIssueOnce}>{tr('ignoreOnce')}</button>
-            <button type="button" onclick={ignoreSpellIssueAll}>{tr('ignoreAll')}</button>
-            <button type="button" onclick={addSpellIssueToPersonalDictionary}>{tr('addToDictionary')}</button>
+            <button type="button" onclick={() => ignoreSpellIssueOnce()}>{tr('ignoreOnce')}</button>
+            <button type="button" onclick={() => ignoreSpellIssueAll()}>{tr('ignoreAll')}</button>
+            <button type="button" onclick={() => addSpellIssueToPersonalDictionary()}>{tr('addToDictionary')}</button>
           </div>
         </div>
       {/if}
@@ -5437,7 +5609,23 @@
     </div>
     <div class="bottom-group">
       <span class="bottom-label">{tr('spelling')}</span>
-      <button class="bottom-action" type="button" onclick={checkSpelling}>{tr('checkSpelling')}</button>
+      <button
+        aria-expanded={spellingPanelOpen}
+        class="bottom-action"
+        type="button"
+        onclick={toggleSpellingPanel}
+      >
+        {tr('languageTools')}
+      </button>
+      <button class="bottom-action" type="button" onclick={runSpellingPanelCheck}>{tr('checkSpelling')}</button>
+      <button
+        class="bottom-action"
+        disabled={spellIssueRanges.length === 0}
+        type="button"
+        onclick={clearSpellingPanel}
+      >
+        {tr('clearSpelling')}
+      </button>
       {#if spellIssues.length === 0}
         <span>{tr('noIssues')}</span>
       {:else}
