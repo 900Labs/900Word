@@ -107,6 +107,7 @@ export type UiStringKey =
   | 'documentActions'
   | 'documentFormat'
   | 'documentInspector'
+  | 'documentNavigation'
   | 'documentStructure'
   | 'docx'
   | 'docxImported'
@@ -139,6 +140,7 @@ export type UiStringKey =
   | 'file'
   | 'find'
   | 'findAndReplace'
+  | 'findMatches'
   | 'fitWidth'
   | 'firstLine'
   | 'firstLineIndent'
@@ -218,8 +220,11 @@ export type UiStringKey =
   | 'linkInvalid'
   | 'linkRemoved'
   | 'linkTarget'
+  | 'linkTargetJumped'
+  | 'linkTargets'
   | 'linkTools'
   | 'linkUnchanged'
+  | 'linksAndBookmarks'
   | 'listLevelChanged'
   | 'lists'
   | 'lowResourceMode'
@@ -250,6 +255,7 @@ export type UiStringKey =
   | 'noComments'
   | 'noHeadings'
   | 'noImageSelected'
+  | 'noLinkTargets'
   | 'noObjectSelected'
   | 'noPrivacyWarnings'
   | 'noTableSelected'
@@ -321,6 +327,7 @@ export type UiStringKey =
   | 'properties'
   | 'privacyWarnings'
   | 'projection'
+  | 'quickAccess'
   | 'recent'
   | 'recover'
   | 'recovery'
@@ -579,6 +586,7 @@ const english: UiStrings = {
   documentActions: 'Document actions',
   documentFormat: 'Document format',
   documentInspector: 'Document Inspector',
+  documentNavigation: 'Navigation',
   documentStructure: 'Document structure',
   docx: 'DOCX',
   docxImported: 'DOCX imported as an unsaved ODT document',
@@ -611,6 +619,7 @@ const english: UiStrings = {
   file: 'File',
   find: 'Find',
   findAndReplace: 'Find and replace',
+  findMatches: 'Matches',
   fitWidth: 'Fit Width',
   firstLine: 'First',
   firstLineIndent: 'First-line indent',
@@ -690,8 +699,11 @@ const english: UiStrings = {
   linkInvalid: 'Use a safe http, https, mailto, or #bookmark link',
   linkRemoved: 'Link removed',
   linkTarget: 'Link target',
+  linkTargetJumped: 'Jumped to {target}',
+  linkTargets: 'Targets',
   linkTools: 'Link tools',
   linkUnchanged: 'Link unchanged',
+  linksAndBookmarks: 'Links and bookmarks',
   listLevelChanged: 'List level changed',
   lists: 'Lists',
   lowResourceMode: 'Low-resource mode',
@@ -719,6 +731,7 @@ const english: UiStrings = {
   noComments: 'No comments',
   noHeadings: 'No headings yet',
   noImageSelected: 'Select an image to edit image placement and metadata.',
+  noLinkTargets: 'No headings or bookmarks with link targets',
   noObjectSelected: 'No object selected',
   noPrivacyWarnings: 'No privacy warnings.',
   noTableSelected: 'Select a table cell to edit table structure and cell formatting.',
@@ -793,6 +806,7 @@ const english: UiStrings = {
   properties: 'Properties',
   privacyWarnings: 'Privacy warnings',
   projection: 'Projection',
+  quickAccess: 'Quick access',
   recent: 'Recent',
   recover: 'Open',
   recovery: 'Recovery',
@@ -995,6 +1009,7 @@ const spanish: Partial<UiStrings> = {
   dictionaryUnavailableOption: 'No disponible ({languageTag})',
   documentActions: 'Acciones del documento',
   documentFormat: 'Formato de documento',
+  documentNavigation: 'Navegacion',
   documentStructure: 'Estructura del documento',
   documentOpened: 'Documento abierto',
   documentSaved: 'Documento guardado',
@@ -1016,6 +1031,7 @@ const spanish: Partial<UiStrings> = {
   file: 'Archivo',
   find: 'Buscar',
   findAndReplace: 'Buscar y reemplazar',
+  findMatches: 'Coincidencias',
   format: 'Formato',
   height: 'Alto',
   help: 'Ayuda',
@@ -1041,6 +1057,9 @@ const spanish: Partial<UiStrings> = {
   layout: 'Diseno',
   layoutStructure: 'Diseno y estructura',
   left: 'Izquierda',
+  linkTargetJumped: 'Saltado a {target}',
+  linkTargets: 'Destinos',
+  linksAndBookmarks: 'Enlaces y marcadores',
   license: 'Licencia',
   lowResourceMode: 'Modo de bajo consumo',
   mainMenu: 'Menu principal',
@@ -1059,6 +1078,7 @@ const spanish: Partial<UiStrings> = {
   noIssues: 'Sin problemas.',
   noHeadings: 'Aun no hay titulos',
   noImageSelected: 'Seleccione una imagen para editar ubicacion y metadatos.',
+  noLinkTargets: 'No hay titulos ni marcadores con destino',
   noObjectSelected: 'No hay objeto seleccionado',
   noMatches: 'Sin coincidencias',
   noRecentDocuments: 'No hay documentos recientes',
@@ -1093,6 +1113,7 @@ const spanish: Partial<UiStrings> = {
   print: 'Imprimir',
   printPrepared: 'Vista de impresion preparada',
   properties: 'Propiedades',
+  quickAccess: 'Acceso rapido',
   recent: 'Recientes',
   recovery: 'Recuperacion',
   recoveryDiscarded: 'Borrador de recuperacion descartado',

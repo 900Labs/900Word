@@ -378,6 +378,7 @@
   let findRanges = $state<EditorFindMatch[]>([]);
   let activeFindIndex = $state(-1);
   let findPanelOpen = $state(false);
+  let navigationPanelOpen = $state(false);
   let linkPanelOpen = $state(false);
   let linkHrefInput = $state('');
   let selectedLinkTargetId = $state('');
@@ -490,6 +491,13 @@
   let selectedObjectLabel = $derived(
     activeFormatting.image ? tr('imageControls') : activeFormatting.table ? tr('tables') : tr('noObjectSelected')
   );
+  let activeFindLabel = $derived(
+    findRanges.length === 0 ? '0' : tr('matchCount', { current: activeFindIndex + 1, total: findRanges.length })
+  );
+  let linkTargetCounts = $derived({
+    headings: linkTargets.filter((target) => target.kind === 'heading').length,
+    bookmarks: linkTargets.filter((target) => target.kind === 'bookmark').length
+  });
   let activeSpellIssue = $derived<EditorSpellIssueRange | undefined>(
     spellIssueRanges.find((issue) => spellInstanceKey(issue) === activeSpellIssueKey) ?? spellIssueRanges[0]
   );
@@ -506,6 +514,7 @@
     commentsPanelOpen ||
     notesPanelOpen ||
     reviewPanelOpen ||
+      navigationPanelOpen ||
       objectsPanelOpen ||
       layoutPanelOpen ||
       spellingPanelOpen ||
@@ -2088,6 +2097,13 @@
       : tr('noMatches');
   }
 
+  function jumpToLinkTarget(target: DocumentLinkTarget) {
+    activeView = 'editor';
+    status = selectEditorTopLevelBlock(view, target.editorBlockIndex)
+      ? tr('linkTargetJumped', { target: target.label })
+      : tr('noMatches');
+  }
+
   function setSpacingField(field: 'spacingBefore' | 'spacingAfter' | 'firstLineIndent', value: number) {
     if (!Number.isFinite(value)) {
       return;
@@ -2164,12 +2180,45 @@
     input?.select();
   }
 
+  async function openNavigationPanel(focusFind = false) {
+    activeView = 'editor';
+    navigationPanelOpen = true;
+    findPanelOpen = false;
+    refreshFindState();
+    if (focusFind) {
+      await tick();
+      findInput?.focus();
+      findInput?.select();
+    }
+  }
+
   function toggleFindPanel() {
     if (findPanelOpen) {
       findPanelOpen = false;
       view?.focus();
     } else {
       openFindPanel('find');
+    }
+  }
+
+  function toggleNavigationPanel() {
+    if (navigationPanelOpen) {
+      navigationPanelOpen = false;
+      view?.focus();
+    } else {
+      void openNavigationPanel(false);
+    }
+  }
+
+  function handleFindInputKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Enter') {
+      return;
+    }
+    event.preventDefault();
+    if (event.shiftKey) {
+      findPrevious();
+    } else {
+      findNext();
     }
   }
 
@@ -3335,6 +3384,11 @@
               <span class="menu-command-main"><span class="menu-command-label">{tr('showRulers')}</span></span>
               <span class="menu-shortcut">{showRulers ? tr('yes') : tr('no')}</span>
             </button>
+            <button class="menu-command" type="button" onclick={() => runFileMenuAction(toggleNavigationPanel)}>
+              <span class="menu-glyph glyph-find" aria-hidden="true"></span>
+              <span class="menu-command-main"><span class="menu-command-label">{tr('documentNavigation')}</span></span>
+              <span class="menu-shortcut">{navigatorHeadings.length + linkTargets.length}</span>
+            </button>
             <button class="menu-command" type="button" onclick={() => runFileMenuAction(toggleLayoutPanel)}>
               <span class="menu-glyph glyph-page" aria-hidden="true"></span>
               <span class="menu-command-main"><span class="menu-command-label">{tr('layoutStructure')}</span></span>
@@ -3563,6 +3617,14 @@
         onclick={toggleLayoutPanel}
       >
         {tr('layoutStructure')}
+      </button>
+      <button
+        aria-expanded={navigationPanelOpen}
+        class:active-format={navigationPanelOpen}
+        type="button"
+        onclick={toggleNavigationPanel}
+      >
+        {tr('documentNavigation')}
       </button>
     </div>
 
@@ -4365,12 +4427,23 @@
       >
         <span aria-hidden="true" class="search-icon"></span>
       </button>
+      <button
+        aria-expanded={navigationPanelOpen}
+        aria-label={tr('documentNavigation')}
+        class="navigation-toggle"
+        title={tr('documentNavigation')}
+        type="button"
+        onclick={toggleNavigationPanel}
+      >
+        <span aria-hidden="true" class="navigation-icon"></span>
+      </button>
       {#if findPanelOpen}
         <div class="find-popover" id="find-panel">
           <input
             aria-label={tr('find')}
             bind:this={findInput}
             bind:value={findQuery}
+            onkeydown={handleFindInputKeydown}
             oninput={refreshFindState}
             placeholder={tr('find')}
             type="search"
@@ -4381,7 +4454,7 @@
           </label>
           <button disabled={findRanges.length === 0} type="button" onclick={findPrevious}>{tr('previous')}</button>
           <button disabled={findRanges.length === 0} type="button" onclick={findNext}>{tr('next')}</button>
-          <span class="match-count">{findRanges.length === 0 ? '0' : tr('matchCount', { current: activeFindIndex + 1, total: findRanges.length })}</span>
+          <span class="match-count">{activeFindLabel}</span>
           <input
             aria-label={tr('replace')}
             bind:this={replaceInput}
@@ -4403,7 +4476,146 @@
   >
     {#if showWorkspaceSidebar}
       <aside class="sidebar" aria-label={tr('documentStatistics')}>
-        {#if !settings.low_resource && navigatorHeadings.length > 0}
+        {#if navigationPanelOpen}
+          <section class="navigation-panel" aria-label={tr('documentNavigation')}>
+            <div class="sidebar-section-heading">
+              <h2>{tr('documentNavigation')}</h2>
+              <span>{activeFindLabel}</span>
+            </div>
+
+            <div class="navigation-summary-grid">
+              <div>
+                <span>{tr('findMatches')}</span>
+                <strong>{findRanges.length}</strong>
+              </div>
+              <div>
+                <span>{tr('headings')}</span>
+                <strong>{navigatorHeadings.length}</strong>
+              </div>
+              <div>
+                <span>{tr('linkTargets')}</span>
+                <strong>{linkTargets.length}</strong>
+              </div>
+            </div>
+
+            <section class="navigation-card" aria-label={tr('findAndReplace')}>
+              <div class="navigation-card-heading">
+                <h3>{tr('findAndReplace')}</h3>
+                <span>{activeFindLabel}</span>
+              </div>
+              <div class="navigation-find-grid">
+                <input
+                  aria-label={tr('find')}
+                  bind:this={findInput}
+                  bind:value={findQuery}
+                  onkeydown={handleFindInputKeydown}
+                  oninput={refreshFindState}
+                  placeholder={tr('find')}
+                  type="search"
+                />
+                <label class="check-row compact">
+                  <input bind:checked={findCaseSensitive} onchange={refreshFindState} type="checkbox" />
+                  {tr('case')}
+                </label>
+                <button disabled={findRanges.length === 0} type="button" onclick={findPrevious}>{tr('previous')}</button>
+                <button disabled={findRanges.length === 0} type="button" onclick={findNext}>{tr('next')}</button>
+                <input
+                  aria-label={tr('replace')}
+                  bind:this={replaceInput}
+                  bind:value={replaceText}
+                  placeholder={tr('replace')}
+                  type="text"
+                />
+                <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceCurrentMatch}>
+                  {tr('replace')}
+                </button>
+                <button disabled={!editorEditable || findRanges.length === 0} type="button" onclick={replaceAllMatches}>
+                  {tr('all')}
+                </button>
+              </div>
+            </section>
+
+            <section class="navigation-card" aria-label={tr('headings')}>
+              <div class="navigation-card-heading">
+                <h3>{tr('headings')}</h3>
+                <span>H1 {headingLevelCounts.h1} / H2 {headingLevelCounts.h2} / H3 {headingLevelCounts.h3}</span>
+              </div>
+              {#if navigatorHeadings.length > 0}
+                <ul class="navigation-list">
+                  {#each navigatorHeadings as heading}
+                    <li class={`navigator-level-${heading.level}`}>
+                      <button type="button" onclick={() => jumpToHeading(heading)}>
+                        <span class="navigator-marker">H{heading.level}</span>
+                        <span>{heading.text}</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="empty-sidebar-note">{tr('noHeadings')}</p>
+              {/if}
+            </section>
+
+            <section class="navigation-card" aria-label={tr('linksAndBookmarks')}>
+              <div class="navigation-card-heading">
+                <h3>{tr('linksAndBookmarks')}</h3>
+                <span>{linkTargetCounts.headings}/{linkTargetCounts.bookmarks}</span>
+              </div>
+              {#if linkTargets.length > 0}
+                <ul class="navigation-list link-target-list">
+                  {#each linkTargets as target}
+                    <li class:bookmark-target={target.kind === 'bookmark'}>
+                      <button type="button" onclick={() => jumpToLinkTarget(target)}>
+                        <span class="navigator-marker">
+                          {target.kind === 'heading' && target.level ? `H${target.level}` : 'BM'}
+                        </span>
+                        <span class="target-label">{target.label}</span>
+                        <small>#{target.id}</small>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="empty-sidebar-note">{tr('noLinkTargets')}</p>
+              {/if}
+            </section>
+
+            <section class="navigation-card" aria-label={tr('quickAccess')}>
+              <div class="navigation-card-heading">
+                <h3>{tr('quickAccess')}</h3>
+                <span>{fileState.recent_documents.length + fileState.recovery_documents.length}</span>
+              </div>
+              {#if fileState.recent_documents.length > 0}
+                <h4>{tr('recent')}</h4>
+                <ul class="navigation-action-list">
+                  {#each fileState.recent_documents as recent}
+                    <li>
+                      <span>{recent.label}{recent.is_current ? ' *' : ''}</span>
+                      <button type="button" onclick={() => openRecentDocument(recent.token)}>{tr('openRecent')}</button>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="empty-sidebar-note">{tr('noRecentDocuments')}</p>
+              {/if}
+
+              {#if fileState.recovery_documents.length > 0}
+                <h4>{tr('recovery')}</h4>
+                <ul class="navigation-action-list">
+                  {#each fileState.recovery_documents as recovery}
+                    <li>
+                      <span>{recovery.label}</span>
+                      <button type="button" onclick={() => recoverDocument(recovery.token)}>{tr('recover')}</button>
+                      <button type="button" onclick={() => discardRecovery(recovery.token)}>{tr('discard')}</button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </section>
+          </section>
+        {/if}
+
+        {#if !navigationPanelOpen && !settings.low_resource && navigatorHeadings.length > 0}
           <h2>{tr('navigator')}</h2>
           <ul class="navigator-list">
             {#each navigatorHeadings as heading}
