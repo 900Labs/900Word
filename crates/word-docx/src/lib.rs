@@ -1,6 +1,6 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use quick_xml::events::{BytesStart, Event};
-use quick_xml::Reader;
+use quick_xml::{Reader, XmlVersion};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};
 use thiserror::Error;
@@ -7643,7 +7643,7 @@ fn attr_value(
         })?;
         if local_name(attr.key.as_ref()) == local {
             return Ok(Some(
-                attr.decode_and_unescape_value(start.decoder())
+                attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, start.decoder())
                     .map_err(|err| xml_error(name, err))?
                     .into_owned(),
             ));

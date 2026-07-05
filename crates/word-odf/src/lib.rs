@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use quick_xml::events::{BytesStart, Event};
-use quick_xml::Reader;
+use quick_xml::{Reader, XmlVersion};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
 use std::io::{Cursor, Read, Write};
@@ -3211,7 +3211,7 @@ fn attr_value(start: &BytesStart<'_>, local: &[u8]) -> Result<Option<String>, Od
         let attr = attr.map_err(|err| xml_error("content.xml", err))?;
         if local_name(attr.key.as_ref()) == local {
             return Ok(Some(
-                attr.decode_and_unescape_value(start.decoder())
+                attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, start.decoder())
                     .map_err(|err| xml_error("content.xml", err))?
                     .into_owned(),
             ));
@@ -3225,7 +3225,7 @@ fn attr_value_exact(start: &BytesStart<'_>, name: &[u8]) -> Result<Option<String
         let attr = attr.map_err(|err| xml_error("content.xml", err))?;
         if attr.key.as_ref() == name {
             return Ok(Some(
-                attr.decode_and_unescape_value(start.decoder())
+                attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, start.decoder())
                     .map_err(|err| xml_error("content.xml", err))?
                     .into_owned(),
             ));
