@@ -77,6 +77,7 @@ All notable changes to 900Word are tracked here.
 - DOCX image alt-text interoperability, importing supported drawing `descr`/`title` metadata into existing 900Word image alt text and exporting local alt text on generated drawing metadata without preserving source image names or paths.
 - External office-suite compatibility testing matrix and release evidence policy for Microsoft Word, Google Docs, LibreOffice, and ONLYOFFICE claims using generated or sanitized placeholder documents only.
 - Generated compatibility fixture artifact helper for producing local ignored ODT, DOCX, TXT, HTML, print HTML, and PDF placeholder samples from `word-fixtures` for manual suite testing without private documents.
+- Export and print UX polish with scannable TXT, sanitized offline HTML, lightweight PDF snapshot, and bounded DOCX conversion choices, shared tested PDF page-range validation, and clearer sanitized WebView/browser print labeling without changing export backends or file-format behavior.
 
 ### Fixed
 

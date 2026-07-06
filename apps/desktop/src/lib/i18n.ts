@@ -126,15 +126,19 @@ export type UiStringKey =
   | 'export'
   | 'externalLink'
   | 'exportHtml'
+  | 'exportHtmlDescription'
   | 'exportHtmlPrepared'
   | 'exportHtmlSaved'
   | 'exportDocx'
+  | 'exportDocxDescription'
   | 'exportDocxSaved'
   | 'exportPdf'
+  | 'exportPdfDescription'
   | 'exportPdfInvalidRange'
   | 'exportPdfPrepared'
   | 'exportPdfSaved'
   | 'exportTxt'
+  | 'exportTxtDescription'
   | 'exportTxtPrepared'
   | 'exportTxtSaved'
   | 'file'
@@ -315,6 +319,8 @@ export type UiStringKey =
   | 'pdf'
   | 'pdfAllPages'
   | 'pdfPageRange'
+  | 'pdfPageRangeHint'
+  | 'pdfPageRangeModeRange'
   | 'pdfPageRangeFrom'
   | 'pdfPageRangeTo'
   | 'previous'
@@ -322,6 +328,7 @@ export type UiStringKey =
   | 'previousComment'
   | 'previousIssue'
   | 'print'
+  | 'printDescription'
   | 'printFrame'
   | 'printPrepared'
   | 'properties'
@@ -605,15 +612,19 @@ const english: UiStrings = {
   export: 'Export',
   externalLink: 'External link',
   exportHtml: 'Export HTML',
+  exportHtmlDescription: 'Sanitized offline HTML',
   exportHtmlPrepared: 'HTML export prepared ({characters} characters)',
   exportHtmlSaved: 'HTML export written ({bytes} bytes)',
   exportDocx: 'Export DOCX',
+  exportDocxDescription: 'Bounded DOCX conversion',
   exportDocxSaved: 'DOCX export written ({bytes} bytes)',
   exportPdf: 'Export PDF',
+  exportPdfDescription: 'Lightweight PDF snapshot',
   exportPdfInvalidRange: 'Enter a valid PDF page range.',
   exportPdfPrepared: 'PDF export prepared ({bytes} bytes)',
   exportPdfSaved: 'PDF export written ({bytes} bytes)',
   exportTxt: 'Export TXT',
+  exportTxtDescription: 'Plain document text',
   exportTxtPrepared: 'TXT export prepared ({characters} characters)',
   exportTxtSaved: 'TXT export written ({bytes} bytes)',
   file: 'File',
@@ -794,15 +805,18 @@ const english: UiStrings = {
   pdf: 'PDF',
   pdfAllPages: 'All pages',
   pdfPageRange: 'PDF pages',
+  pdfPageRangeHint: 'Range needs positive whole pages, end at or after start.',
+  pdfPageRangeModeRange: 'Page range',
   pdfPageRangeFrom: 'From page',
   pdfPageRangeTo: 'To page',
   previous: 'Prev',
   previousChange: 'Previous change',
   previousComment: 'Previous comment',
   previousIssue: 'Previous issue',
-  print: 'Print',
-  printFrame: 'Print document',
-  printPrepared: 'Print view prepared',
+  print: 'Prepare print',
+  printDescription: 'Sanitized WebView/browser print prep',
+  printFrame: 'Sanitized print view',
+  printPrepared: 'Sanitized print view prepared',
   properties: 'Properties',
   privacyWarnings: 'Privacy warnings',
   projection: 'Projection',
@@ -1021,11 +1035,15 @@ const spanish: Partial<UiStrings> = {
   editorReadOnly: 'El editor es de solo lectura',
   editingToolbar: 'Barra de edicion',
   export: 'Exportar',
+  exportDocxDescription: 'Conversion DOCX acotada',
+  exportHtmlDescription: 'HTML sin conexion saneado',
   exportHtmlPrepared: 'Exportacion HTML preparada ({characters} caracteres)',
   exportHtmlSaved: 'Exportacion HTML escrita ({bytes} bytes)',
+  exportPdfDescription: 'Instantanea PDF ligera',
   exportPdfInvalidRange: 'Ingrese un rango de paginas PDF valido.',
   exportPdfPrepared: 'Exportacion PDF preparada ({bytes} bytes)',
   exportPdfSaved: 'Exportacion PDF escrita ({bytes} bytes)',
+  exportTxtDescription: 'Texto plano del documento',
   exportTxtPrepared: 'Exportacion TXT preparada ({characters} caracteres)',
   exportTxtSaved: 'Exportacion TXT escrita ({bytes} bytes)',
   file: 'Archivo',
@@ -1105,13 +1123,17 @@ const spanish: Partial<UiStrings> = {
   pdf: 'PDF',
   pdfAllPages: 'Todas las paginas',
   pdfPageRange: 'Paginas PDF',
+  pdfPageRangeHint: 'El rango requiere paginas enteras positivas y fin igual o despues del inicio.',
+  pdfPageRangeModeRange: 'Rango de paginas',
   pdfPageRangeFrom: 'Desde pagina',
   pdfPageRangeTo: 'Hasta pagina',
   previousChange: 'Cambio anterior',
   previousComment: 'Comentario anterior',
   previousIssue: 'Problema anterior',
-  print: 'Imprimir',
-  printPrepared: 'Vista de impresion preparada',
+  print: 'Preparar impresion',
+  printDescription: 'Preparacion de impresion WebView/navegador saneada',
+  printFrame: 'Vista de impresion saneada',
+  printPrepared: 'Vista de impresion saneada preparada',
   properties: 'Propiedades',
   quickAccess: 'Acceso rapido',
   recent: 'Recientes',

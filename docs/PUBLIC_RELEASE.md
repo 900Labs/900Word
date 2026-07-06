@@ -10,7 +10,7 @@ Public claims for `v0.1.0` are limited to:
 
 1. Local-first `.odt` editing with ODT as the canonical saved format.
 2. Bounded DOCX import/export conversion for the documented supported subset.
-3. Current export and print paths: TXT, sanitized HTML, lightweight PDF export, and sanitized WebView print preparation.
+3. Current export and print paths: TXT, sanitized offline HTML, lightweight PDF snapshot export, and sanitized WebView/browser print preparation.
 4. No telemetry by default.
 
 Do not claim broad Microsoft Word, LibreOffice, Google Docs, or ONLYOFFICE compatibility without release-candidate evidence from generated or sanitized placeholder documents.
@@ -22,7 +22,7 @@ Open-source users should expect these limitations in `v0.1.0`:
 1. No official signed installers, notarized packages, automatic updates, or binary package support.
 2. No cloud sync, accounts, collaboration, plugin runtime, remote document storage, macros, or legacy binary `.doc` support.
 3. DOCX remains conversion-only and may degrade unsupported WordprocessingML structures with warnings.
-4. Print and PDF output use the current lightweight export path and do not claim full print-layout or deterministic pagination fidelity.
+4. Print and PDF output use the current lightweight export paths. PDF pagination is limited to the existing lightweight exporter, and print pagination/layout depends on the browser/WebView print implementation.
 5. External office-suite behavior is not a compatibility promise unless backed by the compatibility evidence process.
 6. Full Word/LibreOffice parity, richer style management, full encryption, broad dictionary compatibility, and platform accessibility polish remain deferred.
 
