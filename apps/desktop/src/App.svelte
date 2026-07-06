@@ -106,6 +106,11 @@
     type DocumentInspectorSummary
   } from './lib/documentInspector';
   import {
+    buildPdfExportOptions,
+    type PdfExportOptions,
+    type PdfPageRangeMode
+  } from './lib/exportWorkflow';
+  import {
     clampEditorZoom,
     editorViewportStyle,
     editorZoomStep,
@@ -140,11 +145,6 @@
   interface ExportFileResult {
     format: string;
     byte_len: number;
-  }
-
-  interface PdfExportOptions {
-    pageStart?: number | null;
-    pageEnd?: number | null;
   }
 
   type ExportFormat = 'txt' | 'html' | 'pdf' | 'docx';
@@ -321,7 +321,7 @@
   let stats = $state<CoreDocumentStats>({ word_count: 0, character_count: 0, block_count: 0 });
   let spellIssues = $state<SpellIssue[]>([]);
   let projectionWarnings = $state<string[]>([]);
-  let pdfPageRangeMode = $state<'all' | 'range'>('all');
+  let pdfPageRangeMode = $state<PdfPageRangeMode>('all');
   let pdfPageStartInput = $state('1');
   let pdfPageEndInput = $state('1');
   let fileState = $state<DocumentFileState>({
@@ -489,6 +489,8 @@
   let editorSurfaceStyle = $derived(editorViewportStyle(pageSetup, effectiveZoomPercent));
   let currentPageFormatLabel = $derived(pageFormats.find((format) => format.id === currentPageFormatId())?.label ?? tr('custom'));
   let marginSummary = $derived(pageMarginSummaryLabel());
+  let pdfPageRangeOptionsPreview = $derived(pdfExportOptions());
+  let pdfPageRangeInvalid = $derived(pdfPageRangeMode === 'range' && pdfPageRangeOptionsPreview === null);
   let headingLevelCounts = $derived({
     h1: navigatorHeadings.filter((heading) => heading.level === 1).length,
     h2: navigatorHeadings.filter((heading) => heading.level === 2).length,
@@ -1054,16 +1056,16 @@
 
   async function exportPdf() {
     try {
-      const path = await chooseExportPath('pdf');
-      if (!path) {
-        return;
-      }
-      await waitForEditorSync();
       const options = pdfExportOptions();
       if (!options) {
         status = tr('exportPdfInvalidRange');
         return;
       }
+      const path = await chooseExportPath('pdf');
+      if (!path) {
+        return;
+      }
+      await waitForEditorSync();
       const result = await invoke<ExportFileResult>('export_pdf_to_path', {
         path,
         options
@@ -1075,23 +1077,7 @@
   }
 
   function pdfExportOptions(): PdfExportOptions | null {
-    if (pdfPageRangeMode === 'all') {
-      return {};
-    }
-    const pageStart = parsePositiveIntegerInput(pdfPageStartInput);
-    const pageEnd = parsePositiveIntegerInput(pdfPageEndInput);
-    if (pageStart === null || pageEnd === null || pageEnd < pageStart) {
-      return null;
-    }
-    return { pageStart, pageEnd };
-  }
-
-  function parsePositiveIntegerInput(value: string): number | null {
-    const trimmed = value.trim();
-    if (!/^[1-9]\d*$/.test(trimmed)) {
-      return null;
-    }
-    return Number.parseInt(trimmed, 10);
+    return buildPdfExportOptions(pdfPageRangeMode, pdfPageStartInput, pdfPageEndInput);
   }
 
   async function exportDocx() {
@@ -2911,20 +2897,25 @@
           {#if exportMenuOpen}
             <div class="file-submenu-panel" aria-label={tr('export')}>
               <p class="menu-panel-note">{tr('chooseExportLocation')}</p>
-              <fieldset class="menu-field" aria-label={tr('pdfPageRange')}>
+              <fieldset
+                class="menu-field pdf-range-field"
+                aria-describedby={pdfPageRangeInvalid ? 'file-menu-pdf-page-help file-menu-pdf-page-error' : 'file-menu-pdf-page-help'}
+                aria-label={tr('pdfPageRange')}
+              >
                 <legend>{tr('pdfPageRange')}</legend>
-                <label>
-                  <input
-                    checked={pdfPageRangeMode === 'all'}
-                    name="pdf-page-range-mode"
-                    type="radio"
-                    value="all"
-                    onchange={() => (pdfPageRangeMode = 'all')}
-                  />
-                  {tr('pdfAllPages')}
-                </label>
-                <div class="menu-input-row">
-                  <label>
+                <p id="file-menu-pdf-page-help" class="pdf-range-hint">{tr('pdfPageRangeHint')}</p>
+                <div class="pdf-range-mode-grid">
+                  <label class="pdf-range-choice" data-selected={pdfPageRangeMode === 'all' ? 'true' : undefined}>
+                    <input
+                      checked={pdfPageRangeMode === 'all'}
+                      name="pdf-page-range-mode"
+                      type="radio"
+                      value="all"
+                      onchange={() => (pdfPageRangeMode = 'all')}
+                    />
+                    <span>{tr('pdfAllPages')}</span>
+                  </label>
+                  <label class="pdf-range-choice" data-selected={pdfPageRangeMode === 'range' ? 'true' : undefined}>
                     <input
                       checked={pdfPageRangeMode === 'range'}
                       name="pdf-page-range-mode"
@@ -2932,46 +2923,70 @@
                       value="range"
                       onchange={() => (pdfPageRangeMode = 'range')}
                     />
-                    {tr('pdfPageRangeFrom')}
+                    <span>{tr('pdfPageRangeModeRange')}</span>
                   </label>
-                  <input
-                    aria-label={tr('pdfPageRangeFrom')}
-                    bind:value={pdfPageStartInput}
-                    disabled={pdfPageRangeMode !== 'range'}
-                    inputmode="numeric"
-                    min="1"
-                    type="number"
-                  />
                 </div>
-                <label for="file-menu-pdf-page-end">{tr('pdfPageRangeTo')}</label>
-                <input
-                  id="file-menu-pdf-page-end"
-                  aria-label={tr('pdfPageRangeTo')}
-                  bind:value={pdfPageEndInput}
-                  disabled={pdfPageRangeMode !== 'range'}
-                  inputmode="numeric"
-                  min="1"
-                  type="number"
-                />
+                <div class="pdf-range-input-grid">
+                  <label class="pdf-range-number" for="file-menu-pdf-page-start">
+                    <span>{tr('pdfPageRangeFrom')}</span>
+                    <input
+                      id="file-menu-pdf-page-start"
+                      aria-describedby={pdfPageRangeInvalid ? 'file-menu-pdf-page-help file-menu-pdf-page-error' : 'file-menu-pdf-page-help'}
+                      aria-invalid={pdfPageRangeInvalid ? 'true' : undefined}
+                      aria-label={tr('pdfPageRangeFrom')}
+                      bind:value={pdfPageStartInput}
+                      disabled={pdfPageRangeMode !== 'range'}
+                      inputmode="numeric"
+                      min="1"
+                      onchange={(event) => (pdfPageStartInput = event.currentTarget.value)}
+                      oninput={(event) => (pdfPageStartInput = event.currentTarget.value)}
+                      type="number"
+                    />
+                  </label>
+                  <label class="pdf-range-number" for="file-menu-pdf-page-end">
+                    <span>{tr('pdfPageRangeTo')}</span>
+                    <input
+                      id="file-menu-pdf-page-end"
+                      aria-describedby={pdfPageRangeInvalid ? 'file-menu-pdf-page-help file-menu-pdf-page-error' : 'file-menu-pdf-page-help'}
+                      aria-invalid={pdfPageRangeInvalid ? 'true' : undefined}
+                      aria-label={tr('pdfPageRangeTo')}
+                      bind:value={pdfPageEndInput}
+                      disabled={pdfPageRangeMode !== 'range'}
+                      inputmode="numeric"
+                      min="1"
+                      onchange={(event) => (pdfPageEndInput = event.currentTarget.value)}
+                      oninput={(event) => (pdfPageEndInput = event.currentTarget.value)}
+                      type="number"
+                    />
+                  </label>
+                </div>
+                {#if pdfPageRangeInvalid}
+                  <p id="file-menu-pdf-page-error" class="pdf-range-error" role="alert">{tr('exportPdfInvalidRange')}</p>
+                {/if}
               </fieldset>
               <div class="export-format-grid">
                 <button class="format-option" type="button" onclick={() => runFileMenuAction(exportText)}>
-                  <span>{tr('exportTxt')}</span>
+                  <span class="format-option-title">{tr('txt')}</span>
+                  <span class="format-option-detail">{tr('exportTxtDescription')}</span>
                 </button>
                 <button class="format-option" type="button" onclick={() => runFileMenuAction(exportHtml)}>
-                  <span>{tr('exportHtml')}</span>
+                  <span class="format-option-title">{tr('html')}</span>
+                  <span class="format-option-detail">{tr('exportHtmlDescription')}</span>
                 </button>
                 <button
                   class="format-option"
+                  disabled={pdfPageRangeInvalid}
                   title={shortcutTitle(tr('exportPdf'), 'exportPdf')}
                   type="button"
                   onclick={() => runFileMenuAction(exportPdf)}
                 >
-                  <span>{tr('exportPdf')}</span>
+                  <span class="format-option-title">{tr('pdf')}</span>
+                  <span class="format-option-detail">{tr('exportPdfDescription')}</span>
                   <span class="format-shortcut">{shortcut('exportPdf')}</span>
                 </button>
                 <button class="format-option" type="button" onclick={() => runFileMenuAction(exportDocx)}>
-                  <span>{tr('exportDocx')}</span>
+                  <span class="format-option-title">{tr('docx')}</span>
+                  <span class="format-option-detail">{tr('exportDocxDescription')}</span>
                 </button>
               </div>
             </div>
@@ -2981,6 +2996,7 @@
             <span class="menu-glyph glyph-print" aria-hidden="true"></span>
             <span class="menu-command-main">
               <span class="menu-command-label">{tr('print')}</span>
+              <span class="menu-command-detail">{tr('printDescription')}</span>
             </span>
             <span class="menu-shortcut">{shortcut('printDocument')}</span>
           </button>

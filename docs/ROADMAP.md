@@ -678,3 +678,12 @@ Status: complete.
 - Add deterministic CSS-only template preview metadata derived from template summary fields, with tests covering classification, bounded preview output, and no raw path-like metadata echoing.
 - Make Settings page setup controls more visible with clickable page-format presets, margin preset controls, and existing custom numeric fields.
 - Keep ODT canonical, DOCX conversion-only, no telemetry by default, no remote assets, no generated image files, no network behavior, no plugin runtime behavior, and no backend document model changes.
+
+## Sprint 073: Export And Print Polish
+
+Status: complete.
+
+- Polish the File > Export panel so TXT, sanitized offline HTML, lightweight PDF snapshot, and bounded DOCX conversion are scannable before opening the native save dialog.
+- Share tested PDF page-range helper logic between UI validation and export invocation while preserving all-pages empty options and positive integer start/end range requirements.
+- Clarify the File menu print action as sanitized WebView/browser print preparation without claiming deterministic layout or print-pagination fidelity.
+- Keep export backends, generated formats, file extensions, Rust validation, native save/open workflows, telemetry, network behavior, cloud sync, accounts, plugin runtime scope, fixtures, private data, and generated artifacts out of scope.
