@@ -26,6 +26,7 @@ All notable changes to 900Word are tracked here.
 - Table structure editing MVP with bounded row/column insert sizes and contextual add/delete row, add/delete column, and delete-table controls for editable tables.
 - Image resize UX with a direct selected-image drag handle that updates durable bounded scale metadata, plus generic oversized-image import guidance that avoids path and filename disclosure.
 - Expanded generated starter template gallery for formal letters, school reports, project reports, resumes, meeting minutes, memos, invoice-style documents, and flyers using only placeholder-safe document model blocks.
+- Creation workspace polish with richer deterministic CSS-only template previews, a compact page setup summary on the Start Center, and visible page-size and margin preset controls in Settings without changing file formats, the backend document model, network behavior, telemetry, cloud sync, or plugin runtime scope.
 - User Template Library MVP with private app-data ODT storage, opaque user-template IDs, sanitized display names, generated-template protection, local create/delete/load controls, and privacy-safe summaries/errors.
 - Editor viewport controls for Draft/Page Layout, Fit Width/100%/custom zoom, and simple show/hide rulers without adding document metadata or deterministic pagination claims.
 - Keyboard shortcut polish with tested command normalization, guarded form-field behavior, visible shortcut hints, replace focus, Cmd/Ctrl+Y redo, and PDF export shortcut routing through the existing export path flow.

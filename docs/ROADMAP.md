@@ -669,3 +669,12 @@ Status: complete.
 - Freeze release-facing claims to local ODT editing, bounded DOCX import/export conversion, current TXT/HTML/PDF export and sanitized print paths, and no telemetry by default.
 - Add open-source-facing known limitations and deferred scope for binary packaging, broad office-suite compatibility, cloud/collaboration, plugin runtime, deterministic pagination, full layout fidelity, and full Word/LibreOffice parity.
 - Keep the sprint docs-only with no code changes, no private paths, no personal names, no hostnames, and no generated artifacts.
+
+## Sprint 072: Creation Quality Polish
+
+Status: complete.
+
+- Polish the Start Center into a practical creation workspace with first-screen document actions, recent/recovery access, template browsing, and a compact page setup summary.
+- Add deterministic CSS-only template preview metadata derived from template summary fields, with tests covering classification, bounded preview output, and no raw path-like metadata echoing.
+- Make Settings page setup controls more visible with clickable page-format presets, margin preset controls, and existing custom numeric fields.
+- Keep ODT canonical, DOCX conversion-only, no telemetry by default, no remote assets, no generated image files, no network behavior, no plugin runtime behavior, and no backend document model changes.
