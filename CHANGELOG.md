@@ -4,6 +4,12 @@ All notable changes to 900Word are tracked here.
 
 ## 0.1.0 - Unreleased
 
+### Release Prep
+
+- Defined `v0.1.0` as a public source release for developers and early testers, not a signed binary installer release.
+- Froze public claims around local ODT editing, bounded DOCX import/export conversion, current export/print paths, and no telemetry by default.
+- Documented conservative known limitations for open-source users, including deferred binary distribution, broad office-suite compatibility, cloud/collaboration, plugin runtime, deterministic pagination, and full Word/LibreOffice parity.
+
 ### Added
 
 - Repository bootstrap with Rust workspace, Tauri/Svelte desktop shell, public documentation, validation scripts, and governance scaffolding.
