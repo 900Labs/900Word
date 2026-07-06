@@ -121,6 +121,7 @@
     handleToolbarPointerActivation,
     type ToolbarActivationState
   } from './lib/toolbarActivation';
+  import { buildTemplateCardMetadata } from './lib/creationWorkspace';
 
   interface SpellIssue {
     word: string;
@@ -423,6 +424,12 @@
   );
   let selectedTemplate = $derived(
     templates.find((template) => template.id === selectedTemplateId) ?? templates[0]
+  );
+  let templateCards = $derived(
+    templates.map((template) => ({
+      template,
+      metadata: buildTemplateCardMetadata(template)
+    }))
   );
   let canSaveUserTemplate = $derived(userTemplateName.trim().length > 0);
   const shortcutPlatform = shortcutPlatformFromNavigator();
@@ -2522,8 +2529,47 @@
     );
   }
 
+  function currentPageFormatBadgeLabel() {
+    const format = pageFormats.find((candidate) => candidate.id === currentPageFormatId());
+    return format ? pageFormatName(format) : tr('custom');
+  }
+
+  function currentMarginPresetLabel() {
+    const preset = marginPresets.find((candidate) => candidate.id === currentMarginPresetId());
+    return preset ? tr(preset.labelKey) : tr('custom');
+  }
+
   function pageMarginSummaryLabel() {
     return `${pageSetup.margin_top_mm}/${pageSetup.margin_right_mm}/${pageSetup.margin_bottom_mm}/${pageSetup.margin_left_mm} mm`;
+  }
+
+  function pageFormatName(format: PageFormat) {
+    return format.label.replace(/\s*\(.+\)$/, '');
+  }
+
+  function pageFormatDimensions(format: PageFormat) {
+    return `${format.width_mm} x ${format.height_mm} mm`;
+  }
+
+  function pageFormatPreviewStyle(format: PageFormat) {
+    return `--page-preview-ratio: ${format.width_mm} / ${format.height_mm};`;
+  }
+
+  function startPagePreviewStyle() {
+    const width = Math.max(1, pageSetup.width_mm);
+    const height = Math.max(1, pageSetup.height_mm);
+    return [
+      `--page-preview-ratio: ${width} / ${height}`,
+      `--preview-margin-top: ${pageMarginPreviewPercent(pageSetup.margin_top_mm, height)}%`,
+      `--preview-margin-right: ${pageMarginPreviewPercent(pageSetup.margin_right_mm, width)}%`,
+      `--preview-margin-bottom: ${pageMarginPreviewPercent(pageSetup.margin_bottom_mm, height)}%`,
+      `--preview-margin-left: ${pageMarginPreviewPercent(pageSetup.margin_left_mm, width)}%`
+    ].join('; ');
+  }
+
+  function pageMarginPreviewPercent(marginMm: number, dimensionMm: number) {
+    const ratio = Math.round((Math.max(0, marginMm) / Math.max(1, dimensionMm)) * 1000) / 10;
+    return Math.max(4, Math.min(42, ratio));
   }
 
   function countDocumentTables(document: DocumentState | undefined) {
@@ -5415,6 +5461,31 @@
               <span>{tr('editor')}</span>
             </button>
           </div>
+          <div class="start-document-setup" role="group" aria-label={tr('pageSetup')}>
+            <div class="start-section-heading start-setup-heading">
+              <h3>{tr('pageSetup')}</h3>
+              <span>{currentPageFormatBadgeLabel()}</span>
+            </div>
+            <div class="start-setup-body">
+              <span class="start-page-preview" style={startPagePreviewStyle()} aria-hidden="true">
+                <span class="start-page-margin-box"></span>
+                <span class="start-page-line start-page-line-title"></span>
+                <span class="start-page-line"></span>
+                <span class="start-page-line"></span>
+              </span>
+              <dl class="start-setup-metrics">
+                <div>
+                  <dt>{tr('pageSize')}</dt>
+                  <dd>{currentPageFormatLabel}</dd>
+                </div>
+                <div>
+                  <dt>{tr('margins')}</dt>
+                  <dd>{marginSummary}</dd>
+                </div>
+              </dl>
+            </div>
+            <button class="start-setup-settings" type="button" onclick={() => selectView('settings')}>{tr('settings')}</button>
+          </div>
         </section>
 
         <section class="start-section" aria-label={tr('recent')}>
@@ -5467,18 +5538,48 @@
             <span>{templates.length}</span>
           </div>
           <div class="template-gallery" role="list">
-            {#each templates as template}
-              <article class:active-template-card={selectedTemplateId === template.id} class="template-card" role="listitem">
-                <button type="button" onclick={() => newDocumentFromTemplateId(template.id)}>
+            {#each templateCards as card (card.template.id)}
+              <article
+                class:active-template-card={selectedTemplateId === card.template.id}
+                class={`template-card template-kind-${card.metadata.previewKind} template-tone-${card.metadata.tone}`}
+                role="listitem"
+              >
+                <button type="button" onclick={() => newDocumentFromTemplateId(card.template.id)}>
                   <span class="template-preview" aria-hidden="true">
-                    <span></span>
-                    <span></span>
-                    <span></span>
+                    <span class="template-preview-paper">
+                      <span class="template-preview-title" style={`--line-width: ${card.metadata.titleWidthPercent}%`}></span>
+                      <span class="template-preview-lines">
+                        {#each card.metadata.lineWidthsPercent as lineWidth}
+                          <span style={`--line-width: ${lineWidth}%`}></span>
+                        {/each}
+                      </span>
+                      {#if card.metadata.previewKind === 'invoice' || card.metadata.previewKind === 'table'}
+                        <span class="template-preview-table">
+                          <span></span>
+                          <span></span>
+                          <span></span>
+                          <span></span>
+                        </span>
+                      {:else if card.metadata.previewKind === 'resume'}
+                        <span class="template-preview-resume">
+                          <span></span>
+                          <span></span>
+                          <span></span>
+                        </span>
+                      {:else if card.metadata.previewKind === 'flyer'}
+                        <span class="template-preview-callout"></span>
+                      {:else if card.metadata.previewKind === 'minutes' || card.metadata.previewKind === 'memo'}
+                        <span class="template-preview-checks">
+                          <span></span>
+                          <span></span>
+                        </span>
+                      {/if}
+                    </span>
                   </span>
                   <span class="template-card-body">
-                    <strong>{template.name}</strong>
-                    <span>{template.source}</span>
-                    <small>{template.description}</small>
+                    <strong>{card.template.name}</strong>
+                    <span>{card.template.source}</span>
+                    <small>{card.template.description}</small>
                   </span>
                 </button>
               </article>
@@ -5971,19 +6072,58 @@
         <section class="settings-group" aria-labelledby="page-settings-heading">
           <h3 id="page-settings-heading">{tr('page')}</h3>
           <div class="page-setup">
-            <label class="page-format-field">
-              {tr('pageSize')}
-              <select
-                aria-label={tr('pageSize')}
-                value={currentPageFormatId()}
-                onchange={(event) => updatePageFormat(event.currentTarget.value)}
-              >
+            <div class="settings-preset-section page-format-field">
+              <div class="settings-preset-heading">
+                <span>{tr('pageSize')}</span>
+                <strong>{currentPageFormatLabel}</strong>
+              </div>
+              <div class="page-format-preset-grid" role="group" aria-label={tr('pageSize')}>
                 {#each pageFormats as format}
-                  <option value={format.id}>{format.label}</option>
+                  <button
+                    aria-pressed={currentPageFormatId() === format.id}
+                    class:active-preset={currentPageFormatId() === format.id}
+                    class="page-format-preset"
+                    type="button"
+                    onclick={() => updatePageFormat(format.id)}
+                  >
+                    <span class="preset-page-icon" style={pageFormatPreviewStyle(format)} aria-hidden="true">
+                      <span></span>
+                    </span>
+                    <span class="preset-card-copy">
+                      <strong>{pageFormatName(format)}</strong>
+                      <small>{pageFormatDimensions(format)}</small>
+                    </span>
+                  </button>
                 {/each}
-                <option value="custom">{tr('custom')}</option>
-              </select>
-            </label>
+              </div>
+            </div>
+            <div class="settings-preset-section page-format-field">
+              <div class="settings-preset-heading">
+                <span>{tr('marginPresets')}</span>
+                <strong>{currentMarginPresetLabel()}</strong>
+              </div>
+              <div class="margin-preset-grid" role="group" aria-label={tr('marginPresets')}>
+                {#each marginPresets as preset}
+                  <button
+                    aria-pressed={currentMarginPresetId() === preset.id}
+                    class:active-preset={currentMarginPresetId() === preset.id}
+                    class="margin-preset"
+                    type="button"
+                    onclick={() => updatePageMarginsPreset(preset.id)}
+                  >
+                    <span class={`margin-preset-icon margin-preset-${preset.id}`} aria-hidden="true">
+                      <span></span>
+                    </span>
+                    <span class="preset-card-copy">
+                      <strong>{tr(preset.labelKey)}</strong>
+                      <small>
+                        {preset.margins.margin_top_mm}/{preset.margins.margin_right_mm}/{preset.margins.margin_bottom_mm}/{preset.margins.margin_left_mm} mm
+                      </small>
+                    </span>
+                  </button>
+                {/each}
+              </div>
+            </div>
             <label>
               {tr('width')}
               <input
