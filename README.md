@@ -16,6 +16,19 @@
 
 The first release track focuses on safe local document editing with OpenDocument Text (`.odt`) as the native format. DOCX support is import/export conversion only. Network sync, real-time collaboration, runtime plugins, legacy binary `.doc`, and full encryption are intentionally deferred until their security and privacy designs are documented and tested.
 
+## v0.1.0 Release Scope
+
+`v0.1.0` is planned as a public source release. It is intended for developers and early testers who are comfortable building from source. It is not a signed binary installer release.
+
+Public claims for this release are intentionally conservative:
+
+- Local-first editing with `.odt` as the canonical saved document format.
+- Bounded `.docx` import/export conversion for the supported subset documented in this repository.
+- Current export and print paths: TXT, sanitized HTML, lightweight PDF export, and sanitized WebView print preparation.
+- No telemetry by default.
+
+900Word does not claim broad Microsoft Word, LibreOffice, Google Docs, or ONLYOFFICE compatibility for `v0.1.0`. External office-suite behavior must be backed by generated or sanitized placeholder compatibility evidence before it is described as supported.
+
 ## Features
 
 Current foundation:
@@ -37,13 +50,15 @@ Current foundation:
 - GPL-3.0-or-later licensing.
 - Public-release privacy checks for local paths, hostnames, secrets, and generated artifacts.
 
-Planned MVP:
+Known limitations and deferred scope for `v0.1.0`:
 
-- Create, open, edit, and save `.odt` documents.
-- Expanded ODT compatibility fixtures and broader layout fidelity.
-- Expanded editing workflows.
-- Hunspell affix expansion, broader dictionary compatibility, and more complete dictionary packaging.
-- Accessibility, keyboard navigation, and high-contrast refinements.
+- No official signed installers, notarized packages, or automatic binary update channel.
+- No cloud sync, accounts, collaboration, remote document storage, or plugin runtime.
+- `.odt` is the canonical saved format; DOCX remains a conversion boundary and may degrade unsupported structures with warnings.
+- External office-suite compatibility claims are limited to evidence captured from generated or sanitized placeholder documents.
+- Deterministic pagination, full print-layout fidelity, broad Word/LibreOffice feature parity, legacy `.doc`, rich style management, mail merge, macros, and full-document encryption remain deferred.
+- Hunspell support is still bounded; full affix expansion, broader dictionary compatibility, and richer dictionary packaging remain future work.
+- Accessibility, keyboard navigation, localization, and high-contrast behavior need continued testing across platforms.
 
 ## Architecture
 

@@ -660,3 +660,12 @@ Status: complete.
 - Add a local artifact generator for ODT, DOCX, TXT, HTML, print HTML, and PDF outputs under ignored compatibility scratch directories.
 - Document the generator command in compatibility, quality, and public-release gates so manual suite testing starts from generated placeholder content.
 - Keep generated artifacts, screenshots, logs, local paths, private documents, broad untested compatibility claims, telemetry, network behavior, accounts, cloud sync, and external office automation out of scope.
+
+## Sprint 071: Release Scope Freeze
+
+Status: complete.
+
+- Define `v0.1.0` as a public source release for developers and early testers, not a signed binary installer release.
+- Freeze release-facing claims to local ODT editing, bounded DOCX import/export conversion, current TXT/HTML/PDF export and sanitized print paths, and no telemetry by default.
+- Add open-source-facing known limitations and deferred scope for binary packaging, broad office-suite compatibility, cloud/collaboration, plugin runtime, deterministic pagination, full layout fidelity, and full Word/LibreOffice parity.
+- Keep the sprint docs-only with no code changes, no private paths, no personal names, no hostnames, and no generated artifacts.

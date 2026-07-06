@@ -2,6 +2,30 @@
 
 900Word stays private until this checklist passes on `main`.
 
+## v0.1.0 Release Scope
+
+`v0.1.0` is a public source release for developers and early testers who build locally. It is not a signed binary installer release.
+
+Public claims for `v0.1.0` are limited to:
+
+1. Local-first `.odt` editing with ODT as the canonical saved format.
+2. Bounded DOCX import/export conversion for the documented supported subset.
+3. Current export and print paths: TXT, sanitized HTML, lightweight PDF export, and sanitized WebView print preparation.
+4. No telemetry by default.
+
+Do not claim broad Microsoft Word, LibreOffice, Google Docs, or ONLYOFFICE compatibility without release-candidate evidence from generated or sanitized placeholder documents.
+
+## Known Limitations
+
+Open-source users should expect these limitations in `v0.1.0`:
+
+1. No official signed installers, notarized packages, automatic updates, or binary package support.
+2. No cloud sync, accounts, collaboration, plugin runtime, remote document storage, macros, or legacy binary `.doc` support.
+3. DOCX remains conversion-only and may degrade unsupported WordprocessingML structures with warnings.
+4. Print and PDF output use the current lightweight export path and do not claim full print-layout or deterministic pagination fidelity.
+5. External office-suite behavior is not a compatibility promise unless backed by the compatibility evidence process.
+6. Full Word/LibreOffice parity, richer style management, full encryption, broad dictionary compatibility, and platform accessibility polish remain deferred.
+
 ## Source Scan
 
 ```bash
@@ -21,9 +45,9 @@ Expected result:
 8. SBOM is generated under `target/sbom/900word-sbom.json`.
 9. Bundle budget and performance smoke pass.
 
-## Package Scan
+## Deferred Binary Package Scan
 
-Before publishing binary artifacts:
+Binary artifacts are out of scope for `v0.1.0`. Before any future binary artifact publication:
 
 1. Build package artifacts with `.github/workflows/package-test.yml`.
 2. Require package-test run IDs in release notes.
