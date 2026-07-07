@@ -29,21 +29,33 @@ Open-source users should expect these limitations in `v0.1.0`:
 ## Source Scan
 
 ```bash
+npm run verify:version
 ./scripts/verify-public-release.sh
 git status --short --branch
 ```
 
 Expected result:
 
-1. No local user paths.
-2. No hostnames.
-3. No secrets or private keys.
-4. No OS metadata files.
-5. No real user documents.
-6. No generated package artifacts.
-7. Runtime offline source/capability scan passes.
-8. SBOM is generated under `target/sbom/900word-sbom.json`.
-9. Bundle budget and performance smoke pass.
+1. Root, lockfile, desktop workspace, Tauri, Cargo workspace, and visible About/version strings all match.
+2. No local user paths.
+3. No hostnames.
+4. No secrets or private keys.
+5. No OS metadata files.
+6. No real user documents.
+7. No generated package artifacts.
+8. Runtime offline source/capability scan passes.
+9. SBOM is generated under `target/sbom/900word-sbom.json`.
+10. Bundle budget and performance smoke pass.
+
+## Release-Candidate Gate
+
+Before tagging `v0.1.0`, run the shared release-candidate gate from a clean release candidate checkout:
+
+```bash
+npm run verify:release-candidate
+```
+
+The gate checks Git object connectivity, requires clean source status, verifies version consistency, runs the public source scan, runs full local verification, and confirms verification did not modify tracked files. It is intended for release candidates and CI, not as a required command for every feature branch edit.
 
 ## Deferred Binary Package Scan
 

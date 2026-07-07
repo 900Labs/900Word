@@ -22,24 +22,26 @@ Do not describe broad Microsoft Word, LibreOffice, Google Docs, or ONLYOFFICE co
 ```bash
 git checkout main
 git pull --ff-only origin main
-./scripts/verify-local.sh
-./scripts/verify-public-release.sh
-npm run sbom
+npm run verify:version
+npm run verify:release-candidate
 ```
 
 Confirm:
 
 - `CHANGELOG.md` is updated.
 - Sprint records are updated.
+- Version surfaces match the root package version: package manifests, package lock entries, Tauri config, Cargo workspace package version, and the visible About/version string.
 - `README.md`, `docs/PUBLIC_RELEASE.md`, and this runbook describe `v0.1.0` as a public source release, not a binary installer release.
 - Known limitations and deferred scope are documented for open-source users.
 - ADRs are current.
 - CI is green.
+- The release-candidate gate runs from a clean worktree.
 - Bundle-size budget passes.
 - Performance smoke output is captured in release notes.
 - Runtime offline source/capability scan passes.
 - SBOM exists at `target/sbom/900word-sbom.json`.
 - Public-release checklist passes.
+- Git connectivity/integrity check passes.
 - Compatibility evidence is recorded for any claimed external office-suite behavior.
 
 For a binary package candidate, also confirm:

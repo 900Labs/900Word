@@ -43,16 +43,17 @@ jobs:
             librsvg2-dev
 
       - run: npm ci
-      - run: ./scripts/verify-public-release.sh
-      - run: npm run check
-      - run: npm run lint
-      - run: npm run test
-      - run: npm run build
-      - run: npm run budget:bundle
-      - run: npm run smoke:offline
-      - run: npm run scan:packages
-      - run: npm run sbom
-      - run: cargo test --workspace
+
+      - name: Install Cargo security tools
+        run: |
+          if ! command -v cargo-audit >/dev/null 2>&1; then
+            cargo install cargo-audit --locked
+          fi
+          if ! command -v cargo-deny >/dev/null 2>&1; then
+            cargo install cargo-deny --locked
+          fi
+
+      - run: ./scripts/verify-release-candidate.sh
 
       - name: Build source archive
         run: |

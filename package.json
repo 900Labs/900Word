@@ -21,7 +21,9 @@
     "sbom": "node scripts/generate-sbom.mjs",
     "smoke:offline": "./scripts/verify-runtime-offline.sh",
     "smoke:performance": "./scripts/performance-smoke.sh",
+    "verify:version": "node scripts/verify-version-consistency.mjs",
     "verify:local": "./scripts/verify-local.sh",
-    "verify:public": "./scripts/verify-public-release.sh"
+    "verify:public": "./scripts/verify-public-release.sh",
+    "verify:release-candidate": "./scripts/verify-release-candidate.sh"
   }
 }
