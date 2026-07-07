@@ -687,3 +687,13 @@ Status: complete.
 - Share tested PDF page-range helper logic between UI validation and export invocation while preserving all-pages empty options and positive integer start/end range requirements.
 - Clarify the File menu print action as sanitized WebView/browser print preparation without claiming deterministic layout or print-pagination fidelity.
 - Keep export backends, generated formats, file extensions, Rust validation, native save/open workflows, telemetry, network behavior, cloud sync, accounts, plugin runtime scope, fixtures, private data, and generated artifacts out of scope.
+
+## Sprint 074: Release Candidate Hardening
+
+Status: complete.
+
+- Add a generic version consistency verifier that compares release-facing package, lockfile, Tauri, Cargo workspace, and visible About/version surfaces against the root package version.
+- Add a shared release-candidate verification wrapper for tag-ready clean checkouts and source-release CI.
+- Route the source-release workflow through the shared release-candidate gate after installing Cargo security tools.
+- Document the release-candidate process for open-source maintainers while keeping `v0.1.0` scoped to a public source release.
+- Keep UI features, export backends, package publication policy, telemetry, network behavior, cloud sync, accounts, plugin runtime behavior, private data, and generated artifacts out of scope.

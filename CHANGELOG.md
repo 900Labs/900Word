@@ -9,6 +9,7 @@ All notable changes to 900Word are tracked here.
 - Defined `v0.1.0` as a public source release for developers and early testers, not a signed binary installer release.
 - Froze public claims around local ODT editing, bounded DOCX import/export conversion, current export/print paths, and no telemetry by default.
 - Documented conservative known limitations for open-source users, including deferred binary distribution, broad office-suite compatibility, cloud/collaboration, plugin runtime, deterministic pagination, and full Word/LibreOffice parity.
+- Added release-candidate verification for version consistency, clean source status, Git connectivity/integrity, public source privacy scanning, and full local validation before tagging.
 
 ### Added
 
@@ -16,6 +17,7 @@ All notable changes to 900Word are tracked here.
 - Initial `word-core`, `word-odf`, `word-spell`, `word-export`, and `word-fixtures` crates.
 - TXT, sanitized HTML, basic PDF export-to-path workflows, and sanitized WebView print preparation.
 - Release hardening scripts for bundle budgets, package artifact scans, runtime offline source/capability checks, SBOM generation, and performance smoke.
+- Version consistency checks across package manifests, package-lock release entries, Tauri config, Cargo workspace package metadata, and the visible About/version string.
 - Public-release privacy scanning for source files.
 - Heading navigator sidebar and safe hyperlink insert/edit/remove workflows.
 - Editable table projection for supported table cells and a default 2x2 insert-table command.

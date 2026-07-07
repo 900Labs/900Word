@@ -14,6 +14,7 @@ if [[ ! -d node_modules ]]; then
   run npm install
 fi
 
+run npm run verify:version
 run npm run check
 run npm run lint
 run npm run test
