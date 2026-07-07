@@ -6,6 +6,8 @@
 
 `v0.1.0` is not a signed binary installer release. Signed installers, notarization, package provenance, package privacy evidence, and automatic binary distribution are future hardening tasks.
 
+Release-facing notes live in [v0.1.0 Release Notes Draft](releases/v0.1.0.md). Public-safe validation, CI, archive, checksum, SBOM, and compatibility placeholders live in [Release Evidence](RELEASE_EVIDENCE.md).
+
 ## Release Claim Freeze
 
 Release-facing claims for `v0.1.0` are limited to:
@@ -29,9 +31,11 @@ npm run verify:release-candidate
 Confirm:
 
 - `CHANGELOG.md` is updated.
+- `docs/releases/v0.1.0.md` is updated without changing the source-only release scope.
+- `docs/RELEASE_EVIDENCE.md` has public-safe pre-tag rows filled from release-candidate and CI evidence, with tag-generated release workflow rows still marked pending until the workflow completes.
 - Sprint records are updated.
 - Version surfaces match the root package version: package manifests, package lock entries, Tauri config, Cargo workspace package version, and the visible About/version string.
-- `README.md`, `docs/PUBLIC_RELEASE.md`, and this runbook describe `v0.1.0` as a public source release, not a binary installer release.
+- `README.md`, `docs/PUBLIC_RELEASE.md`, `docs/releases/v0.1.0.md`, and this runbook describe `v0.1.0` as a public source release, not a binary installer release.
 - Known limitations and deferred scope are documented for open-source users.
 - ADRs are current.
 - CI is green.
@@ -60,7 +64,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The release workflow creates source archives, checksums, and an SBOM artifact.
+The release workflow creates source archives, checksums, and an SBOM artifact after the tag is pushed.
+
+After the workflow completes, copy only public-safe run IDs, artifact names, source archive checksum values, and SBOM artifact references into the GitHub release notes or a later public-safe evidence update. Do not copy local paths, hostnames, screenshots, private documents, or machine-specific notes.
 
 ## Binary Artifacts
 
