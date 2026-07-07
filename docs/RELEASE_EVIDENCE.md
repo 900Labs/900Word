@@ -1,35 +1,38 @@
 # Release Evidence
 
-This ledger is the public-safe evidence template for the `v0.1.0` source release. Keep placeholders until final release evidence is available from the release candidate commit, CI, and release workflow.
+This document defines the public-safe evidence flow for the `v0.1.0` source release.
 
-Pre-tag rows must be filled before tagging. Rows produced by the tag-triggered release workflow remain placeholders in the tagged source until that workflow completes; copy those values into the GitHub release notes or a later public-safe evidence update before publishing the final release page.
+A tagged source file cannot contain the exact commit SHA of the commit that contains that file. Do not try to fill concrete release identifiers inside source files that are included in the same tag. The tagged source should contain validation instructions, release boundaries, and public-safe templates only.
+
+Concrete release evidence belongs in GitHub release notes or a later public-safe evidence update after the value exists.
 
 Do not record local computer paths, hostnames, personal names, private documents, screenshots, account identifiers, cloud URLs, private endpoints, generated package outputs, or machine-specific notes.
 
-## v0.1.0 Source Release Evidence
+## In-Source Validation Boundary
 
-| Evidence Item | Placeholder | Release Timing | Status |
-| --- | --- | --- | --- |
-| Final commit SHA | `<commit-sha>` | Yes, before tag | `<pending>` |
-| Release PR | `<pull-request-url-or-number>` | Yes, before merge/tag | `<pending>` |
-| Required CI run | `<ci-run-url-or-id>` | Yes, before tag | `<pending>` |
-| Release workflow run | `<release-workflow-run-url-or-id>` | After tag or manual source-release run, before final release page publication | `<pending>` |
-| Source archive artifact | `<source-archive-artifact-name>` | After release workflow, before final release page publication | `<pending>` |
-| Source archive SHA-256 | `<sha256-from-SHA256SUMS.txt>` | After release workflow, before final release page publication | `<pending>` |
-| SBOM artifact | `<sbom-artifact-name-or-run-id>` | After release workflow, before final release page publication | `<pending>` |
-| Version consistency | `npm run verify:version` | Yes, before tag | `<pending>` |
-| Frontend check | `npm run check` | Yes, before merge/tag | `<pending>` |
-| Frontend lint | `npm run lint` | Yes, before merge/tag | `<pending>` |
-| Frontend tests | `npm run test` | Yes, before merge/tag | `<pending>` |
-| Public source scan | `./scripts/verify-public-release.sh` | Yes, before tag | `<pending>` |
-| Release-candidate gate | `npm run verify:release-candidate` | Yes, from clean tag-ready checkout | `<pending>` |
-| Bundle budget and performance smoke | `<release-candidate-validation-summary>` | Yes, before tag | `<pending>` |
-| Compatibility evidence status | `<not-run-or-evidence-summary>` | Before any external-suite compatibility claim | `<pending>` |
-| Binary package status | `out-of-scope-for-v0.1.0` | Must remain out of scope for this release | `<pending>` |
+These rows describe what must be true for the `v0.1.0` source release. They are intentionally not filled with concrete run IDs or commit SHAs in the tagged source.
 
-## Validation Command Log Template
+| Gate | Required Boundary | Concrete Evidence Location |
+| --- | --- | --- |
+| Tag target commit SHA | Must identify the merged release commit before creating `v0.1.0` | GitHub release notes or post-release evidence update |
+| Release PR | Must be merged with required CI passing before tag | GitHub release notes or post-release evidence update |
+| Required CI run | Must pass for the release PR or final release commit before tag | GitHub release notes or post-release evidence update |
+| Version consistency | `npm run verify:version` must pass before tag | Release PR, GitHub release notes, or post-release evidence update |
+| Frontend check | `npm run check` must pass before tag | Release PR, GitHub release notes, or post-release evidence update |
+| Frontend lint | `npm run lint` must pass before tag | Release PR, GitHub release notes, or post-release evidence update |
+| Frontend tests | `npm run test` must pass before tag | Release PR, GitHub release notes, or post-release evidence update |
+| Public source scan | `./scripts/verify-public-release.sh` must pass before tag | Release PR, GitHub release notes, or post-release evidence update |
+| Release-candidate gate | `npm run verify:release-candidate` must pass from a clean tag-ready checkout before tag | GitHub release notes or post-release evidence update |
+| Release workflow run | Must complete after tag push before publishing the final release page | GitHub release notes or post-release evidence update |
+| Source archive artifact | Must be produced by the release workflow after tag push | GitHub release notes or post-release evidence update |
+| Source archive SHA-256 | Must come from `SHA256SUMS.txt` after release workflow completion | GitHub release notes or post-release evidence update |
+| SBOM artifact | Must be produced by the release workflow after tag push | GitHub release notes or post-release evidence update |
+| Compatibility evidence status | Must remain `not-run` unless generated or sanitized placeholder evidence supports a narrower claim | GitHub release notes or post-release evidence update |
+| Binary package status | Must remain `out-of-scope-for-v0.1.0` | GitHub release notes or post-release evidence update |
 
-Use this table for final release notes or a release issue. Record command names and public-safe pass/fail status only.
+## External Evidence Template
+
+Use this table in GitHub release notes, a release issue, or a later evidence update. Do not fill it inside the tagged source commit that it describes. Record command names and public-safe pass/fail status only.
 
 | Command | Commit | Result | Public-Safe Notes |
 | --- | --- | --- | --- |
@@ -43,7 +46,7 @@ Use this table for final release notes or a release issue. Record command names 
 
 ## Compatibility Evidence Status
 
-Source-only `v0.1.0` may ship with external applications marked `not-run` if public wording avoids broad compatibility claims. Do not upgrade any row to `pass` or `degraded-documented` without generated or sanitized placeholder evidence from the release candidate commit.
+Source-only `v0.1.0` may ship with external applications marked `not-run` if public wording avoids broad compatibility claims. Do not upgrade any row to `pass` or `degraded-documented` in GitHub release notes or a post-release evidence update without generated or sanitized placeholder evidence from the release candidate commit.
 
 | Application | Format Scope | Evidence Status | Evidence Reference | Notes |
 | --- | --- | --- | --- | --- |

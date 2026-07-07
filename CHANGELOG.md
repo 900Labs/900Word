@@ -2,7 +2,7 @@
 
 All notable changes to 900Word are tracked here.
 
-## 0.1.0 - Unreleased
+## 0.1.0 - 2026-07-07
 
 ### Release Prep
 
@@ -10,7 +10,7 @@ All notable changes to 900Word are tracked here.
 - Froze public claims around local ODT editing, bounded DOCX import/export conversion, current export/print paths, and no telemetry by default.
 - Documented conservative known limitations for open-source users, including deferred binary distribution, broad office-suite compatibility, cloud/collaboration, plugin runtime, deterministic pagination, and full Word/LibreOffice parity.
 - Added release-candidate verification for version consistency, clean source status, Git connectivity/integrity, public source privacy scanning, and full local validation before tagging.
-- Added a dedicated `v0.1.0` release notes draft and public-safe release evidence ledger for final commit, PR, CI, release workflow, source archive checksum, SBOM, and compatibility status.
+- Added dedicated `v0.1.0` release notes and a public-safe release evidence flow that keeps validation instructions in source while recording concrete commit, tag, CI, archive checksum, and SBOM evidence in GitHub release notes or a later evidence update after those values exist.
 
 ### Added
 

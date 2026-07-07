@@ -8,7 +8,7 @@ Start with the root [README](../README.md) for product overview and source-build
 - [Public Release Checklist](PUBLIC_RELEASE.md)
 - [Release Runbook](RELEASE.md)
 - [Release Evidence](RELEASE_EVIDENCE.md)
-- [v0.1.0 Release Notes Draft](releases/v0.1.0.md)
+- [v0.1.0 Release Notes](releases/v0.1.0.md)
 - [Branch Protection](BRANCH_PROTECTION.md)
 - [Performance Budget](PERFORMANCE_BUDGET.md)
 - [Compatibility Testing](COMPATIBILITY_TESTING.md)

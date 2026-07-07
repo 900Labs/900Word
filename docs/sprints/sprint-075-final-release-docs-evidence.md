@@ -7,7 +7,7 @@ Prepare final public source release documentation and evidence surfaces for tagg
 ## Deliverables
 
 - Added `docs/releases/v0.1.0.md` as the unreleased public source release notes draft.
-- Added `docs/RELEASE_EVIDENCE.md` as a placeholder-only evidence ledger for final commit SHA, release PR, required CI run, release workflow run, source archive checksum, SBOM artifact, validation commands, and compatibility evidence status.
+- Added `docs/RELEASE_EVIDENCE.md` as a placeholder-only evidence ledger for release PR, required CI run, release workflow run, source archive checksum, SBOM artifact, validation commands, compatibility evidence status, and the final commit SHA evidence boundary.
 - Updated the root README, documentation index, release runbook, public release checklist, changelog, and roadmap so the release notes and evidence ledger are discoverable.
 - Kept `CHANGELOG.md` at `0.1.0 - Unreleased` so a later release sprint can date and tag it.
 
@@ -29,6 +29,6 @@ Prepare final public source release documentation and evidence surfaces for tagg
 
 ## Follow-ups
 
-- Fill `docs/RELEASE_EVIDENCE.md` from public-safe release-candidate, CI, release workflow, source archive checksum, and SBOM evidence before publishing the final release notes.
+- Record public-safe release-candidate, CI, release workflow, source archive checksum, and SBOM evidence in GitHub release notes or a later evidence update before publishing the final release page.
 - Run `npm run verify:release-candidate` from a clean tag-ready checkout before tagging `v0.1.0`.
 - Keep binary packaging, signing, notarization, package provenance, and runtime network monitoring evidence scoped to a future binary release.
