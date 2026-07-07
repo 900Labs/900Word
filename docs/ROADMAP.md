@@ -697,3 +697,12 @@ Status: complete.
 - Route the source-release workflow through the shared release-candidate gate after installing Cargo security tools.
 - Document the release-candidate process for open-source maintainers while keeping `v0.1.0` scoped to a public source release.
 - Keep UI features, export backends, package publication policy, telemetry, network behavior, cloud sync, accounts, plugin runtime behavior, private data, and generated artifacts out of scope.
+
+## Sprint 075: Final Release Docs Evidence
+
+Status: complete.
+
+- Add a dedicated `v0.1.0` release notes draft for public source release scope, public claims, build/validation summary, known limitations, deferred binary scope, and privacy posture.
+- Add a public-safe release evidence ledger for final commit SHA, release PR, required CI run, release workflow run, source archive checksum, SBOM artifact, validation commands, and compatibility evidence status.
+- Link release notes and evidence surfaces from the documentation index, root README, release runbook, public release checklist, changelog, and roadmap.
+- Keep the sprint docs-only with no app feature work, no package-test run, no generated package artifacts, no private paths, no personal names, no hostnames, no screenshots, and no private endpoints.

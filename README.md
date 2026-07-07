@@ -124,6 +124,8 @@ Run the public-release privacy gate before changing repository visibility or pub
 - [Roadmap](docs/ROADMAP.md)
 - [Quality gate](docs/QUALITY_GATE.md)
 - [Public release checklist](docs/PUBLIC_RELEASE.md)
+- [Release evidence](docs/RELEASE_EVIDENCE.md)
+- [v0.1.0 release notes draft](docs/releases/v0.1.0.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Privacy model](docs/PRIVACY_MODEL.md)
 - [File format security](docs/FILE_FORMAT_SECURITY.md)

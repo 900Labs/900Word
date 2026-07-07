@@ -15,6 +15,8 @@ Public claims for `v0.1.0` are limited to:
 
 Do not claim broad Microsoft Word, LibreOffice, Google Docs, or ONLYOFFICE compatibility without release-candidate evidence from generated or sanitized placeholder documents.
 
+The public release notes draft is [docs/releases/v0.1.0.md](releases/v0.1.0.md). Final release-candidate evidence should be recorded in [docs/RELEASE_EVIDENCE.md](RELEASE_EVIDENCE.md) using placeholders until public-safe values are available. Tag-generated release workflow artifact rows may remain pending in the tagged source until the workflow completes.
+
 ## Known Limitations
 
 Open-source users should expect these limitations in `v0.1.0`:
@@ -56,6 +58,8 @@ npm run verify:release-candidate
 ```
 
 The gate checks Git object connectivity, requires clean source status, verifies version consistency, runs the public source scan, runs full local verification, and confirms verification did not modify tracked files. It is intended for release candidates and CI, not as a required command for every feature branch edit.
+
+Record the final commit SHA, release PR, required CI run, and release-candidate validation status before tagging. After the release workflow completes, record the release workflow run, source archive checksum, SBOM artifact, and any compatibility status in the GitHub release notes or a later public-safe evidence update. Use generic run IDs or artifact names; do not record local filesystem paths.
 
 ## Deferred Binary Package Scan
 
