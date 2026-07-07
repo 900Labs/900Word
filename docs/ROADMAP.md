@@ -703,6 +703,15 @@ Status: complete.
 Status: complete.
 
 - Add a dedicated `v0.1.0` release notes draft for public source release scope, public claims, build/validation summary, known limitations, deferred binary scope, and privacy posture.
-- Add a public-safe release evidence ledger for final commit SHA, release PR, required CI run, release workflow run, source archive checksum, SBOM artifact, validation commands, and compatibility evidence status.
+- Add a public-safe release evidence ledger for release PR, required CI run, release workflow run, source archive checksum, SBOM artifact, validation commands, compatibility evidence status, and the final commit SHA evidence boundary.
 - Link release notes and evidence surfaces from the documentation index, root README, release runbook, public release checklist, changelog, and roadmap.
 - Keep the sprint docs-only with no app feature work, no package-test run, no generated package artifacts, no private paths, no personal names, no hostnames, no screenshots, and no private endpoints.
+
+## Sprint 076: v0.1.0 Source Release
+
+Status: complete.
+
+- Date `CHANGELOG.md` for the `v0.1.0` public source release.
+- Finalize the `v0.1.0` source-release notes for GitHub release use while keeping binary installers, notarization, package provenance, automatic updates, broad office-suite compatibility claims, cloud sync, collaboration, plugin runtime, telemetry, accounts, and full encryption out of scope.
+- Correct the release evidence flow so tagged source files contain validation boundaries and templates, while concrete commit SHA, tag target, CI run, release workflow run, source archive checksum, and SBOM artifact evidence live in GitHub release notes or a later evidence update after those values exist.
+- Keep the sprint docs/process-only with no app code, workflow code, generated artifacts, private paths, local machine names, personal names, screenshots, or binary-package claims.

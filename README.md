@@ -18,7 +18,7 @@ The first release track focuses on safe local document editing with OpenDocument
 
 ## v0.1.0 Release Scope
 
-`v0.1.0` is planned as a public source release. It is intended for developers and early testers who are comfortable building from source. It is not a signed binary installer release.
+`v0.1.0` is a public source release. It is intended for developers and early testers who are comfortable building from source. It is not a signed binary installer release.
 
 Public claims for this release are intentionally conservative:
 
@@ -125,7 +125,7 @@ Run the public-release privacy gate before changing repository visibility or pub
 - [Quality gate](docs/QUALITY_GATE.md)
 - [Public release checklist](docs/PUBLIC_RELEASE.md)
 - [Release evidence](docs/RELEASE_EVIDENCE.md)
-- [v0.1.0 release notes draft](docs/releases/v0.1.0.md)
+- [v0.1.0 release notes](docs/releases/v0.1.0.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Privacy model](docs/PRIVACY_MODEL.md)
 - [File format security](docs/FILE_FORMAT_SECURITY.md)
