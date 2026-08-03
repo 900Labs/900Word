@@ -1322,7 +1322,8 @@ fn read_page_region_parts<R: Read + std::io::Seek>(
         }
         match archive.by_name(&relationship.target) {
             Ok(mut file) => {
-                let xml = read_entry_string(&mut file, limits.max_entry_size, &relationship.target)?;
+                let xml =
+                    read_entry_string(&mut file, limits.max_entry_size, &relationship.target)?;
                 parts.insert(relationship.target.clone(), xml);
             }
             Err(zip::result::ZipError::FileNotFound) => {
@@ -1385,11 +1386,8 @@ fn read_note_parts<R: Read + std::io::Seek>(
         }
         match archive.by_name(&relationship.target) {
             Ok(mut file) => {
-                let xml = read_entry_string(
-                    &mut file,
-                    limits.max_entry_size,
-                    &relationship.target,
-                )?;
+                let xml =
+                    read_entry_string(&mut file, limits.max_entry_size, &relationship.target)?;
                 parts.push(DocxNotePartXml {
                     kind: relationship.kind,
                     xml,
@@ -11517,7 +11515,8 @@ mod tests {
 
     #[test]
     fn doctype_substring_in_comment_is_accepted() {
-        let document_xml = "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">\
+        let document_xml =
+            "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">\
             <!-- doctype notes --><w:body/></w:document>";
 
         let bytes = synthetic_docx(document_xml, None, None);
@@ -11546,7 +11545,8 @@ mod tests {
         let err = validate_docx_package(&bytes, limits).expect_err("zip bomb should fail");
         assert!(matches!(err, DocxError::EntryTooLarge { .. }));
 
-        let err = read_docx_bytes_with_limits(&bytes, limits).expect_err("zip bomb read should fail");
+        let err =
+            read_docx_bytes_with_limits(&bytes, limits).expect_err("zip bomb read should fail");
         assert!(matches!(err, DocxError::EntryTooLarge { .. }));
     }
 

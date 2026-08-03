@@ -4075,7 +4075,8 @@ mod tests {
         let err = validate_odt_package(&bytes, limits).expect_err("zip bomb should fail");
         assert!(matches!(err, OdtError::EntryTooLarge { .. }));
 
-        let err = read_odt_bytes_with_limits(&bytes, limits).expect_err("zip bomb read should fail");
+        let err =
+            read_odt_bytes_with_limits(&bytes, limits).expect_err("zip bomb read should fail");
         assert!(matches!(err, OdtError::EntryTooLarge { .. }));
     }
 
@@ -4093,9 +4094,7 @@ mod tests {
 
     #[test]
     fn oversized_png_dimensions_are_rejected() {
-        let mut png = vec![
-            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
-        ];
+        let mut png = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82];
         png.extend_from_slice(&20000u32.to_be_bytes());
         png.extend_from_slice(&20000u32.to_be_bytes());
         png.extend_from_slice(&[8, 6, 0, 0, 0]);

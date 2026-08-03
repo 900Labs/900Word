@@ -2289,12 +2289,7 @@ fn push_inline_html(inline: &Inline, document: &Document, output: &mut String) {
         span_style.push_str(&font_size.to_string());
         span_style.push_str("pt;");
     }
-    if let Some(text_color) = inline
-        .style
-        .text_color
-        .as_deref()
-        .and_then(safe_css_color)
-    {
+    if let Some(text_color) = inline.style.text_color.as_deref().and_then(safe_css_color) {
         span_style.push_str("color:");
         span_style.push_str(&text_color);
         span_style.push(';');
@@ -3926,10 +3921,7 @@ fn escape_html(input: &str) -> String {
 
 fn safe_css_color(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
-    if bytes.len() == 7
-        && bytes[0] == b'#'
-        && bytes[1..].iter().all(|b| b.is_ascii_hexdigit())
-    {
+    if bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(|b| b.is_ascii_hexdigit()) {
         Some(value.to_ascii_lowercase())
     } else {
         None

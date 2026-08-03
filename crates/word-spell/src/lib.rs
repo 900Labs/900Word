@@ -1623,8 +1623,9 @@ mod tests {
         words.push("neighbor".to_string());
         words.push("neighbour".to_string());
         let dic = format!("{}\n{}", words.len(), words.join("\n"));
-        let checker = SpellChecker::from_hunspell_parts("en-US", "Big synthetic", "SET UTF-8\n", &dic)
-            .expect("checker should build from large dictionary");
+        let checker =
+            SpellChecker::from_hunspell_parts("en-US", "Big synthetic", "SET UTF-8\n", &dic)
+                .expect("checker should build from large dictionary");
 
         let suggestions = checker.suggest("neighor");
 

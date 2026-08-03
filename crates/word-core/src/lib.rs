@@ -1759,7 +1759,11 @@ fn collect_safe_bookmark_id_counts_from_blocks(
             Block::Table(table) => {
                 for row in &table.rows {
                     for cell in &row.cells {
-                        collect_safe_bookmark_id_counts_from_blocks(&cell.blocks, counts, depth + 1);
+                        collect_safe_bookmark_id_counts_from_blocks(
+                            &cell.blocks,
+                            counts,
+                            depth + 1,
+                        );
                     }
                 }
             }
@@ -2018,15 +2022,21 @@ fn resolve_all_tracked_changes_in_blocks(
             Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &mut list.items {
-                    changed |=
-                        resolve_all_tracked_changes_in_blocks(&mut item.blocks, resolution, depth + 1);
+                    changed |= resolve_all_tracked_changes_in_blocks(
+                        &mut item.blocks,
+                        resolution,
+                        depth + 1,
+                    );
                 }
             }
             Block::Table(table) => {
                 for row in &mut table.rows {
                     for cell in &mut row.cells {
-                        changed |=
-                            resolve_all_tracked_changes_in_blocks(&mut cell.blocks, resolution, depth + 1);
+                        changed |= resolve_all_tracked_changes_in_blocks(
+                            &mut cell.blocks,
+                            resolution,
+                            depth + 1,
+                        );
                     }
                 }
             }
@@ -2172,7 +2182,11 @@ fn collect_comment_anchor_ids(sections: &[Section]) -> BTreeSet<String> {
     ids
 }
 
-fn collect_comment_anchor_ids_from_blocks(blocks: &[Block], ids: &mut BTreeSet<String>, depth: usize) {
+fn collect_comment_anchor_ids_from_blocks(
+    blocks: &[Block],
+    ids: &mut BTreeSet<String>,
+    depth: usize,
+) {
     if depth > MAX_BLOCK_DEPTH {
         return;
     }
@@ -2253,7 +2267,12 @@ fn collect_note_references_from_blocks(
             Block::Table(table) => {
                 for row in &table.rows {
                     for cell in &row.cells {
-                        collect_note_references_from_blocks(&cell.blocks, references, seen, depth + 1);
+                        collect_note_references_from_blocks(
+                            &cell.blocks,
+                            references,
+                            seen,
+                            depth + 1,
+                        );
                     }
                 }
             }
