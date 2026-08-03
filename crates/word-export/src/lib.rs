@@ -34,6 +34,8 @@ const PDF_MAX_EMBEDDED_IMAGES_PER_DOCUMENT: usize = 32;
 const PDF_MAX_JPEG_BYTES_PER_IMAGE: usize = 8 * 1024 * 1024;
 const PDF_MAX_JPEG_DIMENSION: u32 = 8192;
 const PDF_MAX_JPEG_PIXELS: u64 = 20_000_000;
+const HTML_MAX_EMBEDDED_IMAGES_PER_DOCUMENT: usize = 32;
+const HTML_MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const PDF_PAGE_NUMBER_TOKEN: &str = "\u{e000}page-number\u{e001}";
 const PDF_PAGE_COUNT_TOKEN: &str = "\u{e000}page-count\u{e001}";
 const PDF_DATE_TOKEN: &str = "\u{e000}date\u{e001}";
@@ -1276,11 +1278,12 @@ fn export_html_with_options(
     push_export_css(document, options, &mut output);
     output.push_str("</head><body>");
 
+    let mut embedded_image_count: usize = 0;
     for section in &document.sections {
         output.push_str("<section>");
         push_section_regions_html(section, document, true, &mut output);
         for block in &section.blocks {
-            push_block_html(block, document, &mut output);
+            push_block_html(block, document, &mut output, &mut embedded_image_count);
         }
         push_section_regions_html(section, document, false, &mut output);
         output.push_str("</section>");
@@ -1770,7 +1773,12 @@ fn push_region_html(kind: &str, region: &PageRegion, document: &Document, output
     output.push('>');
 }
 
-fn push_block_html(block: &Block, document: &Document, output: &mut String) {
+fn push_block_html(
+    block: &Block,
+    document: &Document,
+    output: &mut String,
+    embedded_image_count: &mut usize,
+) {
     match block {
         Block::Paragraph(paragraph) => {
             output.push_str("<p");
@@ -1807,7 +1815,7 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
             for item in &list.items {
                 output.push_str("<li>");
                 for block in &item.blocks {
-                    push_block_html(block, document, output);
+                    push_block_html(block, document, output, embedded_image_count);
                 }
                 output.push_str("</li>");
             }
@@ -1827,7 +1835,7 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
                     output.push_str(&table_cell_html_attrs(&cell.presentation));
                     output.push('>');
                     for block in &cell.blocks {
-                        push_block_html(block, document, output);
+                        push_block_html(block, document, output, embedded_image_count);
                     }
                     output.push_str("</td>");
                 }
@@ -1848,12 +1856,21 @@ fn push_block_html(block: &Block, document: &Document, output: &mut String) {
             output.push('"');
             output.push_str(&image_html_attrs(image));
             output.push('>');
-            if let Some(data_url) = image_data_url(document, &image.asset_id) {
-                output.push_str("<img src=\"");
-                output.push_str(&data_url);
-                output.push_str("\" alt=\"");
-                output.push_str(&escape_html(alt_text));
-                output.push_str("\">");
+            let within_caps = *embedded_image_count < HTML_MAX_EMBEDDED_IMAGES_PER_DOCUMENT
+                && document
+                    .assets
+                    .get(&image.asset_id)
+                    .map(|asset| asset.bytes.len() as u64 <= HTML_MAX_IMAGE_BYTES)
+                    .unwrap_or(false);
+            if within_caps {
+                if let Some(data_url) = image_data_url(document, &image.asset_id) {
+                    output.push_str("<img src=\"");
+                    output.push_str(&data_url);
+                    output.push_str("\" alt=\"");
+                    output.push_str(&escape_html(alt_text));
+                    output.push_str("\">");
+                    *embedded_image_count += 1;
+                }
             }
             output.push_str("<figcaption>");
             output.push_str(&escape_html(caption));
@@ -2256,29 +2273,46 @@ fn push_inline_html(inline: &Inline, document: &Document, output: &mut String) {
         output.push_str("\">");
     }
 
-    let styled_span = !inline.style.is_default();
+    let mut span_style = String::new();
+    if let Some(font_family) = inline
+        .style
+        .font_family
+        .as_deref()
+        .and_then(safe_css_font_family)
+    {
+        span_style.push_str("font-family:");
+        span_style.push_str(font_family);
+        span_style.push(';');
+    }
+    if let Some(font_size) = inline.style.font_size_pt {
+        span_style.push_str("font-size:");
+        span_style.push_str(&font_size.to_string());
+        span_style.push_str("pt;");
+    }
+    if let Some(text_color) = inline
+        .style
+        .text_color
+        .as_deref()
+        .and_then(safe_css_color)
+    {
+        span_style.push_str("color:");
+        span_style.push_str(&text_color);
+        span_style.push(';');
+    }
+    if let Some(highlight_color) = inline
+        .style
+        .highlight_color
+        .as_deref()
+        .and_then(safe_css_color)
+    {
+        span_style.push_str("background-color:");
+        span_style.push_str(&highlight_color);
+        span_style.push(';');
+    }
+    let styled_span = !span_style.is_empty();
     if styled_span {
         output.push_str("<span style=\"");
-        if let Some(font_family) = inline.style.font_family.as_deref() {
-            output.push_str("font-family:");
-            output.push_str(&escape_html(font_family));
-            output.push(';');
-        }
-        if let Some(font_size) = inline.style.font_size_pt {
-            output.push_str("font-size:");
-            output.push_str(&font_size.to_string());
-            output.push_str("pt;");
-        }
-        if let Some(text_color) = inline.style.text_color.as_deref() {
-            output.push_str("color:");
-            output.push_str(&escape_html(text_color));
-            output.push(';');
-        }
-        if let Some(highlight_color) = inline.style.highlight_color.as_deref() {
-            output.push_str("background-color:");
-            output.push_str(&escape_html(highlight_color));
-            output.push(';');
-        }
+        output.push_str(&span_style);
         output.push_str("\">");
     }
 
@@ -2575,6 +2609,7 @@ fn sanitize_pdf_link_target(href: &str) -> Option<PdfLinkTarget> {
             .map(PdfLinkTarget::Destination);
     }
     if safe_href.len() > PDF_MAX_URI_BYTES
+        || !safe_href.is_ascii()
         || safe_href
             .chars()
             .any(|ch| ch.is_ascii_control() || ch.is_whitespace())
@@ -3889,6 +3924,30 @@ fn escape_html(input: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+fn safe_css_color(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    if bytes.len() == 7
+        && bytes[0] == b'#'
+        && bytes[1..].iter().all(|b| b.is_ascii_hexdigit())
+    {
+        Some(value.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn safe_css_font_family(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "serif" => Some("serif"),
+        "sans-serif" => Some("sans-serif"),
+        "monospace" => Some("monospace"),
+        "cursive" => Some("cursive"),
+        "fantasy" => Some("fantasy"),
+        "system-ui" => Some("system-ui"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4581,6 +4640,145 @@ mod tests {
 
         assert!(html.contains("@page{size:148mm 210mm;"));
         assert!(html.contains("Content-Security-Policy"));
+    }
+
+    #[test]
+    fn html_export_rejects_inline_css_injection() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: "body".into(),
+            format: Default::default(),
+            inlines: vec![
+                Inline {
+                    text: "injected".to_string(),
+                    marks: vec![InlineMark::Bold],
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: word_core::InlineStyle {
+                        font_family: Some("red;color:x".to_string()),
+                        font_size_pt: None,
+                        text_color: Some("#1f2937;\" onmouseover=\"x".to_string()),
+                        highlight_color: Some("notacolor".to_string()),
+                    },
+                    field: None,
+                    note_reference: None,
+                    tracked_change: None,
+                },
+                Inline {
+                    text: "safe".to_string(),
+                    marks: Vec::new(),
+                    link: None,
+                    comment_ids: Vec::new(),
+                    style: word_core::InlineStyle {
+                        font_family: Some("serif".to_string()),
+                        font_size_pt: None,
+                        text_color: Some("#1F2937".to_string()),
+                        highlight_color: None,
+                    },
+                    field: None,
+                    note_reference: None,
+                    tracked_change: None,
+                },
+            ],
+        })];
+
+        let html = export_html(&document).expect("html export should succeed");
+
+        assert!(!html.contains("color:x"));
+        assert!(!html.contains("onmouseover"));
+        assert!(!html.contains("notacolor"));
+        assert!(html.contains("font-family:serif"));
+        assert!(html.contains("color:#1f2937"));
+        assert!(!html.contains("#1F2937"));
+        assert!(html.contains("injected"));
+    }
+
+    #[test]
+    fn html_export_caps_embedded_images() {
+        let total = HTML_MAX_EMBEDDED_IMAGES_PER_DOCUMENT + 8;
+        let mut document = Document::new_untitled();
+        let mut blocks = Vec::new();
+        for index in 0..total {
+            let asset_id = format!("image-{index}.png");
+            document.assets.insert(
+                asset_id.clone(),
+                word_core::AssetRef {
+                    id: asset_id.clone(),
+                    media_type: "image/png".to_string(),
+                    byte_len: 8,
+                    bytes: b"\x89PNG\r\n\x1a\n".to_vec(),
+                    original_name: None,
+                },
+            );
+            blocks.push(Block::Image(ImageBlock {
+                asset_id,
+                presentation: ImagePresentation::default(),
+                alt_text: Some("Image".to_string()),
+            }));
+        }
+        document.sections[0].blocks = blocks;
+
+        let html = export_html(&document).expect("html export should succeed");
+
+        assert_eq!(
+            html.matches("<img").count(),
+            HTML_MAX_EMBEDDED_IMAGES_PER_DOCUMENT
+        );
+        assert_eq!(html.matches("<figure").count(), total);
+        assert_eq!(
+            html.matches("data:image/png;base64,").count(),
+            HTML_MAX_EMBEDDED_IMAGES_PER_DOCUMENT
+        );
+    }
+
+    #[test]
+    fn html_export_skips_oversized_image_assets() {
+        let mut document = Document::new_untitled();
+        let mut oversized = b"\x89PNG\r\n\x1a\n".to_vec();
+        oversized.resize((HTML_MAX_IMAGE_BYTES + 1) as usize, 0);
+        document.assets.insert(
+            "big.png".to_string(),
+            word_core::AssetRef {
+                id: "big.png".to_string(),
+                media_type: "image/png".to_string(),
+                byte_len: oversized.len(),
+                bytes: oversized,
+                original_name: None,
+            },
+        );
+        document.sections[0].blocks = vec![Block::Image(ImageBlock {
+            asset_id: "big.png".to_string(),
+            presentation: ImagePresentation::default(),
+            alt_text: Some("Image".to_string()),
+        })];
+
+        let html = export_html(&document).expect("html export should succeed");
+
+        assert!(html.contains("<figure data-asset=\"big.png\""));
+        assert!(!html.contains("<img"));
+        assert!(!html.contains("data:image/"));
+    }
+
+    #[test]
+    fn pdf_export_rejects_non_ascii_link_targets() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: "body".into(),
+            format: Default::default(),
+            inlines: vec![
+                linked_inline("Internationalized", "https://例え.test/"),
+                linked_inline("Ascii", "https://example.test/"),
+            ],
+        })];
+
+        let pdf = export_basic_pdf(&document).expect("pdf export should succeed");
+        let text = String::from_utf8_lossy(&pdf);
+
+        assert_eq!(pdf_link_annotation_count(&text), 1);
+        assert!(text.contains("/URI (https://example.test/)"));
+        assert!(!text.contains("/URI (https://??.test/)"));
     }
 
     #[test]
