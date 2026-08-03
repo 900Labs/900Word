@@ -29,6 +29,8 @@ const IMAGE_PARAGRAPH_STYLE: &str = "900w-image";
 const TOC_PARAGRAPH_STYLE: &str = "900w-toc";
 const PAGE_LAYOUT_STYLE: &str = "900w-page-layout";
 const MASTER_PAGE_STYLE: &str = "900w-master-page";
+const MAX_IMAGE_DIMENSION: u32 = 16384;
+const MAX_IMAGE_PIXELS: u64 = 64_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackageLimits {
@@ -166,6 +168,7 @@ pub fn read_odt_bytes_with_limits(
     let mut meta = String::new();
     let mut styles = String::new();
     let mut asset_payloads = BTreeMap::new();
+    let mut expanded_size = 0_u64;
 
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
@@ -173,20 +176,29 @@ pub fn read_odt_bytes_with_limits(
             continue;
         }
         let name = file.name().to_string();
+        let entry_byte_limit = if name.starts_with("Pictures/") {
+            limits.max_image_size
+        } else {
+            limits.max_entry_size
+        };
+        let entry_len: u64;
         match name.as_str() {
             "content.xml" => {
-                file.read_to_string(&mut content)?;
+                content = read_entry_string(&mut file, entry_byte_limit, &name)?;
+                entry_len = content.len() as u64;
             }
             "meta.xml" => {
-                file.read_to_string(&mut meta)?;
+                meta = read_entry_string(&mut file, entry_byte_limit, &name)?;
+                entry_len = meta.len() as u64;
             }
             "styles.xml" => {
-                file.read_to_string(&mut styles)?;
+                styles = read_entry_string(&mut file, entry_byte_limit, &name)?;
+                entry_len = styles.len() as u64;
             }
             _ if name.starts_with("Pictures/") => {
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)?;
-                let media_type = detect_image_media_type(&bytes)
+                let bytes = read_entry_bytes(&mut file, entry_byte_limit, &name)?;
+                entry_len = bytes.len() as u64;
+                let media_type = validate_image_payload(&bytes)
                     .ok_or_else(|| OdtError::UnsupportedImageType { name: name.clone() })?;
                 let id = generic_imported_image_id(asset_payloads.len() + 1, media_type);
                 asset_payloads.insert(
@@ -198,7 +210,13 @@ pub fn read_odt_bytes_with_limits(
                     },
                 );
             }
-            _ => {}
+            _ => {
+                entry_len = 0;
+            }
+        }
+        expanded_size = expanded_size.saturating_add(entry_len);
+        if expanded_size > limits.max_total_expanded_size {
+            return Err(OdtError::ExpandedSizeTooLarge);
         }
     }
 
@@ -222,6 +240,32 @@ pub fn read_odt_bytes_with_limits(
     Ok(document)
 }
 
+fn read_entry_bytes(
+    file: &mut zip::read::ZipFile<'_>,
+    max_bytes: u64,
+    name: &str,
+) -> Result<Vec<u8>, OdtError> {
+    let mut buffer = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut buffer)?;
+    if buffer.len() as u64 > max_bytes {
+        return Err(OdtError::EntryTooLarge {
+            name: name.to_string(),
+        });
+    }
+    Ok(buffer)
+}
+
+fn read_entry_string(
+    file: &mut zip::read::ZipFile<'_>,
+    max_bytes: u64,
+    name: &str,
+) -> Result<String, OdtError> {
+    let bytes = read_entry_bytes(file, max_bytes, name)?;
+    String::from_utf8(bytes)
+        .map_err(|err| OdtError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, err)))
+}
+
 pub fn validate_odt_package(bytes: &[u8], limits: PackageLimits) -> Result<(), OdtError> {
     if bytes.len() as u64 > limits.max_package_size {
         return Err(OdtError::PackageTooLarge);
@@ -235,6 +279,7 @@ pub fn validate_odt_package(bytes: &[u8], limits: PackageLimits) -> Result<(), O
     }
 
     let mut expanded_size = 0_u64;
+    let mut actual_expanded = 0_u64;
     let mut has_content = false;
     let mut has_valid_mimetype = false;
 
@@ -251,6 +296,11 @@ pub fn validate_odt_package(bytes: &[u8], limits: PackageLimits) -> Result<(), O
         if file.size() > limits.max_entry_size {
             return Err(OdtError::EntryTooLarge { name });
         }
+        let entry_byte_limit = if name.starts_with("Pictures/") {
+            limits.max_image_size
+        } else {
+            limits.max_entry_size
+        };
         if name.starts_with("Pictures/") && file.size() > limits.max_image_size {
             return Err(OdtError::ImageTooLarge { name });
         }
@@ -260,37 +310,44 @@ pub fn validate_odt_package(bytes: &[u8], limits: PackageLimits) -> Result<(), O
             return Err(OdtError::ExpandedSizeTooLarge);
         }
 
+        let entry_len: u64;
         match name.as_str() {
             "content.xml" => {
                 has_content = true;
-                let mut content = String::new();
-                file.read_to_string(&mut content)?;
+                let content = read_entry_string(&mut file, entry_byte_limit, &name)?;
+                entry_len = content.len() as u64;
                 validate_xml_preflight("content.xml", &content, limits)?;
             }
             "meta.xml" | "styles.xml" | "META-INF/manifest.xml" => {
-                let mut content = String::new();
-                file.read_to_string(&mut content)?;
+                let content = read_entry_string(&mut file, entry_byte_limit, &name)?;
+                entry_len = content.len() as u64;
                 validate_xml_preflight(&name, &content, limits)?;
             }
             "mimetype" => {
                 if index != 0 || file.compression() != CompressionMethod::Stored {
                     return Err(OdtError::InvalidMimeType);
                 }
-                let mut value = String::new();
-                file.read_to_string(&mut value)?;
+                let value = read_entry_string(&mut file, entry_byte_limit, &name)?;
+                entry_len = value.len() as u64;
                 if value != ODT_MIME_TYPE {
                     return Err(OdtError::InvalidMimeType);
                 }
                 has_valid_mimetype = true;
             }
             _ if name.starts_with("Pictures/") => {
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)?;
-                if detect_image_media_type(&bytes).is_none() {
+                let bytes = read_entry_bytes(&mut file, entry_byte_limit, &name)?;
+                entry_len = bytes.len() as u64;
+                if validate_image_payload(&bytes).is_none() {
                     return Err(OdtError::UnsupportedImageType { name });
                 }
             }
-            _ => {}
+            _ => {
+                entry_len = 0;
+            }
+        }
+        actual_expanded = actual_expanded.saturating_add(entry_len);
+        if actual_expanded > limits.max_total_expanded_size {
+            return Err(OdtError::ExpandedSizeTooLarge);
         }
     }
 
@@ -368,13 +425,6 @@ fn validate_xml_preflight(
     content: &str,
     limits: PackageLimits,
 ) -> Result<(), OdtError> {
-    let lower = content.to_ascii_lowercase();
-    if lower.contains("<!doctype") || lower.contains("<!entity") {
-        return Err(OdtError::XmlEntityDeclaration {
-            name: name.to_string(),
-        });
-    }
-
     let mut reader = Reader::from_str(content);
     reader.config_mut().trim_text(false);
     let mut depth = 0_usize;
@@ -3721,6 +3771,83 @@ fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+fn validate_image_payload(bytes: &[u8]) -> Option<&'static str> {
+    let media_type = detect_image_media_type(bytes)?;
+    if let Some((width, height)) = image_pixel_dimensions(bytes) {
+        if width > MAX_IMAGE_DIMENSION
+            || height > MAX_IMAGE_DIMENSION
+            || width as u64 * height as u64 > MAX_IMAGE_PIXELS
+        {
+            return None;
+        }
+    }
+    Some(media_type)
+}
+
+fn image_pixel_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        return png_pixel_dimensions(bytes);
+    }
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        return jpeg_pixel_dimensions(bytes);
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return gif_pixel_dimensions(bytes);
+    }
+    None
+}
+
+fn png_pixel_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    Some((width, height))
+}
+
+fn jpeg_pixel_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let mut index = 2;
+    while index + 1 < bytes.len() {
+        if bytes[index] != 0xFF {
+            return None;
+        }
+        let marker = bytes[index + 1];
+        index += 2;
+        if marker == 0xD8 || marker == 0xD9 || (0xD0..=0xD7).contains(&marker) {
+            continue;
+        }
+        if index + 1 >= bytes.len() {
+            return None;
+        }
+        let length = u16::from_be_bytes([bytes[index], bytes[index + 1]]) as usize;
+        if length < 2 {
+            return None;
+        }
+        let is_start_of_frame =
+            (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+        if is_start_of_frame {
+            if bytes.len() < index + 7 {
+                return None;
+            }
+            let height = u16::from_be_bytes([bytes[index + 3], bytes[index + 4]]) as u32;
+            let width = u16::from_be_bytes([bytes[index + 5], bytes[index + 6]]) as u32;
+            return Some((width, height));
+        }
+        index += length;
+    }
+    None
+}
+
+fn gif_pixel_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 10 {
+        return None;
+    }
+    let width = u16::from_le_bytes([bytes[6], bytes[7]]) as u32;
+    let height = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
+    Some((width, height))
+}
+
 fn generic_imported_image_id(index: usize, media_type: &str) -> String {
     let extension = match media_type {
         "image/png" => "png",
@@ -3913,6 +4040,112 @@ mod tests {
             .expect_err("svg payload should fail");
 
         assert!(matches!(err, OdtError::UnsupportedImageType { .. }));
+    }
+
+    #[test]
+    fn decompression_bomb_with_lying_size_is_rejected() {
+        let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        writer
+            .start_file(
+                "mimetype",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(ODT_MIME_TYPE.as_bytes()).unwrap();
+        writer
+            .start_file(
+                "content.xml",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(&payload).unwrap();
+        let mut bytes = writer.finish().unwrap().into_inner();
+
+        patch_entry_uncompressed_size(&mut bytes, "content.xml", 16);
+
+        let limits = PackageLimits {
+            max_entry_size: 4096,
+            max_total_expanded_size: 1024 * 1024,
+            ..PackageLimits::default()
+        };
+
+        let err = validate_odt_package(&bytes, limits).expect_err("zip bomb should fail");
+        assert!(matches!(err, OdtError::EntryTooLarge { .. }));
+
+        let err = read_odt_bytes_with_limits(&bytes, limits).expect_err("zip bomb read should fail");
+        assert!(matches!(err, OdtError::EntryTooLarge { .. }));
+    }
+
+    #[test]
+    fn doctype_substring_in_comment_is_accepted() {
+        let content = "<?xml version=\"1.0\"?>\
+            <office:document-content xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\">\
+            <!-- doctype notes --><office:body/></office:document-content>";
+
+        let bytes = test_package_with_content(content);
+
+        validate_odt_package(&bytes, PackageLimits::default())
+            .expect("benign doctype substring should pass");
+    }
+
+    #[test]
+    fn oversized_png_dimensions_are_rejected() {
+        let mut png = vec![
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+        ];
+        png.extend_from_slice(&20000u32.to_be_bytes());
+        png.extend_from_slice(&20000u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0]);
+
+        let bytes = test_package_with_image(png);
+
+        let err = validate_odt_package(&bytes, PackageLimits::default())
+            .expect_err("oversized png dimensions should fail");
+
+        assert!(matches!(err, OdtError::UnsupportedImageType { .. }));
+    }
+
+    fn window_search_from(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    fn patch_entry_uncompressed_size(bytes: &mut [u8], target_name: &str, lie: u32) {
+        let lie_bytes = lie.to_le_bytes();
+        let local_sig = [0x50u8, 0x4b, 0x03, 0x04];
+        let mut start = 0;
+        while let Some(offset) = window_search_from(&bytes[start..], &local_sig) {
+            let header = start + offset;
+            if bytes.len() >= header + 30 {
+                let name_len =
+                    u16::from_le_bytes([bytes[header + 26], bytes[header + 27]]) as usize;
+                let name_start = header + 30;
+                if name_start + name_len <= bytes.len()
+                    && &bytes[name_start..name_start + name_len] == target_name.as_bytes()
+                {
+                    bytes[header + 22..header + 26].copy_from_slice(&lie_bytes);
+                }
+            }
+            start = header + 4;
+        }
+        let central_sig = [0x50u8, 0x4b, 0x01, 0x02];
+        start = 0;
+        while let Some(offset) = window_search_from(&bytes[start..], &central_sig) {
+            let header = start + offset;
+            if bytes.len() >= header + 46 {
+                let name_len =
+                    u16::from_le_bytes([bytes[header + 28], bytes[header + 29]]) as usize;
+                let name_start = header + 46;
+                if name_start + name_len <= bytes.len()
+                    && &bytes[name_start..name_start + name_len] == target_name.as_bytes()
+                {
+                    bytes[header + 24..header + 28].copy_from_slice(&lie_bytes);
+                }
+            }
+            start = header + 4;
+        }
     }
 
     #[test]
