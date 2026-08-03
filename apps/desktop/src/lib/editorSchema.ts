@@ -32,11 +32,46 @@ const nodes: Record<string, NodeSpec> = {
           }
         }
       },
-      spacingBefore: { default: null },
-      spacingAfter: { default: null },
-      indentStart: { default: null },
-      indentEnd: { default: null },
-      firstLineIndent: { default: null },
+      spacingBefore: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !(typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 200)) {
+            throw new RangeError('unsupported paragraph spacing before');
+          }
+        }
+      },
+      spacingAfter: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !(typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 200)) {
+            throw new RangeError('unsupported paragraph spacing after');
+          }
+        }
+      },
+      indentStart: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !(typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 200)) {
+            throw new RangeError('unsupported paragraph indent start');
+          }
+        }
+      },
+      indentEnd: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !(typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 200)) {
+            throw new RangeError('unsupported paragraph indent end');
+          }
+        }
+      },
+      firstLineIndent: {
+        default: null,
+        validate(value: unknown) {
+          if (value !== null && !(typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 200)) {
+            throw new RangeError('unsupported paragraph first line indent');
+          }
+        }
+      },
       bookmarkId: {
         default: null,
         validate(value: unknown) {
@@ -154,7 +189,14 @@ const nodes: Record<string, NodeSpec> = {
   },
   bullet_list: {
     attrs: {
-      definitionId: { default: '900w-unordered' }
+      definitionId: {
+        default: '900w-unordered',
+        validate(value: unknown) {
+          if (value !== '900w-unordered' && value !== '900w-ordered') {
+            throw new RangeError('unsupported bullet list definition');
+          }
+        }
+      }
     },
     content: 'list_item+',
     group: 'block',
@@ -172,7 +214,14 @@ const nodes: Record<string, NodeSpec> = {
   },
   ordered_list: {
     attrs: {
-      definitionId: { default: '900w-ordered' }
+      definitionId: {
+        default: '900w-ordered',
+        validate(value: unknown) {
+          if (value !== '900w-unordered' && value !== '900w-ordered') {
+            throw new RangeError('unsupported ordered list definition');
+          }
+        }
+      }
     },
     content: 'list_item+',
     group: 'block',

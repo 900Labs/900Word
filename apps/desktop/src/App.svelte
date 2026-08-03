@@ -534,6 +534,7 @@
   let showContextInspector = $derived(activeView === 'editor' && !settings.low_resource);
   let contextInspectorTitle = $derived(contextInspectorLabel());
   let editorSyncQueue = Promise.resolve();
+  let editorLoadGeneration = 0;
   let editorSyncError: string | null = null;
   let tableRows = $state(2);
   let tableColumns = $state(2);
@@ -619,6 +620,8 @@
   }
 
   async function loadDocumentIntoEditor(document: DocumentState, nextStatus: string) {
+    editorLoadGeneration += 1;
+    editorSyncQueue = Promise.resolve();
     editorSyncError = null;
     documentState = document;
     if (activeCommentId && !document.comments?.[activeCommentId]) {
@@ -681,8 +684,9 @@
     clearSpellDecorations();
     refreshSelectionFormatting();
     editorSyncError = null;
+    const generation = editorLoadGeneration;
     editorSyncQueue = editorSyncQueue
-      .then(() => syncEditorChange(change))
+      .then(() => syncEditorChange(change, generation))
       .then(() => {
         editorSyncError = null;
       })
@@ -692,7 +696,7 @@
       });
   }
 
-  async function syncEditorChange(change: EditorProjectedChange) {
+  async function syncEditorChange(change: EditorProjectedChange, generation: number) {
     if (!documentState || !canEditProjectedDocument(documentState)) {
       return;
     }
@@ -704,9 +708,15 @@
 
     let nextDocument = documentState;
     for (const command of commands) {
+      if (generation !== editorLoadGeneration) {
+        return;
+      }
       nextDocument = await invoke<DocumentState>('apply_document_command', {
         command
       });
+    }
+    if (generation !== editorLoadGeneration) {
+      return;
     }
     documentState = nextDocument;
     navigatorHeadings = documentOutline(nextDocument);
@@ -6606,5 +6616,5 @@
     </div>
   </footer>
 
-  <iframe bind:this={printFrame} class="print-frame" title={tr('printFrame')}></iframe>
+  <iframe bind:this={printFrame} class="print-frame" title={tr('printFrame')} sandbox="allow-same-origin"></iframe>
 </main>
