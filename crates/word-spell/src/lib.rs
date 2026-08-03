@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -14,6 +15,7 @@ const BUNDLED_DIC: &str = include_str!("../dictionaries/en_US/en_US.dic");
 const MAX_USER_DICTIONARY_BYTES: u64 = 1024 * 1024;
 const MAX_PERSONAL_DICTIONARY_BYTES: u64 = 128 * 1024;
 const MAX_SUGGESTIONS: usize = 5;
+const MAX_SUGGEST_CANDIDATES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DictionaryInfo {
@@ -49,6 +51,7 @@ pub struct SpellChecker {
     language_tag: String,
     display_name: String,
     words: BTreeSet<String>,
+    index: BTreeMap<(char, usize), Vec<String>>,
 }
 
 impl SpellChecker {
@@ -70,10 +73,12 @@ impl SpellChecker {
                 reason: "dictionary word list is empty",
             });
         }
+        let index = build_suggestion_index(&words);
         Ok(Self {
             language_tag: normalize_language_tag(language_tag),
             display_name: display_name.to_string(),
             words,
+            index,
         })
     }
 
@@ -144,25 +149,30 @@ impl SpellChecker {
         let Some(first_char) = normalized.chars().next() else {
             return Vec::new();
         };
+        let target_len = normalized.chars().count();
 
         let mut suggestions = Vec::new();
-        for candidate in &self.words {
-            if suggestions.len() >= MAX_SUGGESTIONS {
+        let mut evaluated = 0usize;
+        let lower = target_len.saturating_sub(2);
+        let upper = target_len.saturating_add(2);
+        for length in lower..=upper {
+            if suggestions.len() >= MAX_SUGGESTIONS || evaluated >= MAX_SUGGEST_CANDIDATES {
                 break;
             }
-            let length_delta = candidate
-                .chars()
-                .count()
-                .abs_diff(normalized.chars().count());
-            if length_delta > 2 {
+            let Some(bucket) = self.index.get(&(first_char, length)) else {
                 continue;
-            }
-            if candidate.starts_with(first_char)
-                && bounded_edit_distance(candidate, &normalized, 2).is_some()
-            {
-                suggestions.push(candidate.clone());
+            };
+            for candidate in bucket {
+                if suggestions.len() >= MAX_SUGGESTIONS || evaluated >= MAX_SUGGEST_CANDIDATES {
+                    break;
+                }
+                evaluated += 1;
+                if bounded_edit_distance(candidate, &normalized, 2).is_some() {
+                    suggestions.push(candidate.clone());
+                }
             }
         }
+        suggestions.sort();
         suggestions
     }
 }
@@ -215,7 +225,7 @@ pub fn read_personal_words(
             reason: "personal dictionary file is invalid",
         });
     }
-    let text = fs::read_to_string(path).map_err(|_| SpellError::DictionaryIo)?;
+    let text = read_capped_string(&path, MAX_PERSONAL_DICTIONARY_BYTES)?;
     Ok(text
         .lines()
         .filter_map(normalize_personal_word)
@@ -447,6 +457,20 @@ fn load_user_checker(
     Ok(None)
 }
 
+fn read_capped_string(path: &Path, max_bytes: u64) -> Result<String, SpellError> {
+    let file = fs::File::open(path).map_err(|_| SpellError::DictionaryIo)?;
+    let mut buffer = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut buffer)
+        .map_err(|_| SpellError::DictionaryIo)?;
+    if buffer.len() as u64 > max_bytes {
+        return Err(SpellError::InvalidDictionary {
+            reason: "dictionary file is too large",
+        });
+    }
+    String::from_utf8(buffer).map_err(|_| SpellError::DictionaryIo)
+}
+
 fn read_limited_dictionary_file(path: &Path) -> Result<String, SpellError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| SpellError::DictionaryIo)?;
     if !metadata.file_type().is_file() || metadata.len() > MAX_USER_DICTIONARY_BYTES {
@@ -454,7 +478,7 @@ fn read_limited_dictionary_file(path: &Path) -> Result<String, SpellError> {
             reason: "dictionary file is too large",
         });
     }
-    fs::read_to_string(path).map_err(|_| SpellError::DictionaryIo)
+    read_capped_string(path, MAX_USER_DICTIONARY_BYTES)
 }
 
 fn ensure_private_dictionary_root(user_root: &Path) -> Result<(), SpellError> {
@@ -816,6 +840,18 @@ fn normalize_personal_word(word: &str) -> Option<String> {
         return None;
     }
     Some(normalized)
+}
+
+fn build_suggestion_index(words: &BTreeSet<String>) -> BTreeMap<(char, usize), Vec<String>> {
+    let mut index: BTreeMap<(char, usize), Vec<String>> = BTreeMap::new();
+    for word in words {
+        let Some(first) = word.chars().next() else {
+            continue;
+        };
+        let length = word.chars().count();
+        index.entry((first, length)).or_default().push(word.clone());
+    }
+    index
 }
 
 fn bounded_edit_distance(left: &str, right: &str, max_distance: usize) -> Option<usize> {
@@ -1577,6 +1613,39 @@ mod tests {
             err,
             SpellError::MissingDictionary {
                 language_tag: "zz".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn suggest_finds_near_neighbor_without_scanning_unrelated_buckets() {
+        let mut words: Vec<String> = (0..50_000).map(|index| format!("zzzword{index}")).collect();
+        words.push("neighbor".to_string());
+        words.push("neighbour".to_string());
+        let dic = format!("{}\n{}", words.len(), words.join("\n"));
+        let checker = SpellChecker::from_hunspell_parts("en-US", "Big synthetic", "SET UTF-8\n", &dic)
+            .expect("checker should build from large dictionary");
+
+        let suggestions = checker.suggest("neighor");
+
+        assert!(suggestions.len() <= MAX_SUGGESTIONS);
+        assert!(suggestions.iter().any(|word| word == "neighbor"));
+    }
+
+    #[test]
+    fn capped_dictionary_read_enforces_actual_byte_limit() {
+        let dir = tempfile::tempdir().expect("temp dir should exist");
+        let path = dir.path().join("capped.txt");
+        fs::write(&path, "a".repeat(64)).expect("payload should write");
+
+        let accepted = read_capped_string(&path, 64).expect("within-limit read should succeed");
+        assert_eq!(accepted.len(), 64);
+
+        let rejected = read_capped_string(&path, 32).expect_err("over-limit read should reject");
+        assert_eq!(
+            rejected,
+            SpellError::InvalidDictionary {
+                reason: "dictionary file is too large"
             }
         );
     }
