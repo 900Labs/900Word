@@ -22,10 +22,10 @@ All external files are untrusted.
 
 `word-odf` currently enforces:
 
-- Maximum ZIP package size, entry count, per-entry size, total expanded size, path depth, XML depth, and image entry size.
+- Maximum ZIP package size, entry count, per-entry size, total expanded size, path depth, XML depth, and image entry size. Per-entry and total expanded-size limits are enforced against the real decompressed byte count on every entry read, so a header that misrepresents its uncompressed size cannot bypass them.
 - Rejection of absolute paths, backslash paths, parent-directory traversal, symlink entries, encrypted entries, executable/script-like entries, invalid or missing first-entry stored ODT mimetype values, and missing `content.xml`.
-- Rejection of XML `DOCTYPE` and entity declarations before content import.
-- Rejection of embedded image payloads outside the PNG, JPEG, GIF, and WebP magic-byte allowlist.
+- Rejection of XML `DOCTYPE` declarations through the XML parser before content import.
+- Rejection of embedded image payloads outside the PNG, JPEG, GIF, and WebP magic-byte allowlist, plus bounded pixel dimensions for PNG, JPEG, and GIF images.
 - Warning-based import for unsupported ODT elements.
 - Warning-based stripping of unsafe text links, unsafe internal link fragments, unsafe bookmark names, and unsafe or remote image references.
 
@@ -33,9 +33,9 @@ All external files are untrusted.
 
 `word-docx` currently enforces:
 
-- Maximum ZIP package size, entry count, per-entry size, total expanded size, path depth, and XML depth.
+- Maximum ZIP package size, entry count, per-entry size, total expanded size, path depth, and XML depth. Per-entry and total expanded-size limits are enforced against the real decompressed byte count on every entry read, so a header that misrepresents its uncompressed size cannot bypass them.
 - Rejection of absolute paths, backslash paths, parent-directory traversal, symlink entries, encrypted entries, macro/executable-like entries, ActiveX, embedded object, script, and custom XML package areas.
-- Rejection of XML `DOCTYPE` and entity declarations before content import.
+- Rejection of XML `DOCTYPE` declarations through the XML parser before content import.
 - Required `word/document.xml` presence.
 - Relationship import limited to safe hyperlink targets, safe local header/footer targets under `word/`, safe local comments targets under `word/`, and safe local image targets under `word/media/`. Unsupported external relationships are ignored with generic warnings and never fetched.
 - Header/footer relationship targets are accepted only when they resolve to simple package paths for `word/header*.xml` or `word/footer*.xml` parts that have already passed package preflight. Unsafe, missing, remote, or unsupported targets are ignored with generic warnings.

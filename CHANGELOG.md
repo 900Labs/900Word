@@ -2,6 +2,28 @@
 
 All notable changes to 900Word are tracked here.
 
+## Unreleased
+
+### Security
+
+- Hardened ODT and DOCX package parsing against decompression-bomb denial of service. Expanded-size limits are now enforced against the real decompressed byte count on every archive entry read (not only the attacker-declared uncompressed size), in both preflight and content-read passes, so a small malicious package can no longer exhaust memory through a high-ratio or header-mismatched entry.
+- Removed the redundant XML `DOCTYPE`/`entity` substring pre-scan in ODT and DOCX import that falsely rejected valid packages containing those words in comments or text. Real document-type declarations are still rejected via the XML parser event before content import.
+- Added ODT embedded-image pixel-dimension validation. Imported PNG, JPEG, and GIF payloads that declare oversized dimensions are now rejected before the bytes are accepted, complementing the existing magic-byte and byte-size checks.
+- Sanitized inline CSS in HTML and print-HTML export. Inline font family, text color, and highlight color are validated against a strict allowlist before emission, so document model values cannot inject CSS declarations into exported or printed HTML.
+- Capped embedded images in HTML and print-HTML export with per-image and per-document limits and a figure fallback, mirroring the existing PDF export caps.
+- Rejected non-ASCII link targets in PDF export URI annotations so corrupted links can no longer be emitted.
+- Capped the undo/redo history to a bounded number of entries to prevent unbounded memory growth during long editing sessions.
+- Bounded recursive block-walking in the document model with a depth guard so a deeply nested document cannot overflow the stack when computing statistics or resolving comments, notes, and tracked changes.
+- Indexed spell-check suggestions by first character and length and capped candidate evaluation so a large user dictionary can no longer make spell checking quadratic per misspelled word.
+- Closed a stat-to-read race in dictionary and personal-word loading by reading with a hard byte-counting cap instead of an unbounded read after the size precheck.
+- Tightened the desktop content security policy with `form-action`, `base-uri`, `frame-ancestors`, and `object-src` directives.
+- Sandboxed the WebView print iframe without script execution as defense in depth around the sanitized print HTML.
+- Added an editor load-generation guard so a document-replacing action (undo, redo, open, recent, template, new) can no longer be silently overwritten by a stale editor-to-backend sync captured before the replacement.
+
+### Fixed
+
+- Editor undo/redo, open, open-recent, and template-load actions no longer race with in-flight editor syncs, which previously could silently re-apply edits the user had undone.
+
 ## 0.1.0 - 2026-07-07
 
 ### Release Prep
