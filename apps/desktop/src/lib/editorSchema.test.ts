@@ -556,4 +556,74 @@ describe('supportedSchema', () => {
       })
     ).toThrow();
   });
+
+  it('accepts bounded paragraph spacing and indent attrs', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'paragraph',
+          attrs: {
+            style: 'body',
+            spacingBefore: 12,
+            spacingAfter: 6,
+            indentStart: 20,
+            indentEnd: 8,
+            firstLineIndent: 10
+          },
+          content: [{ type: 'text', text: 'Spaced' }]
+        }
+      ]
+    });
+
+    expect(doc.firstChild?.attrs.spacingBefore).toBe(12);
+    expect(doc.firstChild?.attrs.spacingAfter).toBe(6);
+    expect(doc.firstChild?.attrs.indentStart).toBe(20);
+    expect(doc.firstChild?.attrs.indentEnd).toBe(8);
+    expect(doc.firstChild?.attrs.firstLineIndent).toBe(10);
+  });
+
+  it('rejects out-of-range paragraph spacing and indent attrs', () => {
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [{ type: 'paragraph', attrs: { style: 'body', spacingBefore: 500 }, content: [] }]
+      })
+    ).toThrow('unsupported paragraph spacing before');
+
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [{ type: 'paragraph', attrs: { style: 'body', indentStart: -4 }, content: [] }]
+      })
+    ).toThrow('unsupported paragraph indent start');
+  });
+
+  it('accepts known list definition ids and rejects unknown ones', () => {
+    const doc = supportedSchema.nodeFromJSON({
+      type: 'doc',
+      content: [
+        {
+          type: 'bullet_list',
+          attrs: { definitionId: '900w-unordered' },
+          content: [{ type: 'list_item', content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }] }]
+        }
+      ]
+    });
+
+    expect(doc.firstChild?.attrs.definitionId).toBe('900w-unordered');
+
+    expect(() =>
+      supportedSchema.nodeFromJSON({
+        type: 'doc',
+        content: [
+          {
+            type: 'ordered_list',
+            attrs: { definitionId: '900w-evil' },
+            content: [{ type: 'list_item', content: [{ type: 'paragraph', attrs: { style: 'body' }, content: [] }] }]
+          }
+        ]
+      })
+    ).toThrow('unsupported ordered list definition');
+  });
 });

@@ -41,7 +41,7 @@ impl Document {
         let mut text = String::new();
         for section in &self.sections {
             for block in &section.blocks {
-                block.push_text(&mut text);
+                block.push_text(&mut text, 0);
                 text.push('\n');
             }
         }
@@ -101,7 +101,7 @@ impl Document {
                 if block_index > section.blocks.len() {
                     return Err(DocumentError::BlockOutOfBounds { block_index });
                 }
-                normalize_comment_anchors_in_block(&mut block);
+                normalize_comment_anchors_in_block(&mut block, 0);
                 section.blocks.insert(block_index, block);
                 self.prune_unanchored_comments();
                 self.prune_unreferenced_notes();
@@ -121,7 +121,7 @@ impl Document {
                     .blocks
                     .get_mut(block_index)
                     .ok_or(DocumentError::BlockOutOfBounds { block_index })?;
-                normalize_comment_anchors_in_block(&mut block);
+                normalize_comment_anchors_in_block(&mut block, 0);
                 *slot = block;
                 self.prune_unanchored_comments();
                 self.prune_unreferenced_notes();
@@ -375,7 +375,7 @@ impl Document {
         let id = validate_tracked_change_id(id)?;
         let mut changed = false;
         for section in &mut self.sections {
-            changed |= resolve_tracked_change_in_blocks(&mut section.blocks, &id, resolution);
+            changed |= resolve_tracked_change_in_blocks(&mut section.blocks, &id, resolution, 0);
         }
         if !changed {
             return Err(DocumentError::TrackedChangeNotFound { id });
@@ -389,7 +389,7 @@ impl Document {
     fn resolve_all_tracked_changes(&mut self, resolution: TrackedChangeResolution) -> bool {
         let mut changed = false;
         for section in &mut self.sections {
-            changed |= resolve_all_tracked_changes_in_blocks(&mut section.blocks, resolution);
+            changed |= resolve_all_tracked_changes_in_blocks(&mut section.blocks, resolution, 0);
         }
         if changed {
             self.prune_unanchored_comments();
@@ -404,13 +404,13 @@ impl Document {
 
     fn remove_comment_anchors(&mut self, comment_id: &str) {
         for section in &mut self.sections {
-            remove_comment_anchors_from_blocks(&mut section.blocks, comment_id);
+            remove_comment_anchors_from_blocks(&mut section.blocks, comment_id, 0);
         }
     }
 
     fn remove_note_references(&mut self, note_id: &str) {
         for section in &mut self.sections {
-            remove_note_references_from_blocks(&mut section.blocks, note_id);
+            remove_note_references_from_blocks(&mut section.blocks, note_id, 0);
         }
     }
 
@@ -805,7 +805,10 @@ impl Block {
         }
     }
 
-    fn push_text(&self, output: &mut String) {
+    fn push_text(&self, output: &mut String, depth: usize) {
+        if depth > MAX_BLOCK_DEPTH {
+            return;
+        }
         match self {
             Block::Paragraph(paragraph) => paragraph.push_text(output),
             Block::Heading(heading) => heading.push_text(output),
@@ -813,7 +816,7 @@ impl Block {
             Block::List(list) => {
                 for item in &list.items {
                     for block in &item.blocks {
-                        block.push_text(output);
+                        block.push_text(output, depth + 1);
                         output.push('\n');
                     }
                 }
@@ -822,7 +825,7 @@ impl Block {
                 for row in &table.rows {
                     for cell in &row.cells {
                         for block in &cell.blocks {
-                            block.push_text(output);
+                            block.push_text(output, depth + 1);
                             output.push('\t');
                         }
                     }
@@ -1417,6 +1420,9 @@ pub enum DocumentCommand {
     },
 }
 
+const MAX_UNDO_ENTRIES: usize = 100;
+const MAX_BLOCK_DEPTH: usize = 256;
+
 #[derive(Debug, Clone, Default)]
 pub struct UndoStack {
     past: Vec<Document>,
@@ -1443,6 +1449,9 @@ impl UndoStack {
         let before = document.clone();
         mutation(document)?;
         self.past.push(before);
+        if self.past.len() > MAX_UNDO_ENTRIES {
+            self.past.remove(0);
+        }
         self.future.clear();
         Ok(())
     }
@@ -1450,6 +1459,9 @@ impl UndoStack {
     pub fn undo(&mut self, document: &mut Document) -> Result<(), DocumentError> {
         let previous = self.past.pop().ok_or(DocumentError::NothingToUndo)?;
         self.future.push(document.clone());
+        if self.future.len() > MAX_UNDO_ENTRIES {
+            self.future.remove(0);
+        }
         *document = previous;
         Ok(())
     }
@@ -1457,6 +1469,9 @@ impl UndoStack {
     pub fn redo(&mut self, document: &mut Document) -> Result<(), DocumentError> {
         let next = self.future.pop().ok_or(DocumentError::NothingToRedo)?;
         self.past.push(document.clone());
+        if self.past.len() > MAX_UNDO_ENTRIES {
+            self.past.remove(0);
+        }
         *document = next;
         Ok(())
     }
@@ -1702,7 +1717,7 @@ fn bookmark_slug(text: &str) -> String {
 fn collect_safe_bookmark_id_counts(sections: &[Section]) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for section in sections {
-        collect_safe_bookmark_id_counts_from_blocks(&section.blocks, &mut counts);
+        collect_safe_bookmark_id_counts_from_blocks(&section.blocks, &mut counts, 0);
     }
     counts
 }
@@ -1710,7 +1725,11 @@ fn collect_safe_bookmark_id_counts(sections: &[Section]) -> BTreeMap<String, usi
 fn collect_safe_bookmark_id_counts_from_blocks(
     blocks: &[Block],
     counts: &mut BTreeMap<String, usize>,
+    depth: usize,
 ) {
+    if depth > MAX_BLOCK_DEPTH {
+        return;
+    }
     for block in blocks {
         match block {
             Block::Paragraph(paragraph) => {
@@ -1734,13 +1753,17 @@ fn collect_safe_bookmark_id_counts_from_blocks(
             Block::TableOfContents(_) | Block::Image(_) | Block::PageBreak => {}
             Block::List(list) => {
                 for item in &list.items {
-                    collect_safe_bookmark_id_counts_from_blocks(&item.blocks, counts);
+                    collect_safe_bookmark_id_counts_from_blocks(&item.blocks, counts, depth + 1);
                 }
             }
             Block::Table(table) => {
                 for row in &table.rows {
                     for cell in &row.cells {
-                        collect_safe_bookmark_id_counts_from_blocks(&cell.blocks, counts);
+                        collect_safe_bookmark_id_counts_from_blocks(
+                            &cell.blocks,
+                            counts,
+                            depth + 1,
+                        );
                     }
                 }
             }
@@ -1874,7 +1897,10 @@ pub fn normalize_comment_author(value: Option<&str>) -> Result<String, DocumentE
     Ok(author.to_string())
 }
 
-fn normalize_comment_anchors_in_block(block: &mut Block) {
+fn normalize_comment_anchors_in_block(block: &mut Block, depth: usize) {
+    if depth > MAX_BLOCK_DEPTH {
+        return;
+    }
     match block {
         Block::Paragraph(paragraph) => normalize_inline_metadata(&mut paragraph.inlines),
         Block::Heading(heading) => normalize_inline_metadata(&mut heading.inlines),
@@ -1882,7 +1908,7 @@ fn normalize_comment_anchors_in_block(block: &mut Block) {
         Block::List(list) => {
             for item in &mut list.items {
                 for block in &mut item.blocks {
-                    normalize_comment_anchors_in_block(block);
+                    normalize_comment_anchors_in_block(block, depth + 1);
                 }
             }
         }
@@ -1890,7 +1916,7 @@ fn normalize_comment_anchors_in_block(block: &mut Block) {
             for row in &mut table.rows {
                 for cell in &mut row.cells {
                     for block in &mut cell.blocks {
-                        normalize_comment_anchors_in_block(block);
+                        normalize_comment_anchors_in_block(block, depth + 1);
                     }
                 }
             }
@@ -1927,7 +1953,11 @@ fn resolve_tracked_change_in_blocks(
     blocks: &mut [Block],
     change_id: &str,
     resolution: TrackedChangeResolution,
+    depth: usize,
 ) -> bool {
+    if depth > MAX_BLOCK_DEPTH {
+        return false;
+    }
     let mut changed = false;
     for block in blocks {
         match block {
@@ -1945,8 +1975,12 @@ fn resolve_tracked_change_in_blocks(
             Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &mut list.items {
-                    changed |=
-                        resolve_tracked_change_in_blocks(&mut item.blocks, change_id, resolution);
+                    changed |= resolve_tracked_change_in_blocks(
+                        &mut item.blocks,
+                        change_id,
+                        resolution,
+                        depth + 1,
+                    );
                 }
             }
             Block::Table(table) => {
@@ -1956,6 +1990,7 @@ fn resolve_tracked_change_in_blocks(
                             &mut cell.blocks,
                             change_id,
                             resolution,
+                            depth + 1,
                         );
                     }
                 }
@@ -1969,7 +2004,11 @@ fn resolve_tracked_change_in_blocks(
 fn resolve_all_tracked_changes_in_blocks(
     blocks: &mut [Block],
     resolution: TrackedChangeResolution,
+    depth: usize,
 ) -> bool {
+    if depth > MAX_BLOCK_DEPTH {
+        return false;
+    }
     let mut changed = false;
     for block in blocks {
         match block {
@@ -1983,14 +2022,21 @@ fn resolve_all_tracked_changes_in_blocks(
             Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &mut list.items {
-                    changed |= resolve_all_tracked_changes_in_blocks(&mut item.blocks, resolution);
+                    changed |= resolve_all_tracked_changes_in_blocks(
+                        &mut item.blocks,
+                        resolution,
+                        depth + 1,
+                    );
                 }
             }
             Block::Table(table) => {
                 for row in &mut table.rows {
                     for cell in &mut row.cells {
-                        changed |=
-                            resolve_all_tracked_changes_in_blocks(&mut cell.blocks, resolution);
+                        changed |= resolve_all_tracked_changes_in_blocks(
+                            &mut cell.blocks,
+                            resolution,
+                            depth + 1,
+                        );
                     }
                 }
             }
@@ -2053,7 +2099,10 @@ where
     changed
 }
 
-fn remove_comment_anchors_from_blocks(blocks: &mut [Block], comment_id: &str) {
+fn remove_comment_anchors_from_blocks(blocks: &mut [Block], comment_id: &str, depth: usize) {
+    if depth > MAX_BLOCK_DEPTH {
+        return;
+    }
     for block in blocks {
         match block {
             Block::Paragraph(paragraph) => {
@@ -2065,13 +2114,13 @@ fn remove_comment_anchors_from_blocks(blocks: &mut [Block], comment_id: &str) {
             Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &mut list.items {
-                    remove_comment_anchors_from_blocks(&mut item.blocks, comment_id);
+                    remove_comment_anchors_from_blocks(&mut item.blocks, comment_id, depth + 1);
                 }
             }
             Block::Table(table) => {
                 for row in &mut table.rows {
                     for cell in &mut row.cells {
-                        remove_comment_anchors_from_blocks(&mut cell.blocks, comment_id);
+                        remove_comment_anchors_from_blocks(&mut cell.blocks, comment_id, depth + 1);
                     }
                 }
             }
@@ -2086,7 +2135,10 @@ fn remove_comment_anchors_from_inlines(inlines: &mut [Inline], comment_id: &str)
     }
 }
 
-fn remove_note_references_from_blocks(blocks: &mut [Block], note_id: &str) {
+fn remove_note_references_from_blocks(blocks: &mut [Block], note_id: &str, depth: usize) {
+    if depth > MAX_BLOCK_DEPTH {
+        return;
+    }
     for block in blocks {
         match block {
             Block::Paragraph(paragraph) => {
@@ -2098,13 +2150,13 @@ fn remove_note_references_from_blocks(blocks: &mut [Block], note_id: &str) {
             Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &mut list.items {
-                    remove_note_references_from_blocks(&mut item.blocks, note_id);
+                    remove_note_references_from_blocks(&mut item.blocks, note_id, depth + 1);
                 }
             }
             Block::Table(table) => {
                 for row in &mut table.rows {
                     for cell in &mut row.cells {
-                        remove_note_references_from_blocks(&mut cell.blocks, note_id);
+                        remove_note_references_from_blocks(&mut cell.blocks, note_id, depth + 1);
                     }
                 }
             }
@@ -2125,12 +2177,19 @@ fn remove_note_references_from_inlines(inlines: &mut Vec<Inline>, note_id: &str)
 fn collect_comment_anchor_ids(sections: &[Section]) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     for section in sections {
-        collect_comment_anchor_ids_from_blocks(&section.blocks, &mut ids);
+        collect_comment_anchor_ids_from_blocks(&section.blocks, &mut ids, 0);
     }
     ids
 }
 
-fn collect_comment_anchor_ids_from_blocks(blocks: &[Block], ids: &mut BTreeSet<String>) {
+fn collect_comment_anchor_ids_from_blocks(
+    blocks: &[Block],
+    ids: &mut BTreeSet<String>,
+    depth: usize,
+) {
+    if depth > MAX_BLOCK_DEPTH {
+        return;
+    }
     for block in blocks {
         match block {
             Block::Paragraph(paragraph) => {
@@ -2142,13 +2201,13 @@ fn collect_comment_anchor_ids_from_blocks(blocks: &[Block], ids: &mut BTreeSet<S
             Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &list.items {
-                    collect_comment_anchor_ids_from_blocks(&item.blocks, ids);
+                    collect_comment_anchor_ids_from_blocks(&item.blocks, ids, depth + 1);
                 }
             }
             Block::Table(table) => {
                 for row in &table.rows {
                     for cell in &row.cells {
-                        collect_comment_anchor_ids_from_blocks(&cell.blocks, ids);
+                        collect_comment_anchor_ids_from_blocks(&cell.blocks, ids, depth + 1);
                     }
                 }
             }
@@ -2177,7 +2236,7 @@ pub fn collect_ordered_note_references(sections: &[Section]) -> Vec<InlineNoteRe
     let mut references = Vec::new();
     let mut seen = BTreeSet::new();
     for section in sections {
-        collect_note_references_from_blocks(&section.blocks, &mut references, &mut seen);
+        collect_note_references_from_blocks(&section.blocks, &mut references, &mut seen, 0);
     }
     references
 }
@@ -2186,7 +2245,11 @@ fn collect_note_references_from_blocks(
     blocks: &[Block],
     references: &mut Vec<InlineNoteReference>,
     seen: &mut BTreeSet<String>,
+    depth: usize,
 ) {
+    if depth > MAX_BLOCK_DEPTH {
+        return;
+    }
     for block in blocks {
         match block {
             Block::Paragraph(paragraph) => {
@@ -2198,13 +2261,18 @@ fn collect_note_references_from_blocks(
             Block::TableOfContents(_) => {}
             Block::List(list) => {
                 for item in &list.items {
-                    collect_note_references_from_blocks(&item.blocks, references, seen);
+                    collect_note_references_from_blocks(&item.blocks, references, seen, depth + 1);
                 }
             }
             Block::Table(table) => {
                 for row in &table.rows {
                     for cell in &row.cells {
-                        collect_note_references_from_blocks(&cell.blocks, references, seen);
+                        collect_note_references_from_blocks(
+                            &cell.blocks,
+                            references,
+                            seen,
+                            depth + 1,
+                        );
                     }
                 }
             }
@@ -3416,5 +3484,69 @@ mod tests {
             .expect("block should replace");
 
         assert!(document.comments.is_empty());
+    }
+
+    fn body_paragraph(text: &str) -> Block {
+        Block::Paragraph(Paragraph {
+            bookmark_id: None,
+            style: StyleId::from("body"),
+            format: Default::default(),
+            inlines: vec![Inline::text(text)],
+        })
+    }
+
+    fn deeply_nested_list(depth: usize) -> Block {
+        let mut current = body_paragraph("deep");
+        for _ in 0..depth {
+            current = Block::List(ListBlock {
+                definition_id: "900w-unordered".to_string(),
+                items: vec![ListItem {
+                    level: 0,
+                    blocks: vec![current],
+                }],
+            });
+        }
+        current
+    }
+
+    #[test]
+    fn undo_history_is_capped_and_remains_usable() {
+        let mut document = Document::new_untitled();
+        let mut undo = UndoStack::default();
+        for index in 0..(MAX_UNDO_ENTRIES + 25) {
+            let block_index = document.sections[0].blocks.len();
+            undo.apply(
+                &mut document,
+                DocumentCommand::InsertBlock {
+                    section_index: 0,
+                    block_index,
+                    block: body_paragraph(&format!("word-{index}")),
+                },
+            )
+            .expect("insert should apply");
+        }
+        assert!(undo.past.len() <= MAX_UNDO_ENTRIES);
+
+        let snapshot = document.clone();
+        undo.undo(&mut document).expect("undo within window");
+        undo.redo(&mut document).expect("redo within window");
+        assert_eq!(document, snapshot);
+    }
+
+    #[test]
+    fn deeply_nested_document_does_not_overflow_text_walkers() {
+        let mut document = Document::new_untitled();
+        document.sections[0].blocks = vec![deeply_nested_list(50_000)];
+
+        let handle = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(move || {
+                let _ = document.stats();
+                std::mem::forget(document);
+            })
+            .expect("stats thread should spawn");
+        handle
+            .join()
+            .expect("stats must not overflow the stack on deeply nested documents");
     }
 }

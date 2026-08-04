@@ -858,22 +858,32 @@ pub fn read_docx_bytes_with_limits(
     let mut rels_xml = String::new();
     let mut numbering_xml = String::new();
 
+    let mut expanded_size = 0_u64;
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
         if file.is_dir() {
             continue;
         }
-        match file.name() {
+        let name = file.name().to_string();
+        let mut entry_len = 0_u64;
+        match name.as_str() {
             DOCUMENT_XML => {
-                file.read_to_string(&mut document_xml)?;
+                document_xml = read_entry_string(&mut file, limits.max_entry_size, &name)?;
+                entry_len = document_xml.len() as u64;
             }
             DOCUMENT_RELS => {
-                file.read_to_string(&mut rels_xml)?;
+                rels_xml = read_entry_string(&mut file, limits.max_entry_size, &name)?;
+                entry_len = rels_xml.len() as u64;
             }
             NUMBERING_XML => {
-                file.read_to_string(&mut numbering_xml)?;
+                numbering_xml = read_entry_string(&mut file, limits.max_entry_size, &name)?;
+                entry_len = numbering_xml.len() as u64;
             }
             _ => {}
+        }
+        expanded_size = expanded_size.saturating_add(entry_len);
+        if expanded_size > limits.max_total_expanded_size {
+            return Err(DocxError::ExpandedSizeTooLarge);
         }
     }
 
@@ -887,12 +897,27 @@ pub fn read_docx_bytes_with_limits(
     } else {
         parse_relationships_xml(&rels_xml, &mut warnings)?
     };
-    let imported_images = read_docx_image_parts(&mut archive, &rels, &mut warnings)?;
-    let page_region_part_xml = read_page_region_parts(&mut archive, &rels, &mut warnings)?;
-    let comments_part_xml = read_comment_parts(&mut archive, &rels, &mut warnings)?;
+    let imported_images = read_docx_image_parts(&mut archive, &rels, &mut warnings, limits)?;
+    let page_region_part_xml = read_page_region_parts(&mut archive, &rels, &mut warnings, limits)?;
+    let comments_part_xml = read_comment_parts(&mut archive, &rels, &mut warnings, limits)?;
     let imported_comments = parse_docx_comments(&comments_part_xml, &mut warnings)?;
-    let note_part_xml = read_note_parts(&mut archive, &rels, &mut warnings)?;
+    let note_part_xml = read_note_parts(&mut archive, &rels, &mut warnings, limits)?;
     let imported_notes = parse_docx_notes(&note_part_xml, &mut warnings)?;
+    for xml in page_region_part_xml.values() {
+        expanded_size = expanded_size.saturating_add(xml.len() as u64);
+    }
+    for xml in comments_part_xml.values() {
+        expanded_size = expanded_size.saturating_add(xml.len() as u64);
+    }
+    for part in &note_part_xml {
+        expanded_size = expanded_size.saturating_add(part.xml.len() as u64);
+    }
+    for asset in imported_images.assets.values() {
+        expanded_size = expanded_size.saturating_add(asset.bytes.len() as u64);
+    }
+    if expanded_size > limits.max_total_expanded_size {
+        return Err(DocxError::ExpandedSizeTooLarge);
+    }
     let numbering = if numbering_xml.is_empty() {
         NumberingMap::default()
     } else {
@@ -1037,6 +1062,32 @@ pub fn write_docx_bytes(document: &Document) -> Result<Vec<u8>, DocxError> {
     Ok(writer.finish()?.into_inner())
 }
 
+fn read_entry_bytes(
+    file: &mut zip::read::ZipFile<'_>,
+    max_bytes: u64,
+    name: &str,
+) -> Result<Vec<u8>, DocxError> {
+    let mut buffer = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut buffer)?;
+    if buffer.len() as u64 > max_bytes {
+        return Err(DocxError::EntryTooLarge {
+            name: name.to_string(),
+        });
+    }
+    Ok(buffer)
+}
+
+fn read_entry_string(
+    file: &mut zip::read::ZipFile<'_>,
+    max_bytes: u64,
+    name: &str,
+) -> Result<String, DocxError> {
+    let bytes = read_entry_bytes(file, max_bytes, name)?;
+    String::from_utf8(bytes)
+        .map_err(|err| DocxError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, err)))
+}
+
 pub fn validate_docx_package(bytes: &[u8], limits: PackageLimits) -> Result<(), DocxError> {
     if bytes.len() as u64 > limits.max_package_size {
         return Err(DocxError::PackageTooLarge);
@@ -1050,6 +1101,7 @@ pub fn validate_docx_package(bytes: &[u8], limits: PackageLimits) -> Result<(), 
     }
 
     let mut expanded_size = 0_u64;
+    let mut actual_expanded = 0_u64;
     let mut has_document = false;
 
     for index in 0..entry_count {
@@ -1071,10 +1123,15 @@ pub fn validate_docx_package(bytes: &[u8], limits: PackageLimits) -> Result<(), 
         if name == DOCUMENT_XML {
             has_document = true;
         }
+        let mut entry_len = 0_u64;
         if name.ends_with(".xml") || name.ends_with(".rels") {
-            let mut content = String::new();
-            file.read_to_string(&mut content)?;
+            let content = read_entry_string(&mut file, limits.max_entry_size, &name)?;
+            entry_len = content.len() as u64;
             validate_xml_preflight(&name, &content, limits)?;
+        }
+        actual_expanded = actual_expanded.saturating_add(entry_len);
+        if actual_expanded > limits.max_total_expanded_size {
+            return Err(DocxError::ExpandedSizeTooLarge);
         }
     }
 
@@ -1256,6 +1313,7 @@ fn read_page_region_parts<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     rels: &RelationshipMap,
     warnings: &mut WarningSink,
+    limits: PackageLimits,
 ) -> Result<BTreeMap<String, String>, DocxError> {
     let mut parts = BTreeMap::new();
     for relationship in rels.page_regions.values() {
@@ -1264,8 +1322,8 @@ fn read_page_region_parts<R: Read + std::io::Seek>(
         }
         match archive.by_name(&relationship.target) {
             Ok(mut file) => {
-                let mut xml = String::new();
-                file.read_to_string(&mut xml)?;
+                let xml =
+                    read_entry_string(&mut file, limits.max_entry_size, &relationship.target)?;
                 parts.insert(relationship.target.clone(), xml);
             }
             Err(zip::result::ZipError::FileNotFound) => {
@@ -1284,6 +1342,7 @@ fn read_comment_parts<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     rels: &RelationshipMap,
     warnings: &mut WarningSink,
+    limits: PackageLimits,
 ) -> Result<BTreeMap<String, String>, DocxError> {
     let mut parts = BTreeMap::new();
     for target in rels.comments.values() {
@@ -1292,8 +1351,7 @@ fn read_comment_parts<R: Read + std::io::Seek>(
         }
         match archive.by_name(target) {
             Ok(mut file) => {
-                let mut xml = String::new();
-                file.read_to_string(&mut xml)?;
+                let xml = read_entry_string(&mut file, limits.max_entry_size, target)?;
                 parts.insert(target.clone(), xml);
             }
             Err(zip::result::ZipError::FileNotFound) => {
@@ -1318,6 +1376,7 @@ fn read_note_parts<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     rels: &RelationshipMap,
     warnings: &mut WarningSink,
+    limits: PackageLimits,
 ) -> Result<Vec<DocxNotePartXml>, DocxError> {
     let mut parts = Vec::new();
     let mut seen = BTreeSet::new();
@@ -1327,8 +1386,8 @@ fn read_note_parts<R: Read + std::io::Seek>(
         }
         match archive.by_name(&relationship.target) {
             Ok(mut file) => {
-                let mut xml = String::new();
-                file.read_to_string(&mut xml)?;
+                let xml =
+                    read_entry_string(&mut file, limits.max_entry_size, &relationship.target)?;
                 parts.push(DocxNotePartXml {
                     kind: relationship.kind,
                     xml,
@@ -1874,6 +1933,7 @@ fn read_docx_image_parts<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     rels: &RelationshipMap,
     warnings: &mut WarningSink,
+    limits: PackageLimits,
 ) -> Result<ImportedDocxImages, DocxError> {
     let mut imported = ImportedDocxImages::default();
     let mut total_bytes = 0_u64;
@@ -1888,8 +1948,21 @@ fn read_docx_image_parts<R: Read + std::io::Seek>(
                     );
                     continue;
                 }
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)?;
+                let bytes = match read_entry_bytes(
+                    &mut file,
+                    limits.max_entry_size,
+                    &relationship.target,
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(DocxError::EntryTooLarge { .. }) => {
+                        warnings.warn(
+                            "docx_image_part_ignored",
+                            "Unsupported DOCX image payloads were ignored during import",
+                        );
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
                 let Some(media_type) = detect_image_media_type(&bytes) else {
                     warnings.warn(
                         "docx_image_part_ignored",
@@ -7603,13 +7676,6 @@ fn validate_xml_preflight(
     content: &str,
     limits: PackageLimits,
 ) -> Result<(), DocxError> {
-    let lower = content.to_ascii_lowercase();
-    if lower.contains("<!doctype") || lower.contains("<!entity") {
-        return Err(DocxError::XmlEntityDeclaration {
-            name: name.to_string(),
-        });
-    }
-
     let mut reader = Reader::from_str(content);
     reader.config_mut().trim_text(false);
     let mut depth = 0_usize;
@@ -7624,6 +7690,11 @@ fn validate_xml_preflight(
                 }
             }
             Event::End(_) => depth = depth.saturating_sub(1),
+            Event::DocType(_) => {
+                return Err(DocxError::XmlEntityDeclaration {
+                    name: name.to_string(),
+                })
+            }
             Event::Eof => break,
             _ => {}
         }
@@ -11440,6 +11511,83 @@ mod tests {
             .expect_err("entity declarations should fail preflight");
 
         assert!(matches!(err, DocxError::XmlEntityDeclaration { .. }));
+    }
+
+    #[test]
+    fn doctype_substring_in_comment_is_accepted() {
+        let document_xml =
+            "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">\
+            <!-- doctype notes --><w:body/></w:document>";
+
+        let bytes = synthetic_docx(document_xml, None, None);
+
+        validate_docx_package(&bytes, PackageLimits::default())
+            .expect("benign doctype substring should pass");
+    }
+
+    #[test]
+    fn decompression_bomb_with_lying_size_is_rejected() {
+        let mut document_xml = String::from(
+            "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>",
+        );
+        document_xml.push_str(&"x".repeat(200_000));
+        document_xml.push_str("</w:body></w:document>");
+
+        let mut bytes = synthetic_docx(&document_xml, None, None);
+        patch_docx_entry_uncompressed_size(&mut bytes, DOCUMENT_XML, 16);
+
+        let limits = PackageLimits {
+            max_entry_size: 4096,
+            max_total_expanded_size: 1024 * 1024,
+            ..PackageLimits::default()
+        };
+
+        let err = validate_docx_package(&bytes, limits).expect_err("zip bomb should fail");
+        assert!(matches!(err, DocxError::EntryTooLarge { .. }));
+
+        let err =
+            read_docx_bytes_with_limits(&bytes, limits).expect_err("zip bomb read should fail");
+        assert!(matches!(err, DocxError::EntryTooLarge { .. }));
+    }
+
+    fn window_search_from(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    fn patch_docx_entry_uncompressed_size(bytes: &mut [u8], target_name: &str, lie: u32) {
+        let lie_bytes = lie.to_le_bytes();
+        let local_sig = [0x50u8, 0x4b, 0x03, 0x04];
+        let mut start = 0;
+        while let Some(offset) = window_search_from(&bytes[start..], &local_sig) {
+            let header = start + offset;
+            if bytes.len() >= header + 30 {
+                let name_len =
+                    u16::from_le_bytes([bytes[header + 26], bytes[header + 27]]) as usize;
+                let name_start = header + 30;
+                if name_start + name_len <= bytes.len()
+                    && &bytes[name_start..name_start + name_len] == target_name.as_bytes()
+                {
+                    bytes[header + 22..header + 26].copy_from_slice(&lie_bytes);
+                }
+            }
+            start = header + 4;
+        }
+        let central_sig = [0x50u8, 0x4b, 0x01, 0x02];
+        start = 0;
+        while let Some(offset) = window_search_from(&bytes[start..], &central_sig) {
+            let header = start + offset;
+            if bytes.len() >= header + 46 {
+                let name_len =
+                    u16::from_le_bytes([bytes[header + 28], bytes[header + 29]]) as usize;
+                let name_start = header + 46;
+                if name_start + name_len <= bytes.len()
+                    && &bytes[name_start..name_start + name_len] == target_name.as_bytes()
+                {
+                    bytes[header + 24..header + 28].copy_from_slice(&lie_bytes);
+                }
+            }
+            start = header + 4;
+        }
     }
 
     #[test]
